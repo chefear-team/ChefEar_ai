@@ -48,3 +48,4 @@ result_test/*
 tests/test-audio/*
 result_test_backup_ep13_working/*
 ui/assets/*
+run_local.sh
