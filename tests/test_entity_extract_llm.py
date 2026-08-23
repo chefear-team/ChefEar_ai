@@ -41,3 +41,47 @@ def test_empty_utterance_short_circuits_without_calling_llm(monkeypatch):
 
     assert entity_extract_llm.extract_dish_name_llm("   ") is None
     assert called == []
+
+
+# --- extract_intent_llm() — 2026-08-22 추가, "등록" 의도를 요리명과 같은 LLM 호출로 같이 뽑는다 ---
+
+
+def test_wants_register_true_when_llm_confirms(monkeypatch):
+    monkeypatch.setattr(
+        entity_extract_llm, "generate_json", lambda prompt: {"dish_name": None, "wants_register": True}
+    )
+
+    assert entity_extract_llm.extract_intent_llm("등록해줘") == {"dish_name": None, "wants_register": True}
+
+
+def test_wants_register_false_alongside_dish_name(monkeypatch):
+    monkeypatch.setattr(
+        entity_extract_llm, "generate_json", lambda prompt: {"dish_name": "된장찌개", "wants_register": False}
+    )
+
+    result = entity_extract_llm.extract_intent_llm("된장찌개 어떻게 만들어?")
+    assert result == {"dish_name": "된장찌개", "wants_register": False}
+
+
+def test_wants_register_defaults_false_when_key_missing(monkeypatch):
+    # generate_json()이 wants_register 키 자체를 안 준 경우(구형 응답 형식 등)에도 죽지 않고 False로.
+    monkeypatch.setattr(entity_extract_llm, "generate_json", lambda prompt: {"dish_name": None})
+
+    result = entity_extract_llm.extract_intent_llm("아무 발화")
+    assert result == {"dish_name": None, "wants_register": False}
+
+
+def test_wants_register_defaults_false_on_llm_failure(monkeypatch):
+    monkeypatch.setattr(entity_extract_llm, "generate_json", lambda prompt: None)
+
+    result = entity_extract_llm.extract_intent_llm("아무 발화")
+    assert result == {"dish_name": None, "wants_register": False}
+
+
+def test_extract_dish_name_llm_is_thin_wrapper_over_extract_intent_llm(monkeypatch):
+    # 기존 extract_dish_name_llm() 호출부(app.py, tests/test_ui.py)와의 하위 호환 확인.
+    monkeypatch.setattr(
+        entity_extract_llm, "generate_json", lambda prompt: {"dish_name": "잡채", "wants_register": True}
+    )
+
+    assert entity_extract_llm.extract_dish_name_llm("잡채 어떻게 만들어?") == "잡채"

@@ -38,6 +38,7 @@ from typing import Optional, Sequence, Union
 
 import os
 import re
+import threading
 
 import librosa
 import numpy as np
@@ -697,6 +698,16 @@ STT_LOCAL_CACHE_DIR = os.environ.get("STT_LOCAL_CACHE_DIR")
 
 _ct2_model = None
 
+# 2026-08-22 — src/tts/infer.py의 _LOAD_LOCK과 같은 이유("Cannot copy out of meta tensor;
+# no data!" 실사용 보고, 유력한 원인은 _warm_up_models()가 화면(세션)이 뜰 때마다
+# 호출되는데 로딩 자체엔 동시 진입 방지가 없어서 두 스레드가 거의 동시에 로딩을
+# 시작하면 같은 GPU에 같은 모델을 두 번 올리려다 꼬이는 경합). load_ct2_model()과
+# load_realtime_stt_model() 둘 다 이 하나의 락으로 로딩 시작 자체를 직렬화한다 —
+# 둘이 동시에 로딩을 시작할 일은 거의 없지만(둘 다 _warm_up_models()가 순차 호출),
+# 실제 서비스 경로(stt_transcribe())가 load_realtime_stt_model()을 호출하는 시점과
+# 겹칠 수 있어 공유한다.
+_LOAD_LOCK = threading.Lock()
+
 
 def _resolve_ct2_model_path() -> str:
     """CTranslate2 변환 모델의 경로/repo를 우선순위대로 결정한다.
@@ -730,23 +741,29 @@ def load_ct2_model():
     if _ct2_model is not None:
         return _ct2_model
 
-    from faster_whisper import WhisperModel
+    # _LOAD_LOCK 정의부 주석 참고 — 락을 기다리는 동안 다른 스레드가 이미 로딩을
+    # 끝냈을 수 있으니, 락을 잡은 뒤에도 한 번 더 확인한다(이중 확인 잠금).
+    with _LOAD_LOCK:
+        if _ct2_model is not None:
+            return _ct2_model
 
-    model_path = _resolve_ct2_model_path()
+        from faster_whisper import WhisperModel
 
-    # 2026-08-19 팀 결정(docs/decisions.md #2): 배포를 GPU 데스크탑 상시 노출(Tailscale)로
-    # 확정하면서 "HF Spaces CPU Basic" 배포 전제 자체가 없어졌다 — CPU 폴백 없이 GPU를
-    # 필수로 요구한다. CPU 속도 실측이 다시 필요하면 tests/tts_cpu_inference_test.py처럼
-    # 별도 벤치마크에서 device="cpu"를 명시해서 재현할 것(이 함수 자체는 항상 cuda).
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
-        )
-    _ct2_model = WhisperModel(model_path, device="cuda", compute_type="int8")
+        model_path = _resolve_ct2_model_path()
 
-    print(f"✅ ChefEar STT(faster-whisper, int8) 로드 완료: {model_path} (device=cuda)")
+        # 2026-08-19 팀 결정(docs/decisions.md #2): 배포를 GPU 데스크탑 상시 노출(Tailscale)로
+        # 확정하면서 "HF Spaces CPU Basic" 배포 전제 자체가 없어졌다 — CPU 폴백 없이 GPU를
+        # 필수로 요구한다. CPU 속도 실측이 다시 필요하면 tests/tts_cpu_inference_test.py처럼
+        # 별도 벤치마크에서 device="cpu"를 명시해서 재현할 것(이 함수 자체는 항상 cuda).
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
+            )
+        _ct2_model = WhisperModel(model_path, device="cuda", compute_type="int8")
 
-    return _ct2_model
+        print(f"✅ ChefEar STT(faster-whisper, int8) 로드 완료: {model_path} (device=cuda)")
+
+        return _ct2_model
 
 
 def stt_transcribe(
@@ -795,7 +812,18 @@ def stt_transcribe(
 
     # vad_filter=True: 무음 구간을 걸러내서, 순수 무음 입력에서 whisper 특유의 환각
     # (silence hallucination) 없이 자연스럽게 빈 결과가 나오게 한다(EC-01).
-    segments, _info = model.transcribe(audio, language="ko", vad_filter=True)
+    #
+    # beam_size=1(2026-08-24 수정) — "된장찌개"가 "된장찌"로, "소고기를 손질해주세요"가
+    # "소고기 2."로 잘려나가는 문제 실측 확인(WEBRTC_DEBUG 로그 + 저장된 오디오로 재현).
+    # faster-whisper 기본값(beam_size=5)으로 여러 개의 후보 문장을 동시에 탐색하다가,
+    # 이 파인튜닝 모델에서는 종종 짧게 끝나는(조기 종료) 후보 쪽 누적 확률이 더 높게
+    # 나와서 그쪽으로 수렴해버리는 것으로 보인다(faster-whisper의 세그먼트 타임스탬프가
+    # 0.00~0.02초처럼 말도 안 되게 찍히는 것도 이 조기 종료의 증거). beam_size=1(그리디
+    # 디코딩 — 매 순간 가장 그럴듯한 다음 토큰 하나만 따라감, 후보 경쟁 자체가 없음)로
+    # 바꾸면 이 문제가 재현됐던 실제 녹음 파일들에서 전부 정상 문장으로 나온다(실측
+    # 확인 — 여러 테스트 오디오로 회귀 없음도 같이 확인함, 사소한 단어 차이 한둘 정도만
+    # 있고 그마저도 원래도 발음이 뭉개진 테스트 파일들이었음).
+    segments, _info = model.transcribe(audio, language="ko", vad_filter=True, beam_size=1)
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
     if not text:
@@ -1179,7 +1207,8 @@ def run_batch_test(
 
 
 # ============================================================
-# 단일 발화 실시간 추론 (faster-whisper, 원본 모델) — 2026-08-20 추가
+# 실시간 추론 원본 모델 비교용 (faster-whisper, 파인튜닝 전) — 2026-08-20 추가,
+# 2026-08-23 이름 충돌 수정
 # ============================================================
 #
 # 위 load_stt_model()/run_batch_test()는 파인튜닝된 4bit QLoRA Adapter를 쓰는데
@@ -1187,15 +1216,20 @@ def run_batch_test(
 # 로컬 CPU에서 테스트할 때)에서는 아예 로드가 안 된다. 그리고 배포용으로 정해둔
 # faster-whisper(requirements.txt)로 쓰려면 파인튜닝된 Adapter를 CTranslate2
 # 포맷으로 변환해야 하는데, 이 변환은 위 README의 "faster-whisper/CTranslate2
-# 기반 경량화 검토" 항목대로 아직 안 된 상태다(2026-08-20 확인) — 이 파일 담당자
-# (하주성)의 파인튜닝 검증 작업 영역이라 여기서 대신 변환하지 않는다.
+# 기반 경량화 검토" 항목대로 아직 안 된 상태였다(2026-08-20 당시) — 그래서 이
+# 아래 함수는 일단 파인튜닝 안 된 원본 openai/whisper-large-v3-turbo를
+# faster-whisper로 돌려서 "마이크 → VAD → 텍스트 → 요리명 인식" 파이프라인
+# 자체가 동작하는지만 먼저 확인하려던 용도였다(상시 마이크 테스트 화면 요청).
 #
-# 그래서 이 함수는 일단 파인튜닝 안 된 원본 openai/whisper-large-v3-turbo를
-# faster-whisper로 돌린다 — "마이크 → VAD → 텍스트 → 요리명 인식" 파이프라인
-# 자체가 동작하는지 먼저 확인하려는 용도다(2026-08-20, 상시 마이크 테스트 화면
-# 요청). 요리 도메인 파인튜닝이 아니라서 인식 정확도는 V1 Adapter보다 낮을 수
-# 있다 — 나중에 CTranslate2 변환이 끝나면 아래 REALTIME_MODEL_SIZE만 그 경로로
-# 바꾸면 된다(이 함수를 호출하는 쪽 코드는 안 바뀜).
+# 2026-08-23 리포트 — 그 후 CTranslate2 변환이 끝나서 위쪽에 "배포용" stt_transcribe()
+# (line 769대, load_ct2_model() 사용, 진짜 파인튜닝된 어댑터)가 새로 생겼는데, 이 함수도
+# 이름이 똑같이 stt_transcribe()였다. 같은 파일에 같은 이름의 함수가 두 번 정의되면
+# 파이썬은 나중 정의(이 함수)로 조용히 덮어써버린다 — 그 결과 실서비스 경로
+# (src/ui/voice_io.py의 listen())가 실제로는 이 함수(파인튜닝 안 된 원본 모델)를 호출하고
+# 있었고, 위쪽 배포용 함수는 워밍업 때 GPU에 로드만 되고 실제 추론에는 전혀 안 쓰이는
+# 죽은 코드였다(AppTest로 실측 확인 — `stt.infer.stt_transcribe`가 실제로 바인딩된 소스를
+# 찍어보니 이 함수였음). 이름을 바꿔서 충돌을 없애고, 위쪽 배포용 함수가 진짜로
+# 쓰이게 한다. 이 함수 자체는 파인튜닝 전/후 비교용으로 남겨둔다.
 REALTIME_MODEL_SIZE = os.environ.get("HF_STT_REALTIME_MODEL") or "large-v3-turbo"
 
 _realtime_model = None
@@ -1208,28 +1242,32 @@ def load_realtime_stt_model():
     if _realtime_model is not None:
         return _realtime_model
 
-    from faster_whisper import WhisperModel
+    # _LOAD_LOCK 정의부 주석 참고 — 락을 기다리는 동안 다른 스레드가 이미 로딩을
+    # 끝냈을 수 있으니, 락을 잡은 뒤에도 한 번 더 확인한다(이중 확인 잠금).
+    with _LOAD_LOCK:
+        if _realtime_model is not None:
+            return _realtime_model
 
-    # 2026-08-19 팀 결정(docs/decisions.md #2): 배포를 GPU 데스크탑 상시 노출로 확정 —
-    # 이전엔 device="cpu"로 하드코딩돼 있어서 실제 서비스 경로(app.py의 listen() ->
-    # stt_transcribe(), 이 파일에서 마지막에 정의된 stt_transcribe가 이 함수를 씀)가
-    # 로컬 GPU 데스크탑에서도 항상 CPU로만 추론했다. CPU 폴백 없이 GPU를 필수로 요구한다.
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
-        )
-    _realtime_model = WhisperModel(REALTIME_MODEL_SIZE, device="cuda", compute_type="int8")
-    print(f"[STT] 실시간 추론용 faster-whisper 모델 로드 완료: {REALTIME_MODEL_SIZE} (원본, 파인튜닝 아님, device=cuda)")
-    return _realtime_model
+        from faster_whisper import WhisperModel
+
+        # 2026-08-19 팀 결정(docs/decisions.md #2): 배포를 GPU 데스크탑 상시 노출로 확정 —
+        # CPU 폴백 없이 GPU를 필수로 요구한다.
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
+            )
+        _realtime_model = WhisperModel(REALTIME_MODEL_SIZE, device="cuda", compute_type="int8")
+        print(f"[STT] 비교용 faster-whisper 모델 로드 완료: {REALTIME_MODEL_SIZE} (원본, 파인튜닝 아님, device=cuda)")
+        return _realtime_model
 
 
-def stt_transcribe(waveform, sample_rate: int = 16000) -> str:
+def stt_transcribe_realtime_base(waveform, sample_rate: int = 16000) -> str:
     """오디오 배열 하나(예: VAD로 잘라낸 발화 한 구간) -> 인식된 텍스트 한 줄.
 
-    orchestration.pipeline.handle_utterance()에 그대로 넣을 수 있는 형태로 반환한다
-    — src/tts/infer.py의 tts_synthesize()와 대칭되는 STT 쪽 단일 발화 함수(위
-    run_batch_test()용 _transcribe_audio()는 "파일 경로"를 받는 배치 전용이라
-    실시간 마이크 오디오 배열엔 그대로 못 쓴다).
+    파인튜닝 전 원본 모델(load_realtime_stt_model())로 인식한다 — 위 stt_transcribe()
+    (파인튜닝된 어댑터, load_ct2_model())와 비교하고 싶을 때만 직접 불러 쓰는 함수다.
+    실서비스 경로(app.py/voice_io.py)는 이 함수가 아니라 위 stt_transcribe()를 쓴다
+    (2026-08-23 이름 충돌 수정 — 위 섹션 주석 참고).
 
     waveform은 float32 numpy 배열(모노)이어야 한다 — sample_rate가 16000이 아니면
     whisper가 기대하는 16kHz로 리샘플링한다(librosa는 이미 이 파일 상단에서 씀).

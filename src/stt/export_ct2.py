@@ -96,7 +96,7 @@ def main() -> None:
     preprocessor_src = MERGED_DIR / "preprocessor_config.json"
     if preprocessor_src.exists():
         shutil.copy(preprocessor_src, CT2_DIR / "preprocessor_config.json")
-        print(f"    preprocessor_config.json 복사 완료(feature_size=128 유지)")
+        print("    preprocessor_config.json 복사 완료(feature_size=128 유지)")
     else:
         print("    ⚠ preprocessor_config.json이 병합 모델에도 없음 — 수동 확인 필요")
 

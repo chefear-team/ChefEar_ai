@@ -11,3 +11,16 @@ primaryColor = "#ee7b36"
 backgroundColor = "#f7f1e6"
 secondaryBackgroundColor = "#fbf6ec"
 textColor = "#241c15"
+
+# 2026-08-23 — 상시 마이크(WebRTC) 연결이 ICE "checking" 단계에서 원인 불명으로 계속
+# 리셋되는 문제를 조사하다 추가. 이 프로젝트 폴더가 네트워크 공유 드라이브(CIFS,
+# /mnt/lecture/...)에 있고, Streamlit이 WSL을 감지하면 poll 방식 파일 감시로
+# 자동 전환한다(시작 로그: "Detected WSL. Using poll-based file watching") — CIFS
+# 마운트는 수정시간(mtime)이 미묘하게 흔들릴 수 있어서, 파일을 안 건드려도 Streamlit이
+# "파일이 바뀌었다"고 오판해 예상 못한 순간에 전체 재실행(rerun)을 트리거할 가능성이
+# 있다. 이 rerun이 WebRTC ICE 협상 도중에 끼면 streamlit-webrtc가 "재생 중도
+# 시그널링 중도 아니다"로 보고 연결을 리셋해버린다(src/ui/voice_io.py의
+# _run_mic_loop() 주석 참고) — Python 3.13/3.14 둘 다에서 동일하게 재현된 걸 보면
+# 이 파일 감시 오작동이 더 근본적인 원인일 가능성이 있어 테스트 중.
+[server]
+fileWatcherType = "none"

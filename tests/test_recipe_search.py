@@ -210,6 +210,17 @@ def test_extract_dish_name_fuzzy_matches_misheard_word_inside_sentence():
     assert extract_dish_name("부대찌게 어떻게 만들어?", client=client) == "부대찌개"
 
 
+def test_extract_dish_name_fuzzy_matches_phoneme_level_mishearing():
+    """2026-08-23 실사용 보고: 상시 마이크로 "된장찌개"라고 말했는데 STT가 "된장치게"로
+    오인식(찌/치 된소리-거센소리 혼동 + 개/게 애-에 모음 혼동, 자모 하나씩만 다름).
+    음절 단위 SequenceMatcher.ratio()는 0.5로 FUZZY_CUTOFF(0.7) 미달이라 기존 구현은
+    이 케이스를 못 잡았다 — 자모 분해 비교(_decompose_hangul)로 고쳐서 잡아야 한다."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부, 감자", "source": "api_standard"})
+
+    assert extract_dish_name("된장치게", client=client) == "된장찌개"
+
+
 def test_extract_dish_name_returns_none_when_nothing_close():
     client = FakeSupabaseClient()
     client.table("recipes").seed({"dish_name": "부대찌개", "ingredients": "김치, 스팸", "source": "api_standard"})

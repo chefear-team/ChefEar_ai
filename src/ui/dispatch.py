@@ -4,15 +4,17 @@ start/cooking_step/unclassified 화면이 공유한다.
 """
 from __future__ import annotations
 
+import threading
+
 import streamlit as st
 
 from orchestration.db import get_client
 from orchestration.entity_extract import extract_substitution_ingredients
-from orchestration.entity_extract_llm import extract_dish_name_llm
+from orchestration.entity_extract_llm import extract_intent_llm
 from orchestration.pipeline import handle_utterance, manual_fallback
 from ui.recipe_view import refresh_recipe_view
-from ui.session import goto
-from ui.voice_io import speak
+from ui.session import _DEFAULT_PIPELINE_SESSION, get_owner_id, goto
+from ui.voice_io import _drain_mic_while, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -22,31 +24,137 @@ from ui.voice_io import speak
 # import해 쓴다(screens -> dispatch 의존 방향, ui/README.md 참고).
 COOKING_COMPLETE_MESSAGE = "요리가 완성됐어요! 수고하셨어요."
 
+# 2026-08-23 추가 — 상시 마이크가 초기 화면(start) 말고는 어디서도 안 끊기게 되면서
+# ("처음으로 돌아가고 싶다"는 요청도 화면을 안 옮긴 채 음성만으로 처리해야 함), "처음"류
+# 발화를 classify_intent()/LLM 파이프라인에 태우지 않고 바로 잡아낸다 — 이 파이프라인은
+# "조회/진행/재료대체/취소/등록" 같은 요리 도메인 의도만 다루도록 만들어져 있어서 "처음"을
+# 넣어봐야 미분류나 엉뚱한 의도로 샐 위험이 있고, "처음으로 돌아가기"는 애초에 의도 분류가
+# 필요 없을 만큼 명확한 명령이라 굳이 그 비용(임베딩 유사도 계산 + LLM 호출)을 들일
+# 필요도 없다. 화면마다 있던 "처음 화면으로" 버튼(cooking.py screen_cooking_complete 등)과
+# 똑같이 pipeline_session/chat_log/recipe_view/pending_dish_name을 초기화한다.
+_HOME_WORDS = {"처음", "처음으로", "처음화면", "처음 화면", "처음 화면으로", "메인", "메인 화면", "홈"}
+
+
+def is_home_word(text: str) -> bool:
+    """recipe_confirm/register_intro/register_dish_name처럼 classify_intent()를 안 거치고
+    자기 화면 안에서 직접 몇 단어만 확인하는 화면들도 이걸로 "처음" 발화를 똑같이 잡아낼
+    수 있게 공개 함수로 둔다."""
+    return text.strip().rstrip("?!. ") in _HOME_WORDS
+
+
+def reset_to_start() -> None:
+    """"처음 화면으로" 버튼들(cooking.py/register.py)과 동일한 초기화 — 진행 중이던
+    레시피/등록/대화 기록을 전부 비우고 start로 보낸다."""
+    st.session_state.pipeline_session = dict(_DEFAULT_PIPELINE_SESSION)
+    st.session_state.chat_log = []
+    st.session_state.recipe_view = None
+    st.session_state.pending_dish_name = None
+    goto("start")
+
+
+def listen_background_only(key_prefix: str, *, cancel_target: str) -> None:
+    """register_ingredients/register_steps처럼 이미 목적이 뚜렷한 텍스트 폼(재료/순서
+    추가칸)을 쓰는 화면용(2026-08-23 추가) — 상시 마이크 연결은 계속 유지하되("start
+    화면 말고는 안 끊기게 해달라"는 요청) 자유 발화를 그대로 재료/순서 항목으로 등록해버리면
+    안 되므로, "취소"/"처음" 같은 소수의 안전한 단어에만 반응하고 나머지는 무시한다 —
+    이 화면들의 진짜 입력 수단은 여전히 화면 자체의 텍스트 폼이다."""
+    from ui.voice_io import listen
+
+    text = listen(key_prefix, show_text_fallback=False)
+    if not text:
+        return
+    norm = text.strip().rstrip("?!. ")
+    if is_home_word(norm):
+        reset_to_start()
+    elif norm in ("취소", "취소할래요", "취소해줘"):
+        goto(cancel_target)
+
 
 def process_utterance(text: str) -> None:
+    if is_home_word(text):
+        reset_to_start()
+        return
+
     st.session_state.chat_log.append(("user", text))
 
     session = st.session_state.pipeline_session
     client = get_client()
 
-    dish_name_guess = extract_dish_name_llm(text)
-    requested, excluded = extract_substitution_ingredients(text)
-    try:
-        result = handle_utterance(
-            session,
-            text,
-            dish_name=dish_name_guess,
-            requested_ingredient=requested,
-            excluded_ingredient=excluded,
-            client=client,
-        )
-    except ValueError:
-        # "등록"/"정정" 의도인데 registration_step 없이 자유발화로 들어온 경우 등 —
-        # 서비스를 죽이는 대신 신규 등록 유도 화면으로 안전하게 보낸다.
+    # 2026-08-23 — extract_intent_llm()/handle_utterance()를 배경 스레드로 돌리고, 메인
+    # 스레드는 그동안 voice_io._drain_mic_while()로 마이크 큐를 계속 비운다. speak()의
+    # TTS 합성 구간만 이렇게 고쳤을 땐 재현이 계속됐는데(그 요청은 TTS가 이미 캐싱돼 있어
+    # 합성 자체를 안 탄 경우였음), 실측(WEBRTC_DEBUG 로그)해보니 이 구간 — classify_intent()가
+    # 쓰는 sentence-transformers 임베딩 모델의 최초 GPU 로딩(세션당 1회, 몇 초) + Supabase
+    # DB 조회(순차 HTTP 요청 여러 번) — 도 TTS만큼 길게 아무도 안 비우는 블로킹 구간이라
+    # 브라우저가 똑같이 연결을 끊었다("DTLS shutdown by remote party"). extract_intent_llm/
+    # handle_utterance/extract_substitution_ingredients 셋 다 st.* API를 안 써서(순수 함수,
+    # DB client는 인자로 받음) 배경 스레드에서 안전하게 돌릴 수 있다 — session_state
+    # 쓰기/goto()(st.rerun())는 이 함수가 결과를 받은 뒤 메인 스레드에서 그대로 처리한다.
+    job: dict = {
+        "done": False,
+        "llm_result": None,
+        "requested": None,
+        "excluded": None,
+        "result": None,
+        "value_error": False,
+    }
+
+    def _compute(job=job) -> None:
+        try:
+            job["llm_result"] = extract_intent_llm(text)
+            job["requested"], job["excluded"] = extract_substitution_ingredients(text)
+            if job["llm_result"]["wants_register"]:
+                return
+            try:
+                job["result"] = handle_utterance(
+                    session,
+                    text,
+                    dish_name=job["llm_result"]["dish_name"],
+                    requested_ingredient=job["requested"],
+                    excluded_ingredient=job["excluded"],
+                    client=client,
+                )
+            except ValueError:
+                job["value_error"] = True
+        finally:
+            job["done"] = True
+
+    threading.Thread(target=_compute, daemon=True).start()
+    _drain_mic_while(job)
+
+    llm_result = job["llm_result"]
+    dish_name_guess = llm_result["dish_name"]
+
+    if llm_result["wants_register"]:
+        # 2026-08-22 추가 — classify_intent()(임베딩 유사도)가 "등록" 같은 짧은 단일
+        # 발화를 "진행"/"이전"과 헷갈려 margin 미충족으로 미분류 처리하는 사례가 실측
+        # 확인됐다(기준예문.csv 보강으로 그 구체 사례는 고쳤지만, 임베딩 분류기가 커버
+        # 못하는 새 표현은 또 나올 수 있음). classify_intent()를 거치지 않고, LLM이 이미
+        # "등록하고 싶다"를 명확히 확인해줬으면 바로 등록으로 보낸다.
+        #
+        # register_intro(표준 레시피에 없어서 짐작으로 등록을 유도하는 확인 화면)는 안
+        # 거친다(2026-08-22 요청) — "등록"이라고 직접 말한 건 시스템의 짐작이 아니라
+        # 사용자의 확정된 요청이라 다시 확인받을 필요가 없으므로, register_dish_name
+        # (새 레시피 등록 1/3 요리명)으로 바로 보낸다. register_intro의 버튼들이 하던
+        # get_owner_id() 호출도 여기서 대신 해줘야 한다(registration.py::register_recipe()가
+        # session["owner_id"]를 참조하므로 register_dish_name 진입 전에 채워둬야 함).
         st.session_state.pending_dish_name = dish_name_guess
-        goto("register_intro")
+        get_owner_id()
+        goto("register_dish_name")
         return
 
+    if job["value_error"]:
+        # 위 배경 스레드의 _compute() 안에서 handle_utterance()가 ValueError를 던진 경우 —
+        # "등록"/"정정" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
+        # 죽이는 대신 신규 등록으로 안전하게 보낸다. classify_intent()가 이미 "등록"으로
+        # 확정 분류한 경우라 위 wants_register 분기와 같은 이유로 register_intro(확인
+        # 화면)는 안 거치고 바로 register_dish_name으로 보낸다.
+        st.session_state.pending_dish_name = dish_name_guess
+        get_owner_id()
+        goto("register_dish_name")
+        return
+
+    result = job["result"]
     intent = result.get("intent")
 
     if intent == "미분류":

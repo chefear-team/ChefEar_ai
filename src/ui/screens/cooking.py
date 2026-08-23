@@ -16,10 +16,10 @@ from theme import (
     render_step_card,
     render_typewriter_message,
 )
-from ui.dispatch import COOKING_COMPLETE_MESSAGE, fallback_buttons, process_utterance
+from ui.dispatch import COOKING_COMPLETE_MESSAGE, fallback_buttons, is_home_word, process_utterance, reset_to_start
 from ui.recipe_view import _ingredients_to_chips, refresh_recipe_view
-from ui.session import _DEFAULT_PIPELINE_SESSION, goto
-from ui.voice_io import _AUDIO_DIR, _render_cached_speech, listen, prefetch_next_step_audio, speak
+from ui.session import goto
+from ui.voice_io import _AUDIO_DIR, _render_cached_speech, listen, mic_is_playing, prefetch_remaining_steps_audio, speak
 
 
 def screen_start() -> None:
@@ -30,13 +30,18 @@ def screen_start() -> None:
         '<p style="color:var(--text-faint); font-size:13.5px;">예: "된장찌개 어떻게 만들어?"</p></div>',
         unsafe_allow_html=True,
     )
-    render_big_mic()
+    # 2026-08-23 요청 — "준비됐는지 안 됐는지 모르겠다": 실제 연결 상태(mic_is_playing())를
+    # 큰 마이크 아이콘 색으로 보여준다. 아래 listen("start")가 이 값을 이번 rerun에서
+    # 갱신하기 *전에* 먼저 읽으므로 화면 위쪽(아이콘)이 먼저, 실제 연결 시도는 그 아래에서
+    # 이어지는 순서 그대로다 — 값 자체는 직전 rerun까지의 최신 상태라 문제없다.
+    render_big_mic(ready=mic_is_playing())
 
-    # register_intro/register_dish_name과 같은 이유로(2026-08-21) listen()이 따로 그리는
-    # "말씀해주세요" 녹음 위젯은 꺼둔다 - 이 화면엔 이미 render_big_mic()이 그리는 원형
-    # 마이크 아이콘 + "마이크 켜기" 버튼으로 여는 자체 녹음 위젯이 있어서, 같은 화면에
-    # 마이크 녹음 위젯이 두 벌 겹쳐 보이는 문제가 있었다. 텍스트 입력 대체 경로는 그대로
-    # 남아있고, 실제 음성 녹음은 render_big_mic() 쪽 위젯으로 여전히 가능하다.
+    # 2026-08-23 — 처음엔 "start 화면에서만 마이크를 끈다"로 만들었는데(mic_enabled=False),
+    # 재요청으로 되돌림: start도 다른 화면과 똑같이 상시 마이크 연결을 유지한다. 대신
+    # webrtc_streamer(desired_playing_state=True, voice_io._run_mic_loop() 참고)로 이
+    # 화면이 뜨자마자(=페이지 로드하자마자) 클릭 없이 바로 연결을 시도하게 했다 — 브라우저가
+    # 이 사이트에 마이크 권한을 이미 준 적 있으면 정말로 클릭 한 번 없이 곧장 "준비 상태"가
+    # 된다. render_big_mic()의 큰 원형 아이콘은 그 상태를 보여주는 장식 요소로 남는다.
     text = listen("start", show_mic=False)
     if text:
         process_utterance(text)
@@ -67,7 +72,8 @@ def screen_recipe_confirm() -> None:
         # dispatch.py가 이 화면으로 넘어오기 직전 speak(..., hidden=True)로 미리 합성/캐싱만
         # 해둔 문구를 여기서 다시 찾아 들려준다(2026-08-22 리포트 — 화면 전환 중 이전
         # 화면 하단에 재생바가 "떴다 사라짐" 깜빡이는 문제, no_match/unclassified와 같은 패턴).
-        _render_cached_speech(chat_log[-1][1])
+        # nonce(2026-08-23) — 아래 "다시" 처리가 이 값을 올려서 같은 문구를 한 번 더 듣게 한다.
+        _render_cached_speech(chat_log[-1][1], nonce=st.session_state.get("_audio_replay_nonce", 0))
         # render_spacer()로 뱃지와의 사이를 벌려서, 텍스트 블록이 위쪽에 바짝 붙지 않고
         # 아래쪽 "재료 미리보기" 사이 빈 공간의 세로 중앙쯤에 오게 한다(2026-08-22
         # 스크린샷 지적 — screen_start() 등 다른 화면의 render_spacer() 패턴과 동일).
@@ -80,7 +86,14 @@ def screen_recipe_confirm() -> None:
     st.markdown("**재료 미리보기**")
     render_chips(_ingredients_to_chips(view["ingredients_raw"]))
 
-    render_mic_bar("듣는 중", '"응" 또는 다른 요청을 말씀해주세요', listening=True)
+    # 2026-08-23 요청 — "연결됐는지 안 됐는지 모르겠다": listening을 항상 True로 고정하지
+    # 않고 실제 연결 상태(mic_is_playing())를 그대로 보여준다.
+    _mic_ready = mic_is_playing()
+    render_mic_bar(
+        "듣는 중" if _mic_ready else "마이크 연결 중...",
+        '"응" 또는 다른 요청을 말씀해주세요',
+        listening=_mic_ready,
+    )
 
     # "응"(긍정) 확인은 classify_intent()가 처리하지 않는다(의도적 제외,
     # tests/integration_test.md 기록) — 이 화면 안에서만 문자열로 직접 우회 처리.
@@ -92,7 +105,26 @@ def screen_recipe_confirm() -> None:
     text = listen("recipe_confirm", show_mic=False)
     if text:
         norm = text.strip().rstrip("?!. ")
-        if norm in ("응", "네", "좋아", "좋아요", "그래", "그래요", "시작", "응, 시작할게요"):
+        # 2026-08-22 원래 의도로 되돌림 — 이 화면은 원래 "확정 단어 목록 -> 진행,
+        # 그 외 전부 -> 처음 화면"이라는 단순한 이분법으로 설계됐었는데, 그동안
+        # else 분기가 process_utterance()(classify_intent() 전체 파이프라인)로
+        # 넘어가게 돼 있었다. "조회수 1위 표준 레시피 자동 선택 · 되묻지 않음(FR-05)"
+        # 화면이라 여기서 진행/이전/재료대체 같은 다른 의도까지 판단할 필요가 없고,
+        # 이 레시피가 아니면 "다른 레시피 찾을래요" 버튼과 똑같이 처음 화면으로
+        # 보내 새로 요리명을 말하게 하는 게 원래 설계다.
+        #
+        # 2026-08-23 재요청 — 세 가지를 정확히 구분해야 한다: (1) "처음"이 들어있으면
+        # 무조건 초기 화면으로(reset_to_start()로 진행 중이던 것도 같이 비움), (2) "다시"가
+        # 들어있으면 화면 전환 없이 방금 그 확인 문구만 한 번 더 들려줌, (3) 그 외
+        # 확정 단어(응/네/좋아/다음)가 "포함"돼 있으면 진행 — 예전처럼 발화 전체가 그
+        # 단어와 정확히 같아야만 인정하던 것(예: "네 좋아요 시작할게요"는 안 걸림)을
+        # 포함 여부로 완화했다. 확정 단어도 처음도 다시도 아니면 기존 그대로 처음 화면으로.
+        if is_home_word(norm) or "처음" in norm:
+            reset_to_start()
+        elif "다시" in norm:
+            st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
+            st.rerun()
+        elif any(word in norm for word in ("응", "네", "좋아", "다음", "그래", "시작")) or norm.lower() == "next":
             st.session_state.pipeline_session["step_number"] = 1
             # register_steps의 "네, 저장할게요"와 같은 이유(2026-08-22 리포트) — 여기서
             # speak()가 그리는 재생바는 바로 다음 줄 goto()의 st.rerun()에 곧장 지워져서
@@ -110,8 +142,11 @@ def screen_recipe_confirm() -> None:
             else:
                 speak("1단계 정보를 찾지 못했어요.", hidden=True)
             goto("cooking_step")
-        else:
-            process_utterance(text)
+        # 2026-08-23 재요청으로 변경 — 확정 단어("응"/"네"/"좋아"/"다음")도 "처음"도 "다시"도
+        # 아닌 그 외 발화는 전부 무시한다(else 분기 자체를 없앰). 예전엔 이럴 때 처음
+        # 화면으로 돌려보냈지만, 이제는 아무 일도 안 하고 이 화면(recipe_confirm)에 그대로
+        # 머문다 — 사용자가 다시 확정 단어로 말해볼 수 있게. "다른 레시피 찾을래요" 버튼은
+        # 그대로 남아있어 처음으로 가고 싶으면 그걸로 가면 된다.
 
     if st.button("다른 레시피 찾을래요", use_container_width=True):
         goto("start")
@@ -129,9 +164,11 @@ def screen_cooking_step() -> None:
     step_number = min(session.get("step_number", 1), total)
     current = view["steps"][step_number - 1]
 
-    # 사용자가 지금 단계를 보고/듣고 있는 동안 다음 단계 음성을 미리 합성해둔다 —
-    # prefetch_next_step_audio() 정의부 주석 참고(2026-08-22, TTS 체감 속도 개선).
-    prefetch_next_step_audio(view, step_number)
+    # 사용자가 지금 단계를 보고/듣고 있는 동안 남은 단계 음성을 전부 순서대로 미리
+    # 합성해둔다 — prefetch_remaining_steps_audio() 정의부 주석 참고(2026-08-22,
+    # TTS 체감 속도 개선. "1페이지를 보는 동안 2/3/4페이지가 눈에 안 보이지만 계속
+    # 만들어지게" 요청).
+    prefetch_remaining_steps_audio(view, step_number)
 
     render_badge(f'{view["dish_name"]} · {step_number} / {total} 단계')
 
@@ -188,7 +225,12 @@ def screen_cooking_step() -> None:
     if st.session_state.chat_log:
         render_chat(st.session_state.chat_log[-4:])
 
-    render_mic_bar("듣는 중", '"이전" · "다시" · "다음"', listening=True)
+    _mic_ready = mic_is_playing()
+    render_mic_bar(
+        "듣는 중" if _mic_ready else "마이크 연결 중...",
+        '"이전" · "다시" · "다음"',
+        listening=_mic_ready,
+    )
 
     # register_intro/register_dish_name과 같은 이유(2026-08-21) — 바로 위 render_mic_bar()가
     # 이미 "듣는 중" 펄스 애니메이션으로 마이크가 켜져 있음을 보여주고 있어서, listen()이
@@ -223,9 +265,12 @@ def screen_cooking_complete() -> None:
     _render_cached_speech(COOKING_COMPLETE_MESSAGE)
     render_spacer()
 
+    # 2026-08-23 요청 — 상시 마이크가 start 화면 말고는 끊기지 않아야 해서, 이 완료
+    # 화면도 계속 듣는다("처음"이라고 말하면 아래 버튼과 동일하게 reset_to_start()로
+    # 처리됨 — dispatch.process_utterance()가 맨 앞에서 먼저 걸러냄).
+    text = listen("cooking_complete", show_mic=False)
+    if text:
+        process_utterance(text)
+
     if st.button("처음 화면으로", type="primary", use_container_width=True):
-        st.session_state.pipeline_session = dict(_DEFAULT_PIPELINE_SESSION)
-        st.session_state.chat_log = []
-        st.session_state.recipe_view = None
-        st.session_state.pending_dish_name = None
-        goto("start")
+        reset_to_start()

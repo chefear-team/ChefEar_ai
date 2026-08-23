@@ -39,6 +39,12 @@ PLACEHOLDER = "예: 부대찌개 어떻게 만들어? / 다음 / 다시 / 이전
 # "00_정제된텍스트.wav"). 이 화면(ui/streamlit_screens/)에서 2단계 위가 프로젝트 루트다.
 NEW_SENTENCES_DIR = Path(__file__).resolve().parents[2] / "results" / "tts" / "new_sentences_test"
 
+# 2026-08-23 추가(사용자 요청) — 마이크로 테스트하는 오디오를 전부 남겨서 나중에 들어보고
+# 분석할 수 있게 한다. src/ui/voice_io.py._run_mic_loop()가 실서비스 앱(src/app.py)에서
+# 쓰는 것과 같은 경로(ui/assets/_mic_debug_dumps/) — 이 화면(ui/app.py, mock 프로토타입)으로
+# 테스트하든 실서비스 앱으로 테스트하든 한곳에 다 모이게 통일한다.
+MIC_DEBUG_DUMP_DIR = Path(__file__).resolve().parents[2] / "ui" / "assets" / "_mic_debug_dumps"
+
 
 def _wav_path_for(step_number: int, text: str) -> Path:
     """저장/존재확인 둘 다에서 같은 파일명 규칙을 쓰려고 경로 계산만 따로 뺐다."""
@@ -154,14 +160,41 @@ def _render_always_on_mic(backend_session: dict, client, process_utterance) -> N
             continue
 
         for frame in audio_frames:
-            utterance_audio = segmenter.feed(frame.to_ndarray(), frame.sample_rate)
+            # 2026-08-23 — src/ui/voice_io.py._run_mic_loop()와 같은 수정(채널 수를
+            # frame.layout에서 알아내 명시적으로 넘김, mic_vad.py::_to_mono_float32() 주석
+            # 참고) — 여기도 같은 MicVadSegmenter.feed()를 쓰는 별도 호출부라 빠져 있으면
+            # stereo/packed 프레임에서 "굵고 느린 목소리"(음이 낮고 늘어짐) 버그가 그대로 남는다.
+            _channels = len(frame.layout.channels) if frame.layout is not None else 1
+            utterance_audio = segmenter.feed(frame.to_ndarray(), frame.sample_rate, channels=_channels)
             if utterance_audio is None:
                 continue
+
+            # 2026-08-23 추가(사용자 요청) — src/ui/voice_io.py._run_mic_loop()와 같은 덤프.
+            # 인식 성공 여부와 무관하게 VAD가 잘라낸 발화는 전부 저장한다(stt_transcribe()
+            # 호출 *전에* 저장 — 인식이 실패해도 원인 분석용 오디오는 남아야 하므로). 가공 전
+            # 원본(raw, 원본 샘플레이트)도 segmenter.last_raw_utterance에 있으면 같이 남긴다.
+            import time as _time
+
+            import soundfile as sf
+
+            MIC_DEBUG_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+            _ts = f"{_time.time():.3f}"
+            sf.write(MIC_DEBUG_DUMP_DIR / f"{_ts}.wav", utterance_audio, 16000)
+            if segmenter.last_raw_utterance is not None:
+                sf.write(
+                    MIC_DEBUG_DUMP_DIR / f"{_ts}_raw.wav",
+                    segmenter.last_raw_utterance,
+                    segmenter.last_raw_sample_rate,
+                )
 
             status_ph.info("🧠 인식 중...")
             from stt.infer import stt_transcribe
 
-            text = stt_transcribe(utterance_audio, 16000)
+            # 2026-08-23: stt_transcribe()의 sample_rate는 키워드 전용 인자다(src/stt/infer.py
+            # 이름 충돌 수정 참고) — 예전엔 이 파일 안에 같은 이름의 다른 함수(위치 인자 허용)가
+            # 이 호출을 대신 받아서 위치 인자로도 동작했지만, 지금은 진짜 배포용 함수가 불려서
+            # 위치 인자로 주면 TypeError가 난다.
+            text = stt_transcribe(utterance_audio, sample_rate=16000)
             if text.strip():
                 process_utterance(text)
                 with chat_ph.container():
@@ -266,7 +299,10 @@ def render() -> None:
     with st.expander("🎙️ 상시 마이크 (실험적 — streamlit-webrtc + VAD)", expanded=False):
         st.caption(
             "마이크를 켜두면 계속 듣고 있다가, 말이 끝나고 잠깐(약 0.6초) 조용해지면 그때까지를 "
-            "한 발화로 잘라 인식합니다. STT는 아직 파인튜닝 안 된 원본 모델이라 인식 정확도는 낮을 수 있습니다."
+            "한 발화로 잘라 인식합니다. STT는 배포용 파인튜닝 어댑터(stt_transcribe(), int8 CTranslate2)를 "
+            "씁니다 — 2026-08-23 이전엔 이름 충돌로 원본 모델이 대신 불렸었지만 지금은 고쳐졌습니다"
+            "(src/stt/README.md 2026-08-23 항목 참고). 원본 모델과 비교하려면 "
+            "src/stt/compare_realtime_models.py를 참고하세요."
         )
         _render_always_on_mic(backend_session, client, process_utterance)
 

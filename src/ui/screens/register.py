@@ -27,9 +27,9 @@ from theme import (
 )
 from orchestration.db import get_client
 from orchestration.registration import register_recipe
-from ui.dispatch import fallback_buttons, process_utterance
-from ui.session import _DEFAULT_PIPELINE_SESSION, get_owner_id, goto
-from ui.voice_io import _render_cached_speech, listen, speak
+from ui.dispatch import fallback_buttons, is_home_word, listen_background_only, process_utterance, reset_to_start
+from ui.session import get_owner_id, goto
+from ui.voice_io import _render_cached_speech, listen, mic_is_playing, speak
 
 _REGISTER_SAVED_MESSAGE = "저장이 완료됐어요!"
 
@@ -51,6 +51,11 @@ def screen_no_match() -> None:
     render_chat(st.session_state.chat_log[-2:])
     st.caption("실데이터 검색만으로 판단해요 — 없는 레시피를 지어내지 않아요 (1.5 원칙).")
     render_spacer()
+
+    # 2026-08-23 요청 — start 화면 말고는 상시 마이크가 안 끊겨야 해서 여기도 계속 듣는다.
+    text = listen("no_match", show_mic=False)
+    if text:
+        process_utterance(text)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -91,12 +96,17 @@ def screen_register_intro() -> None:
     st.markdown(f'<div class="ce-lead-icon neutral">{ICON_SPARKLE}</div>', unsafe_allow_html=True)
     dish_hint = st.session_state.pending_dish_name or "그 요리"
     st.markdown(
-        '<div class="ce-center"><h1>표준 데이터에 없는 요리예요</h1>'
+        '<div class="ce-center"><h1>표준 레시피에 없는 요리예요</h1>'
         f"<p>{dish_hint}는 표준 레시피 안에는 없지만, 직접 알려주시면 회원님 레시피로 등록해드릴게요.</p></div>",
         unsafe_allow_html=True,
     )
     render_spacer()
-    render_mic_bar("듣는 중", '"네" 또는 "등록할래요"라고 말해보세요', listening=True)
+    _mic_ready = mic_is_playing()
+    render_mic_bar(
+        "듣는 중" if _mic_ready else "마이크 연결 중...",
+        '"네" 또는 "등록할래요"라고 말해보세요',
+        listening=_mic_ready,
+    )
 
     # 2026-08-21: 위 "듣는 중" 표시줄이 이미 마이크가 켜져 있다는 걸 보여주고 있어서,
     # listen()이 따로 그리는 실제 녹음 위젯(제목 "말씀해주세요" + 녹음 버튼)까지 있으면
@@ -109,8 +119,14 @@ def screen_register_intro() -> None:
         if norm in ("네", "응", "좋아", "좋아요", "그래", "그래요", "등록", "등록할래요", "네, 등록할래요"):
             get_owner_id()
             goto("register_dish_name")
-        elif norm in ("아니", "아니요", "괜찮아", "괜찮아요", "취소"):
-            goto("start")
+        elif is_home_word(norm) or norm in ("아니", "아니요", "괜찮아", "괜찮아요", "취소"):
+            # 2026-08-23 — "처음"류는 reset_to_start()(진행 중이던 값 전부 초기화)로,
+            # 기존 "아니/취소"는 원래 하던 대로 단순 이동만(이 화면은 아직 등록 자체를
+            # 시작 전이라 초기화할 진행 상태가 없음).
+            if is_home_word(norm):
+                reset_to_start()
+            else:
+                goto("start")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -133,7 +149,12 @@ def screen_register_dish_name() -> None:
     st.markdown("**어떤 요리인가요?**")
     if st.session_state.pending_dish_name:
         st.caption(f'짐작한 이름: "{st.session_state.pending_dish_name}" — 맞으면 "네", 다르면 이름을 말씀해주세요')
-    render_mic_bar("듣는 중", "요리 이름을 말씀해주세요", listening=True)
+    _mic_ready = mic_is_playing()
+    render_mic_bar(
+        "듣는 중" if _mic_ready else "마이크 연결 중...",
+        "요리 이름을 말씀해주세요",
+        listening=_mic_ready,
+    )
 
     # register_intro와 같은 이유로(2026-08-21) 실제 녹음 위젯("말씀해주세요" 박스)은
     # 일단 꺼둔다 - 위 "듣는 중" 아이콘이 펄스 애니메이션으로 이미 마이크가 활성화된
@@ -141,6 +162,12 @@ def screen_register_dish_name() -> None:
     text = listen("register_dish_name", show_mic=False)
     if text:
         norm = text.strip().rstrip("?!. ")
+        if is_home_word(norm):
+            # 2026-08-23 추가 — 이 체크가 없으면 "처음"이라고 말해도 요리명("처음")으로
+            # 그대로 등록 시도돼버린다(아래 else가 "확정 단어 아니면 발화 전체를 요리명으로"
+            # 라서). 등록 도중이니 reset_to_start()로 진행 중이던 값도 같이 비운다.
+            reset_to_start()
+            return
         if norm in ("네", "응", "맞아", "맞아요", "그래", "그래요") and st.session_state.pending_dish_name:
             dish_name = st.session_state.pending_dish_name
         else:
@@ -173,6 +200,11 @@ def screen_register_ingredients() -> None:
 
     # 2026-08-21: 이 화면은 텍스트 입력 전용으로 되돌렸다 — STT/TTS(마이크 바·재생바·
     # listen())를 붙였던 버전 대신, 원래의 순수 텍스트 폼(요청받은 화면 그대로)을 쓴다.
+    # 2026-08-23 — 다만 상시 마이크 연결 자체는 start 화면 말고는 안 끊겨야 해서, 재료
+    # 입력용 텍스트 폼은 그대로 두고 "취소"/"처음"만 배경에서 듣는다(listen_background_only()
+    # 주석 참고) — 재료 자유 발화가 그대로 등록되는 걸 막기 위해 그 외 단어는 무시한다.
+    listen_background_only("register_ingredients", cancel_target="register_intro")
+
     new_item = st.text_input("재료 추가(쉼표로 여러 개 가능)", key="reg_ing_new", placeholder="예: 두부, 감자")
     if st.button("추가") and new_item.strip():
         items = [x.strip() for x in new_item.split(",") if x.strip()]
@@ -241,13 +273,29 @@ def screen_register_steps() -> None:
                             st.rerun()
 
     # register_ingredients와 같은 이유로(2026-08-21) 텍스트 입력 전용으로 되돌렸다.
+    # 2026-08-23 — register_ingredients와 같은 이유로 배경 마이크만 유지("취소"/"처음"만 반응).
+    listen_background_only("register_steps", cancel_target="register_ingredients")
+
     new_step = st.text_input("순서 추가", key="reg_step_new", placeholder="새 단계 추가")
     if st.button("단계 추가") and new_step.strip():
         register_recipe(st.session_state.pipeline_session, "instructions", [new_step.strip()], client=get_client())
         st.rerun()
 
     if reg["instructions"] and st.button("네, 저장할게요", type="primary", use_container_width=True):
+        # 2026-08-23 리포트(AppTest로 재현 확인) — register_recipe()의 "confirm" step은
+        # session["current_recipe_id"]를 안 채우고 session["registration"]도 저장 직후
+        # None으로 비운다(registration.py 참고). screen_complete()는 요리명을
+        # st.session_state.recipe_view에서 읽는데(조회/재료대체 때만 채워지는 값) 신규
+        # 등록 플로우는 그걸 채운 적이 없어서, "저장이 완료됐어요!" 화면에 방금 등록한
+        # 요리명 대신 기본값 "레시피"만 뜨는 버그가 있었다. register_recipe() 호출 전에
+        # reg는 이미 dish_name을 들고 있는 지역 참조이므로(위 register_recipe() 호출이
+        # session["registration"]을 None으로 바꿔도 reg 객체 자체는 그대로 살아있음),
+        # 여기서 dish_name만 recipe_view에 최소한으로 채워 넘긴다 — recipe_id/steps 등
+        # 나머지 필드가 없어도 screen_complete()는 dish_name만 읽으므로 안전하고, 이후
+        # 실제 조회가 일어나면 refresh_recipe_view()가 이 임시 값을 통째로 덮어쓴다.
+        dish_name = reg["dish_name"]
         register_recipe(st.session_state.pipeline_session, "confirm", None, client=get_client())
+        st.session_state.recipe_view = {"dish_name": dish_name}
         speak(_REGISTER_SAVED_MESSAGE, hidden=True)
         goto("complete")
 
@@ -269,9 +317,10 @@ def screen_complete() -> None:
     )
     render_spacer()
 
+    # 2026-08-23 요청 — start 화면 말고는 상시 마이크가 안 끊겨야 해서 여기도 계속 듣는다.
+    text = listen("complete", show_mic=False)
+    if text:
+        process_utterance(text)
+
     if st.button("처음 화면으로", type="primary", use_container_width=True):
-        st.session_state.pipeline_session = dict(_DEFAULT_PIPELINE_SESSION)
-        st.session_state.chat_log = []
-        st.session_state.recipe_view = None
-        st.session_state.pending_dish_name = None
-        goto("start")
+        reset_to_start()

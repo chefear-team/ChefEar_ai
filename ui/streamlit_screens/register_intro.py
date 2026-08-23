@@ -12,7 +12,7 @@ def render() -> None:
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon neutral">{ICON_SPARKLE}</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="ce-center"><h1>표준 데이터에 없는 요리예요</h1>'
+        '<div class="ce-center"><h1>표준 레시피에 없는 요리예요</h1>'
         "<p>60,282개 표준 레시피 안에는 없지만, 직접 알려주시면 회원님 레시피로 등록해드릴게요.</p></div>",
         unsafe_allow_html=True,
     )

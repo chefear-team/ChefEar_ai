@@ -47,4 +47,4 @@ build/
 result_test/*
 tests/test-audio/*
 result_test_backup_ep13_working/*
-*.gitignore
+ui/assets/*

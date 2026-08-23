@@ -121,6 +121,12 @@ def _warm_up_models() -> None:
 def main() -> None:
     st.set_page_config(page_title="ChefEar", page_icon="🍲", layout="centered", initial_sidebar_state="collapsed")
     init_state()
+    # voice_io.prefetch_remaining_steps_audio()의 백그라운드 스레드가 참조하는
+    # "지금 활성 레시피" 표시를 매 rerun마다 최신 상태로 맞춘다(2026-08-22 요청) — 사용자가
+    # 다른 레시피로 넘어가거나(재료대체 포함) 처음 화면으로 돌아가 pipeline_session이
+    # 리셋되면, 이 값도 즉시 바뀌어서 버려진 레시피의 백그라운드 합성이 다음 단계
+    # 진입 전에 스스로 멈춘다.
+    st.session_state._active_recipe_box["recipe_id"] = st.session_state.pipeline_session.get("current_recipe_id")
     # 새로고침해도 로그인이 풀리지 않게, 저장해둔 로그인 쿠키로 세션을 복원한다
     # (2026-08-22 요청) - _warm_up_models()보다 먼저 해야 화면이 뜨자마자 바로
     # 로그인 상태로 보인다.

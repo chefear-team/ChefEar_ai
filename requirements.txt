@@ -7,4 +7,11 @@ faster-whisper==1.2.1
 supabase==2.31.0
 streamlit-cookies-manager==0.2.0
 
+# 상시 마이크(실시간 스트리밍 인식) — 2026-08-23 추가. streamlit-webrtc가 브라우저 마이크를
+# 끊김 없이 스트리밍해주고, silero-vad(VADIterator)가 "말하다가 조용해지면 거기까지 한
+# 발화"로 프레임을 잘라준다. aiortc는 streamlit-webrtc의 WebRTC 구현 의존성.
+streamlit-webrtc==0.77.0
+silero-vad==6.2.1
+aiortc==1.15.0
+
 # Qwen3-TTS 추론 의존성 버전 미정 — docs/decisions.md 참고
