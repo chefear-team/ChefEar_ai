@@ -41,6 +41,15 @@ def init_state() -> None:
     # AppTest로 발견 — "다음" 한 번 입력했는데 스텝이 끝없이 올라가다 타임아웃).
     # 매번 새 키를 쓰게 해서 이전 위젯 값이 절대 재사용되지 않게 한다.
     st.session_state.setdefault("input_turn", 0)
+    # voice_io.prefetch_remaining_steps_audio()의 백그라운드 스레드가 "사용자가 아직도
+    # 이 레시피를 보고 있는지" 확인할 때 쓰는 평범한 dict(2026-08-22 요청 — 사용자가
+    # 초기 화면으로 돌아가거나 다른 레시피로 넘어가도 버려진 레시피의 남은 단계를 계속
+    # 만들고 있으면 안 됨). st.session_state를 백그라운드 스레드에서 직접 읽는 건
+    # Streamlit이 지원하지 않는 위험한 패턴이라(ScriptRunContext 필요), 이 안에 담긴
+    # "평범한 파이썬 dict" 객체 하나를 스레드에 넘겨서 그것만 읽고 쓰게 한다 — main()이
+    # 매 rerun마다 이 값을 pipeline_session["current_recipe_id"]와 동기화한다
+    # (src/app.py 참고).
+    st.session_state.setdefault("_active_recipe_box", {"recipe_id": None})
 
 
 def goto(screen: str) -> None:

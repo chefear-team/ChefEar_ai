@@ -175,6 +175,22 @@ TTS가 생성한 음성을 STT로 전달하고 원문과 결과를 비교합니�
 * Streamlit / HF Spaces 배포 환경 검증
 * 필요 시 faster-whisper / CTranslate2 경량화 검토
 
+## 2026-08-23 버그 수정 — `stt_transcribe` 이름 충돌로 실서비스가 베이스 모델을 쓰고 있었음
+
+`infer.py`에 `stt_transcribe`라는 이름의 함수가 두 개(배포용 파인튜닝 어댑터 버전 + 2026-08-20에
+"상시 마이크 파이프라인 확인용"으로 추가했던 원본 모델 버전) 있었습니다. 파이썬은 같은 이름의
+나중 정의로 조용히 덮어쓰기 때문에, 실제로 `src/ui/voice_io.py`의 `listen()`(실서비스 마이크
+경로)이 호출하는 `stt_transcribe`는 파인튜닝 어댑터가 아니라 **원본(파인튜닝 전)
+`openai/whisper-large-v3-turbo`**로 바인딩되고 있었습니다(AppTest로 실측 확인). 워밍업 때
+`load_ct2_model()`이 파인튜닝 어댑터를 GPU에 올리긴 했지만 실제 추론에는 안 쓰이는 죽은
+코드였습니다.
+
+원본 모델 버전을 `stt_transcribe_realtime_base()`로 이름을 바꿔서 충돌을 없앴습니다 — 파인튜닝
+전/후 비교가 필요할 때만 직접 불러 쓰는 함수로 남겨뒀고, 실서비스 경로는 이제 정상적으로 파인튜닝
+어댑터(`stt_transcribe()`, `load_ct2_model()`)를 씁니다. 이 함수를 위치 인자로 호출하던
+`ui/streamlit_screens/stt_tts_test.py`도 함께 고쳤습니다(배포용 함수는 `sample_rate`가 키워드
+전용 인자라 위치 인자로 주면 `TypeError`가 남).
+
 ## 주의
 
 현재 STT는 `transformers + peft + bitsandbytes + Whisper Large-v3-turbo + LoRA Adapter` 구조를 사용합니다.

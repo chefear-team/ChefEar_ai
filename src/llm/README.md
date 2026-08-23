@@ -41,6 +41,12 @@ OpenAI/Anthropic/Gemini/Groq/OpenRouter처럼 인터넷 건너 남의 서버에�
   `LD_LIBRARY_PATH`까지 잡아준다) 또는 전용 venv(`~/.venvs/chefear`, `requirements-main.txt`
   + `requirements.txt` 설치)에서 직접 `python -c "from llm.infer import load_llm; load_llm()"`
 - 2026-08-21 실측: 전용 venv에서 `load_llm()` 단독 로드 약 6.6초(체크포인트 샤드 2개)
+- **로컬 디스크 캐시 (2026-08-22, `STT_LOCAL_CACHE_DIR`/`TTS_LOCAL_CACHE_DIR`과 동일 규칙)** —
+  EXAONE 가중치는 원래도 `~/.cache/huggingface/hub`(로컬 디스크)에서 읽어서 STT가 겪었던
+  네트워크 드라이브 지연(87초)은 없었지만(실측 6초대), `.env`의 `LLM_LOCAL_CACHE_DIR`이
+  설정돼 있으면 그 로컬 폴더(HF 캐시 스냅샷 사본, 이 컴퓨터는 `~/models/local_LLM`)를
+  repo id 대신 곧장 읽어서 `revision` 고정값 확인차 HF Hub로 나가는 것도 없앤다. 계정별로
+  실제 사본이 있어야 하며, 없으면 자동으로 기존 `MODEL_ID`+HF 캐시 경로로 폴백한다.
 
 ## 관련 문서
 

@@ -30,6 +30,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+from pathlib import Path
 
 import torch
 
@@ -48,12 +50,27 @@ MODEL_ID = os.environ.get("LLM_MODEL_REPO") or "LGAI-EXAONE/EXAONE-3.5-2.4B-Inst
 # 같은 유형의 문제) 이 리포 쪽을 과거 커밋에 고정하는 쪽을 선택했다.
 MODEL_REVISION = os.environ.get("LLM_MODEL_REVISION") or "e949c91dec92095908d34e6b560af77dd0c993f8"
 
+# 2026-08-22 실측: EXAONE 가중치는 이미 ~/.cache/huggingface/hub(로컬 디스크)에 캐시돼 있어서
+# STT(모델 파일이 네트워크 드라이브 안에 있던 경우, 87초)와 같은 문제는 없고 모델 로드에
+# 6초 정도만 걸린다. 그래도 STT_LOCAL_CACHE_DIR/TTS_LOCAL_CACHE_DIR과 같은 팀 규칙으로,
+# revision 고정값으로 매번 HF Hub에 메타데이터 확인하러 나가는 것도 없애기 위해
+# LLM_LOCAL_CACHE_DIR이 설정되어 있으면 그 로컬 폴더(HF 캐시 스냅샷을 그대로 복사한 사본)를
+# repo id 대신 곧장 읽는다 — 이 경우 revision은 이미 폴더 자체에 고정돼 있으므로 넘기지 않는다.
+LLM_LOCAL_CACHE_DIR = os.environ.get("LLM_LOCAL_CACHE_DIR")
+
 # 요리명 JSON 한 줄({"dish_name": "..."})만 생성하면 되므로 짧게 잡는다 — tts_synthesize()의
 # DEFAULT_MAX_NEW_TOKENS(600, 문장 전체 음성 합성용)보다 훨씬 짧아도 충분한 태스크다.
 DEFAULT_MAX_NEW_TOKENS = 64
 
 _model = None
 _tokenizer = None
+
+# 2026-08-22 — tts/infer.py의 _LOAD_LOCK과 같은 이유("Cannot copy out of meta tensor;
+# no data!" 실사용 보고, 유력한 원인은 _warm_up_models()가 화면(세션)이 뜰 때마다
+# 호출되는데 로딩 자체엔 동시 진입 방지가 없어서 두 스레드가 거의 동시에 로딩을
+# 시작하면 같은 GPU에 같은 모델을 두 번 올리려다 꼬이는 경합). 로딩 시작 자체를
+# 한 번에 하나만 하도록 막는다.
+_LOAD_LOCK = threading.Lock()
 
 
 def load_llm():
@@ -66,26 +83,58 @@ def load_llm():
     if _model is not None:
         return _model, _tokenizer
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    # _LOAD_LOCK 정의부 주석 참고 — 락을 기다리는 동안 다른 스레드가 이미 로딩을
+    # 끝냈을 수 있으니, 락을 잡은 뒤에도 한 번 더 확인한다(이중 확인 잠금).
+    with _LOAD_LOCK:
+        if _model is not None:
+            return _model, _tokenizer
 
-    # 2026-08-19 팀 결정(docs/decisions.md #2, TTS 배포 결정을 서비스 전체에 동일 적용): 배포를
-    # GPU 데스크탑 상시 노출로 확정해서 CPU 폴백을 없애고 GPU를 필수로 요구한다.
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
-        )
-    device_map, dtype = "cuda:0", torch.bfloat16
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)
-    _model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        revision=MODEL_REVISION,
-        trust_remote_code=True,
-        device_map=device_map,
-        dtype=dtype,
-    )
-    print(f"[LLM] 모델 로드 완료: {MODEL_ID} (device={device_map})")
-    return _model, _tokenizer
+        # 2026-08-19 팀 결정(docs/decisions.md #2, TTS 배포 결정을 서비스 전체에 동일 적용): 배포를
+        # GPU 데스크탑 상시 노출로 확정해서 CPU 폴백을 없애고 GPU를 필수로 요구한다.
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
+            )
+        device_map, dtype = "cuda:0", torch.bfloat16
+
+        model_source = MODEL_ID
+        revision = MODEL_REVISION
+        if LLM_LOCAL_CACHE_DIR:
+            # expanduser() 필수 — STT_LOCAL_CACHE_DIR과 같은 이유(계정마다 다른 로컬 경로를
+            # .env에 "~/..."로 적어두고 계정별 $HOME 기준으로 풀리게 한다).
+            local_cache = Path(LLM_LOCAL_CACHE_DIR).expanduser()
+            if local_cache.exists():
+                model_source, revision = str(local_cache), None
+
+        _tokenizer = AutoTokenizer.from_pretrained(model_source, revision=revision, trust_remote_code=True)
+
+        # tts/infer.py의 load_tts_model()과 같은 이유(2026-08-22/23) — device_map= 로딩이
+        # 일시적으로 실패하면("Cannot copy out of meta tensor" 등) 최대 2번 재시도한다.
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                _model = AutoModelForCausalLM.from_pretrained(
+                    model_source,
+                    revision=revision,
+                    trust_remote_code=True,
+                    device_map=device_map,
+                    dtype=dtype,
+                )
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 — 재시도 대상인지 안 가리고 다 재시도
+                last_exc = exc
+                suffix = "재시도합니다." if attempt < 3 else "재시도 횟수를 다 씀."
+                print(f"[LLM] 모델 로드 실패(시도 {attempt}/3): {exc!r} — {suffix}")
+                torch.cuda.empty_cache()
+
+        if last_exc is not None:
+            raise last_exc
+
+        print(f"[LLM] 모델 로드 완료: {model_source} (device={device_map})")
+        return _model, _tokenizer
 
 
 def generate_response(prompt: str, *, max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS) -> str:

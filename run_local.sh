@@ -19,10 +19,21 @@
 #
 # 새 계정에서 처음 돌리는데 아래 후보 중 아무것도 없다고 나오면, streamlit/faster-whisper/
 # torch가 깔린 venv를 하나 만들고 이 배열에 경로를 추가할 것.
-
+#
+# 2026-08-23 — chefear-py313을 최우선으로 둔다. 상시 마이크(streamlit-webrtc) 기능이
+# Python 3.14(예: recipe-stt venv)에서는 안 붙는다 — 원인은 이 프로젝트 코드가 아니라
+# aioice(streamlit-webrtc의 ICE 구현 의존성)가 아직 Python 3.14를 공식 지원 안 해서다
+# (PyPI 기준 최신 aioice==0.10.2조차 classifier가 3.13까지만 명시, 2025-11-28 릴리스로
+# 3.14가 이미 나온 뒤인데도 그럼 — 업스트림 미해결). 헤드리스 브라우저(playwright,
+# --use-fake-device-for-media-stream)로 실측 확인: 3.14에서는 iceConnectionState가
+# checking에서 곧장 closed로 끊기고, 소스에서 빌드한 Python 3.13.9(--enable-shared,
+# ~/python3.13)로 만든 이 venv에서는 completed까지 정상 도달. Python 3.13이 aioice가
+# 공식 지원하는 마지막 버전이라 이걸 새 기본값으로 삼는다 — aioice가 3.14를 지원하게
+# 되면(업스트림 릴리스 확인 후) 이 우선순위를 다시 정리할 것.
 set -euo pipefail
 
 CANDIDATES=(
+    "$HOME/.venvs/chefear-py313"
     "$HOME/.venvs/chefear"
     "$HOME/.venvs/recipe-stt"
     "$HOME/tf-env-312"

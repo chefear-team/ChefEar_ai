@@ -32,6 +32,7 @@ waveform, sample_rate = tts_synthesize("약불로 5분간 끓여주세요")
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +68,18 @@ VOICE_CLONE_REF_TEXT = "나는 살아오면서 감기를 앓은 적이 한 번�
 # 모델은 최초 1번만 로드하고 이후 호출에서 재사용
 _model = None
 
+# 2026-08-22 실측 추정 버그 대응 — "Cannot copy out of meta tensor; no data!" 에러가
+# 실사용 중 한 번 보고됨. GPU 메모리 자체는 넉넉했다(직접 재현 시 STT+LLM+TTS 순서로
+# 다 로드해도 8.4GB/12.2GB로 여유 있음) — 그래서 유력한 원인은 _warm_up_models()가
+# 화면(세션)이 뜰 때마다 호출되는데, load_tts_model()엔 "이미 로딩 중"을 막는 보호가
+# 없어서, 브라우저 탭이 겹치거나 새로고침이 겹치는 등으로 두 스레드가 거의 동시에
+# `if _model is not None:` 검사를 통과해버리면 같은 GPU에 같은 모델을 동시에
+# device_map="cuda:0"로 두 번 올리려다 한쪽이 완전히 못 끝난 상태로 뒤섞여 이 에러가
+# 날 수 있다(재현은 못 했지만 코드상 이 경합 자체는 실제로 존재함). speak()의
+# 실시간 합성만 직렬화하던 _TTS_LOCK과 별개로, "로딩 자체"도 한 번에 하나만 하도록
+# 이 락으로 막는다.
+_LOAD_LOCK = threading.Lock()
+
 # base 타입 체크포인트일 때만 쓰는 voice-clone 프롬프트 — 레퍼런스 오디오가 고정이라 최초
 # 1번만 만들고 재사용(모델 로드와 마찬가지로 매 합성마다 다시 만들 필요 없음).
 _voice_clone_prompt = None
@@ -85,73 +98,101 @@ def load_tts_model():
 
         return _model
 
+    # _LOAD_LOCK 정의부 주석 참고 — 두 스레드가 동시에 여기 들어와서 위 "이미 로드됨"
+    # 검사를 둘 다 통과해버리는 경합을 막는다. 락을 기다리는 동안 다른 스레드가 이미
+    # 로딩을 끝냈을 수 있으니, 락을 잡은 뒤에도 한 번 더 확인한다(이중 확인 잠금).
+    with _LOAD_LOCK:
 
-    from qwen_tts import Qwen3TTSModel
+        if _model is not None:
 
-    # 2026-08-21: models/tts_finetuned/(프로젝트 폴더, 네트워크 드라이브 CIFS ~9MB/s)에 받아둔
-    # 파인튜닝 체크포인트를 그대로 읽으면 STT(model.bin 778MB → 87초)와 같은 문제가 TTS(4.3GB라
-    # 훨씬 오래 걸림)에서 재발한다. HF 캐시(이미 로컬 디스크, ~/.cache/huggingface)에서 진짜
-    # 로컬 전용 경로(~/models/chefear_tts_finetuned)로 한 번 더 복사해서 그걸 최우선으로
-    # 읽는다 — src/stt/infer.py의 STT_LOCAL_CACHE_DIR과 동일한 패턴.
-    local_cache_dir = os.environ.get("TTS_LOCAL_CACHE_DIR")
-    model_source = MODEL_ID
-    use_local = False
-    if local_cache_dir and Path(local_cache_dir).expanduser().exists():
-        model_source = str(Path(local_cache_dir).expanduser())
-        use_local = True
+            return _model
 
-    token = os.environ.get("HF_TOKEN")
+        from qwen_tts import Qwen3TTSModel
 
-    if not use_local and not token:
+        # 2026-08-21: models/tts_finetuned/(프로젝트 폴더, 네트워크 드라이브 CIFS ~9MB/s)에 받아둔
+        # 파인튜닝 체크포인트를 그대로 읽으면 STT(model.bin 778MB → 87초)와 같은 문제가 TTS(4.3GB라
+        # 훨씬 오래 걸림)에서 재발한다. HF 캐시(이미 로컬 디스크, ~/.cache/huggingface)에서 진짜
+        # 로컬 전용 경로(~/models/chefear_tts_finetuned)로 한 번 더 복사해서 그걸 최우선으로
+        # 읽는다 — src/stt/infer.py의 STT_LOCAL_CACHE_DIR과 동일한 패턴.
+        local_cache_dir = os.environ.get("TTS_LOCAL_CACHE_DIR")
+        model_source = MODEL_ID
+        use_local = False
+        if local_cache_dir and Path(local_cache_dir).expanduser().exists():
+            model_source = str(Path(local_cache_dir).expanduser())
+            use_local = True
 
-        raise RuntimeError(
-            f"HF_TOKEN이 필요함 ({MODEL_ID}는 private repo) — .env에 설정하거나 "
-            "HF Spaces 배포 시엔 Repository secret으로 등록할 것"
-        )
+        token = os.environ.get("HF_TOKEN")
 
+        if not use_local and not token:
 
-    # 2026-08-19 팀 결정(docs/decisions.md #2): CPU(HF Spaces Basic)는 목표 응답시간(5초)을
-    # 못 맞춰 포기하고, 배포를 GPU 데스크탑(RTX 5070) 상시 노출(Tailscale)로 전환했다 —
-    # CPU 폴백은 더 이상 배포 대상이 아니라서 없애고 GPU를 필수로 요구한다.
-    if not torch.cuda.is_available():
-
-        raise RuntimeError(
-            "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2). "
-            "CUDA 드라이버/torch 설치를 확인할 것."
-        )
-
-    device_map, dtype = "cuda:0", torch.bfloat16
+            raise RuntimeError(
+                f"HF_TOKEN이 필요함 ({MODEL_ID}는 private repo) — .env에 설정하거나 "
+                "HF Spaces 배포 시엔 Repository secret으로 등록할 것"
+            )
 
 
-    try:
+        # 2026-08-19 팀 결정(docs/decisions.md #2): CPU(HF Spaces Basic)는 목표 응답시간(5초)을
+        # 못 맞춰 포기하고, 배포를 GPU 데스크탑(RTX 5070) 상시 노출(Tailscale)로 전환했다 —
+        # CPU 폴백은 더 이상 배포 대상이 아니라서 없애고 GPU를 필수로 요구한다.
+        if not torch.cuda.is_available():
 
-        import flash_attn  # noqa: F401
+            raise RuntimeError(
+                "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2). "
+                "CUDA 드라이버/torch 설치를 확인할 것."
+            )
 
-        attn_impl = "flash_attention_2"
-
-    except ImportError:
-
-        attn_impl = "sdpa"
-
-
-    _model = Qwen3TTSModel.from_pretrained(
-
-        model_source,
-
-        token=None if use_local else token,
-
-        device_map=device_map,
-
-        dtype=dtype,
-
-        attn_implementation=attn_impl,
-    )
+        device_map, dtype = "cuda:0", torch.bfloat16
 
 
-    print(f"[TTS] 모델 로드 완료: {model_source} (device={device_map}, attn={attn_impl}, local={use_local})")
+        try:
+
+            import flash_attn  # noqa: F401
+
+            attn_impl = "flash_attention_2"
+
+        except ImportError:
+
+            attn_impl = "sdpa"
 
 
-    return _model
+        # 2026-08-22/23 실사용 보고 — "Cannot copy out of meta tensor; no data!" 에러가
+        # 반복 확인됨(재현 시도로는 원인 100% 확정 못 함 — GPU 메모리는 항상 여유
+        # 있었음). accelerate가 device_map= 로딩 시 모델을 먼저 meta 디바이스에 뼈대만
+        # 만들고 체크포인트에서 실제 가중치를 읽어와 채우는데, 이 과정이 일시적 이유로
+        # (디스크 I/O 순간 끊김, CUDA 초기화 타이밍 등) 중간에 실패하면 일부 텐서가
+        # 데이터 없이 meta로 남는다 — 근본 원인을 확정할 수 없는 만큼, 일시적 실패일
+        # 가능성에 대비해 최대 2번 재시도한다. 재시도 전 torch.cuda.empty_cache()로
+        # 이전 시도가 남긴 부분 할당을 정리한다.
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                _model = Qwen3TTSModel.from_pretrained(
+
+                    model_source,
+
+                    token=None if use_local else token,
+
+                    device_map=device_map,
+
+                    dtype=dtype,
+
+                    attn_implementation=attn_impl,
+                )
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 — 재시도 대상인지 여기선 구분 안 하고 다 재시도
+                last_exc = exc
+                suffix = "재시도합니다." if attempt < 3 else "재시도 횟수를 다 씀."
+                print(f"[TTS] 모델 로드 실패(시도 {attempt}/3): {exc!r} — {suffix}")
+                torch.cuda.empty_cache()
+
+        if last_exc is not None:
+            raise last_exc
+
+        print(f"[TTS] 모델 로드 완료: {model_source} (device={device_map}, attn={attn_impl}, local={use_local})")
+
+
+        return _model
 
 
 # ============================================================
@@ -167,7 +208,11 @@ def load_tts_model():
 # 확정했다가 팀원이 195에서도 잘린다는 걸 확인해줘서 250으로 재조정(2026-08-19).
 # 200/300 실측상 200 이상은 자연 완결됐으니 250도 여유 있게 안전할 것으로 판단
 # (src/tts/README.md 실측 결과 ③ 참고).
-DEFAULT_MAX_NEW_TOKENS = 250
+# 2026-08-23: 실서비스 청취 중 250에서도 살짝 끊기는 느낌이 있다는 팀원 보고로 280으로
+# 재조정. 정식 상한값별 재벤치마크(위 표처럼 토큰 사용률·완결 여부를 수치로 다시 잰 것)는
+# 아직 없음 — 지어내지 않고(1.5 원칙) 청취 보고 기반의 잠정 조정이라고 남겨둔다. 더 긴
+# 문장에서 또 끊긴다는 보고가 나오면 그때 실측 표를 다시 채울 것.
+DEFAULT_MAX_NEW_TOKENS = 280
 
 # do_sample=True(확률적 샘플링)라 시드 고정 없이는 같은 문장도 호출마다 결과가 달라진다
 # (2026-08-19 확인: 그동안 시드 고정이 전혀 없었음). 재현 가능한 테스트/비교를 위해 매

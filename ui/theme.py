@@ -5,6 +5,7 @@ Streamlit 기본 컴포넌트로 표현하기 어려운 조각만 st.markdown(un
 그린다. docs/ChefEar_PRD_SDD_v0.8.md 3.3의 화면 구성(①~⑥)을 그대로 따른다.
 """
 import base64
+import io
 import json
 from pathlib import Path
 from string import Template
@@ -408,10 +409,16 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
   box-shadow: none; color: transparent; cursor: pointer;
 }
 
-.ce-big-mic-wrap { display:flex; justify-content:center; margin: 34px 0 8px; cursor: pointer; }
+.ce-big-mic-wrap { display:flex; justify-content:center; margin: 34px 0 8px; }
 .ce-big-mic { width:84px; height:84px; border-radius:50%; display:grid; place-items:center;
-  background: var(--surface-alt); color: var(--accent); border: 2px solid var(--border); cursor: pointer;
-  animation: ce-big-mic-pulse 1.8s ease-in-out infinite; }
+  background: var(--surface-alt); color: var(--accent); border: 2px solid var(--border);
+  animation: ce-big-mic-pulse 1.8s ease-in-out infinite; transition: background .25s, border-color .25s, box-shadow .25s; }
+/* 2026-08-23 추가 — "준비됐는지 안 됐는지 모르겠다"는 리포트로, 상시 마이크가 실제로
+   연결됐을 때(webrtc_ctx.state.playing)만 .ce-mic-icon.listening(다른 화면의 "듣는 중"
+   표시)과 같은 색(accent) + 번지는 링으로 바뀐다 — 연결 전엔 계속 회색(기존 그대로)이라
+   "아직 준비 안 됨"이 한눈에 구분된다. */
+.ce-big-mic.ready { background: var(--accent); color:#fff; border-color: var(--accent);
+  box-shadow: 0 0 0 10px rgba(238,123,54,0.16); }
 /* start 화면 큰 마이크 아이콘이 커졌다 작아지길 반복해서 "지금 듣고 있다"는 느낌을 주는
    숨쉬기(breathing) 애니메이션 - ce-mic-icon.listening::after의 퍼지는 링과는 다르게,
    여긴 아이콘 자체가 확대/축소된다(2026-08-21 요청). */
@@ -601,6 +608,42 @@ def inject_css() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
 
 
+def render_loading_overlay(message: str = "처리하고 있어요...") -> None:
+    """전체 화면을 덮는 반투명 로딩 팝업(2026-08-23 요청) — 발화 인식 후 다음 화면으로
+    넘어가기 전(LLM/DB 조회, TTS 합성 등 몇 초 블로킹되는 구간, voice_io._drain_mic_while()
+    참고) 동안, "지금 뭔가 처리 중이니 다른 동작을 하지 말아달라"는 걸 명확하게 보여준다.
+
+    st.dialog()(진짜 모달)는 버튼 클릭 등으로 여러 번의 rerun에 걸쳐 열고 닫는 흐름에
+    맞춰져 있어서, "이 스크립트 실행 안에서 블로킹 대기가 끝나면 그냥 사라진다"는 이번
+    쓰임새와는 안 맞는다 — 대신 이 markdown 하나만 그리면 되는 순수 CSS 오버레이를 쓴다.
+    z-index를 최상단으로 두고 pointer-events:all로 밑에 있는 버튼/입력 클릭을 막아서
+    시각적으로도 실질적으로도 "팝업"처럼 동작한다. 이 함수를 호출하는 코드가 블로킹
+    작업을 끝내고 다음 st.rerun()으로 넘어가면(또는 이 함수를 그냥 다시 안 부르면) 다음
+    화면 렌더링엔 이 markdown 자체가 없으니 자연히 사라진다 - 별도로 "닫기" 처리가 필요
+    없다.
+    """
+    st.markdown(
+        f'''
+        <div style="position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.45);
+                    display:flex; align-items:center; justify-content:center;
+                    pointer-events:all;">
+          <div style="background:var(--surface); border-radius:20px; padding:28px 36px;
+                      display:flex; flex-direction:column; align-items:center; gap:14px;
+                      box-shadow:0 12px 32px rgba(0,0,0,0.25);">
+            <div style="width:36px; height:36px; border-radius:50%;
+                        border:4px solid var(--accent-soft); border-top-color:var(--accent);
+                        animation:ce-loading-spin 0.8s linear infinite;"></div>
+            <p style="margin:0; font-size:14.5px; font-weight:700; color:var(--text);">{message}</p>
+          </div>
+        </div>
+        <style>
+          @keyframes ce-loading-spin {{ to {{ transform:rotate(360deg); }} }}
+        </style>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+
 def render_spacer() -> None:
     """ui/html의 flex:1(수직 중앙 정렬용 빈 공간)에 대응하는 여백.
 
@@ -628,6 +671,15 @@ def render_loading_screen(message: str = "불러오는 중...") -> None:
         unsafe_allow_html=True,
     )
     render_spacer()
+
+
+# 2026-08-22~23 이력: TTS 합성 대기 중 로딩 인디케이터를 GIF → SVG 냄비 마스코트로
+# 두 번 갈아탔었는데(render_tts_loading()/_TTS_LOADING_MASCOT_SVG였음), 2026-08-23
+# 사용자가 "로딩바 다 제거하자, 의미없다 - 렉만 더 걸리는 느낌"이라고 확인해서 아예
+# 없앴다. 원인은 voice_io.py::speak()가 0.2초마다 placeholder를 다시 그리던 폴링
+# 루프였다 — 그 루프째 제거하고 지금은 그냥 블로킹으로 조용히 기다린다(자세한 경위는
+# voice_io.py::speak() 주석 참고). 여기 함수·CSS(ce-tts-*)·SVG 상수가 전부 그 루프
+# 안에서만 불렸어서 호출부가 없어지며 같이 죽은 코드가 됐길래 통째로 지웠다.
 
 
 def render_brand(show_login: bool = False, username: str | None = None) -> bool:
@@ -851,7 +903,15 @@ _AUDIO_PLAYER_TEMPLATE = Template("""
   // 막히면(드묾 - 사용자가 이미 페이지와 상호작용한 뒤라 대부분 허용됨) 이 위젯 안에서는
   // 더 이상 수동으로 재생을 시작할 방법이 없다 - "다시" 음성 명령/버튼으로 다시 이
   // 화면에 들어오면 재생을 다시 시도한다.
-  audio.play().catch(function () {});
+  // 2026-08-23 수정 — "재생 시작 부분이 씹혀 들림"(크롬에서 특히) 리포트 원인 중 하나로
+  // 확인: <audio autoplay> 속성이 이미 자체적으로 재생을 시작한 직후(비동기) 이 스크립트가
+  // 곧장 audio.play()를 한 번 더 불러서, 크롬이 그 두 시작 신호가 겹치는 걸 재생 살짝
+  // 되감기/재시작으로 처리해 첫 음절이 손실됐던 것으로 보인다(정확한 내부 동작은 미확인).
+  // autoplay가 이미 시작한 상태(paused=false)라면 이 명시적 호출을 건너뛰어서 이중 트리거를
+  // 피한다 - autoplay가 막혀서 여전히 paused인 경우에만 이 폴백이 실행된다.
+  if (audio.paused) {
+    audio.play().catch(function () {});
+  }
 </script>
 """)
 
@@ -882,6 +942,31 @@ def _compute_wave_bars(audio_path: str | Path, num_bars: int = 60, min_h: int = 
         rms_values.append(float(np.sqrt(np.mean(np.square(chunk)))) if len(chunk) else 0.0)
     peak = max(rms_values) or 1.0
     return [round(min_h + (v / peak) * (max_h - min_h)) for v in rms_values]
+
+
+def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 250) -> bytes:
+    """TTS 재생 시작 부분이 브라우저(특히 크롬)에서 살짝 씹혀 들리는 문제 완화용
+    (2026-08-23 리포트 — "된장찌개"가 "장찌개"로 들림, 크롬에서 특히 뚜렷함).
+
+    정확한 브라우저 내부 메커니즘은 확정 못 했다(크롬이 autoplay로 막 시작한 오디오에
+    pop 방지용으로 아주 짧은 페이드인을 거는 것으로 추정 — 그렇다면 그 페이드인이
+    실제 말소리의 첫 파열음(ㄷ 등)을 깎아먹는 것과 증상이 정확히 일치함, Chrome
+    한정이라는 리포트와도 들어맞음). 원인을 정확히 몰라도, **재생용 데이터 맨 앞에
+    짧은 무음을 붙여두면** 그 페이드인/시작 손실이 무음을 깎아먹지 실제 말소리를
+    깎아먹지 않으므로 안전하게 완화된다.
+
+    원본 캐시 파일(디스크)은 그대로 둔다 — _arm_tts_mute()가 그 파일의 실제 길이로
+    마이크 무음 구간을 계산하므로 원본을 건드리면 안 된다(이 패딩만큼 재생 시간이
+    늘어나는 건 그 함수의 0.6초 여유 안에서 대체로 흡수됨). 화면에 실제로 내보내는
+    재생용 바이트만 이 함수를 거쳐서 만든다.
+    """
+    audio, sr = sf.read(str(audio_path), dtype="float32")
+    pad_samples = int(sr * pad_ms / 1000)
+    silence_shape = (pad_samples,) if audio.ndim == 1 else (pad_samples, audio.shape[1])
+    padded = np.concatenate([np.zeros(silence_shape, dtype=np.float32), audio], axis=0)
+    buf = io.BytesIO()
+    sf.write(buf, padded, sr, format="WAV")
+    return buf.getvalue()
 
 
 def render_audio_player(audio_path: str | Path, height: int = 64, nonce: int | str = 0) -> None:
@@ -916,7 +1001,7 @@ def render_audio_player(audio_path: str | Path, height: int = 64, nonce: int | s
     주석으로 넣어 매 호출마다 문자열 자체를 다르게 만들면 프론트엔드가 새 iframe으로
     인식해서 다시 로드 -> autoplay가 재실행된다.
     """
-    data = Path(audio_path).read_bytes()
+    data = _wav_bytes_with_lead_silence(audio_path)
     audio_src = "data:audio/wav;base64," + base64.b64encode(data).decode("ascii")
     bar_heights = _compute_wave_bars(audio_path)
     bars_html = "".join(f'<span style="height:{h}px"></span>' for h in bar_heights)
@@ -938,7 +1023,7 @@ def render_audio_autoplay(audio_path: str | Path, nonce: int | str = 0) -> None:
     프론트엔드가 iframe을 새로 마운트해 autoplay가 다시 실행된다(같은 이유는
     render_audio_player() 문서 참고).
     """
-    data = Path(audio_path).read_bytes()
+    data = _wav_bytes_with_lead_silence(audio_path)
     audio_src = "data:audio/wav;base64," + base64.b64encode(data).decode("ascii")
     html = f"<!-- replay-nonce:{nonce} -->\n<audio src=\"{audio_src}\" autoplay></audio>"
     st.iframe(html, height=1)
@@ -1056,25 +1141,33 @@ def render_mic_bar_interactive(hint: str, key: str = "cs_mic_bar"):
     return st.audio_input("음성으로 말씀해주세요", key=f"{key}_input", label_visibility="collapsed")
 
 
-def render_big_mic():
-    """ui/html 01_start.html의 큰 원형 마이크 버튼(대기 상태) + 실제 브라우저 마이크 녹음.
+def render_big_mic(ready: bool = False):
+    """ui/html 01_start.html의 큰 원형 마이크 아이콘 — 상시(실시간) 마이크 연결의 상태
+    표시용 장식 요소.
 
-    원형 아이콘 자체는 눌러도 녹음을 시작/정지할 수 없다(st.audio_input은 여러 단계
-    상호작용이 필요한 위젯이라 hint_chip처럼 투명 버튼만 얹어 흉내낼 수 없음). 대신
-    아이콘을 처음 누르면 실제 녹음 위젯이 그 아래에 나타나고, 이후 녹음/정지는 그
-    위젯으로 직접 조작한다. 녹음된 오디오(UploadedFile) 또는 아직 없으면 None을 반환한다.
+    2026-08-23 이전엔 이 아이콘 밑에 "마이크 켜기" 버튼을 누르면 st.audio_input()(그때그때
+    녹음하는 옛날 방식)이 나타나는 구조였는데, 실시간 스트리밍 마이크(voice_io.listen(),
+    webrtc_streamer(desired_playing_state=True))로 넘어오면서 그 흐름 자체가 안 맞게
+    됐다(리포트: "저건 녹음 기능이지 실시간 대화 시작 버튼이 아니다") — 실제 연결은
+    이 화면이 그리는 listen()이 화면에 렌더링되는 순간 자동으로 시작되므로(사용자가
+    브라우저에 마이크 권한을 이미 준 적 있으면 클릭 없이 곧장 연결됨), 버튼을 눌러야
+    뭔가 시작되는 구조 자체가 필요 없어졌다. 그래서 아이콘 모양(펄스 애니메이션 포함)은
+    그대로 두고, 버튼과 옛 녹음 위젯만 없앴다 — 이제 순수하게 "지금 실시간으로 듣고
+    있다"는 상태를 보여주는 장식 요소다(실제 듣기/인식은 이 화면이 별도로 부르는
+    listen("start")가 담당).
+
+    ready(2026-08-23 추가) — "준비됐는지 안 됐는지 모르겠다"는 리포트로 추가. 호출부
+    (screen_start())가 voice_io.mic_is_playing()으로 실제 webrtc 연결 상태를 확인해서
+    넘겨준다 — 연결 전엔 계속 회색(기존 그대로), 연결되고 나면 다른 화면의 "듣는 중"
+    표시와 같은 강조색+번지는 링(.ce-big-mic.ready, theme.py CSS 참고)으로 바뀌고
+    안내문도 "듣고 있어요"로 바뀐다. 아직 연결 전에 말해봐야 안 들리므로, 이 색 전환
+    자체가 "지금은 말해도 소용없다"는 신호 역할을 한다.
     """
-    st.session_state.setdefault("show_mic_recorder", False)
-
+    cls = "ce-big-mic ready" if ready else "ce-big-mic"
+    hint = "듣고 있어요 · 편하게 말씀해주세요" if ready else "마이크 연결 중이에요, 잠시만 기다려주세요"
     with st.container(key="ce_big_mic"):
         st.markdown(
-            f'<div class="ce-big-mic-wrap"><span class="ce-big-mic">{ICON_MIC_LG}</span></div>'
-            '<p class="ce-hint">눌러서 말씀해주세요</p>',
+            f'<div class="ce-big-mic-wrap"><span class="{cls}">{ICON_MIC_LG}</span></div>'
+            f'<p class="ce-hint">{hint}</p>',
             unsafe_allow_html=True,
         )
-        if st.button("마이크 켜기", key="ce_big_mic_btn", use_container_width=True):
-            st.session_state.show_mic_recorder = True
-
-    if not st.session_state.show_mic_recorder:
-        return None
-    return st.audio_input("음성으로 말씀해주세요", label_visibility="collapsed")

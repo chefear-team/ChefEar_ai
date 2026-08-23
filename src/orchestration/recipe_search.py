@@ -8,6 +8,7 @@ LLM 생성 fallback 없음). 못 찾으면 그냥 "없다"고 정직하게 답�
 from __future__ import annotations
 
 import difflib
+import unicodedata
 from functools import lru_cache
 
 from orchestration.db import get_client
@@ -59,6 +60,36 @@ def _all_dish_names(client) -> list[str]:
     return list(names)
 
 
+def _decompose_hangul(text: str) -> str:
+    """음절 단위 한글을 초성/중성/종성 자모로 풀어헤친다(유니코드 NFD 정규화 — 한글
+    완성형 음절은 초성+중성(+종성) 조합으로 알고리즘적으로 합성되므로, 표준 라이브러리
+    unicodedata만으로 새 의존성 없이 분해된다).
+
+    extract_dish_name() 3단계(편집거리 유사도)가 difflib을 음절 그대로 비교하면,
+    "찌"(ㅉ+ㅣ)/"치"(ㅊ+ㅣ)처럼 자음 하나(된소리/거센소리)만 다르거나 "개"(ㄱ+ㅐ)/
+    "게"(ㄱ+ㅔ)처럼 모음 하나(애/에, 실제 발화에서 거의 구분 안 되는 경우가 흔함)만
+    다른 음절을 "완전히 다른 글자"로 취급해버린다. 실측: STT가 "된장찌개"를
+    "된장치게"로 오인식한 실사례에서 음절 단위 SequenceMatcher.ratio()는 0.5로
+    FUZZY_CUTOFF(0.7) 미달이라 매칭 자체가 실패했는데, 자모 단위로 풀어서 비교하면
+    0.8로 올라가 정상적으로 "된장찌개"에 매칭된다(2026-08-23 실측 확인). 기존에
+    이 커트오프를 통과하던 "부대찌개"/"부대찌게" 케이스는 자모 단위에서도 여전히
+    통과하고(0.75 -> 0.875), 완전히 다른 요리("된장찌개"/"감자조림")는 자모
+    단위에서도 여전히 낮게 나와(0.3) 오탐이 늘지 않음을 같이 확인했다.
+    """
+    return unicodedata.normalize("NFD", text)
+
+
+@lru_cache(maxsize=8)
+def _decomposed_name_map(client) -> dict[str, str]:
+    """자모 분해된 요리명 -> 원본 요리명 매핑. _all_dish_names()와 같은 client별
+    캐시 전략을 그대로 따른다(같은 클라이언트로 반복 호출 시 재계산 없음, 캐시 무효화
+    한계도 동일 — _all_dish_names() docstring 참고). 서로 다른 두 요리명이 자모까지
+    완전히 같아지는 경우는 곧 원본 문자열이 같다는 뜻이라(NFD는 결정적/가역적 변환)
+    키 충돌로 서로 다른 요리명이 묻히는 일은 없다.
+    """
+    return {_decompose_hangul(name): name for name in _all_dish_names(client)}
+
+
 def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_CUTOFF) -> str | None:
     """STT 텍스트 한 문장에서 DB에 실제로 있는 요리명을 찾아낸다.
 
@@ -74,9 +105,12 @@ def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_C
       2) 부분일치 — 발화 안에 요리명이 그대로 들어있는 경우
          ("된장찌개 어떻게 만들어?"). 여러 요리명이 동시에 걸리면(예: "김치"와
          "김치찌개" 둘 다 발화에 포함) 더 구체적인(긴) 이름을 채택한다.
-      3) 편집거리 유사도 — STT가 요리명 자체를 잘못 들은 경우("부대찌게") 보정.
-         발화 전체와 공백으로 나눈 각 단어를 모두 후보로 비교해서, 문장 속에
-         섞여 있어도("부대찌게 어떻게 만들어?") 잡히게 한다.
+      3) 편집거리 유사도 — STT가 요리명 자체를 잘못 들은 경우("부대찌게",
+         "된장치게") 보정. 발화 전체와 공백으로 나눈 각 단어를 모두 후보로
+         비교해서, 문장 속에 섞여 있어도("부대찌게 어떻게 만들어?") 잡히게
+         한다. 비교는 음절 그대로가 아니라 자모로 분해해서 한다(_decompose_hangul
+         참고) — 된소리/거센소리, 애/에처럼 음절 단위로는 "다른 글자"로 보이지만
+         실제로는 음소 하나 차이인 흔한 오인식까지 잡아내기 위함.
 
     셋 다 실패하면 None — 억지로 아무 요리나 골라주지 않는다(1.5 원칙과 같은
     태도: 모르면 모른다고 한다). 호출하는 쪽은 None일 때 "레시피 없음" 안내 후
@@ -95,10 +129,11 @@ def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_C
     if contained:
         return max(contained, key=len)
 
+    name_map = _decomposed_name_map(client)
     for candidate in (text, *text.split()):
-        close = difflib.get_close_matches(candidate, names, n=1, cutoff=fuzzy_cutoff)
+        close = difflib.get_close_matches(_decompose_hangul(candidate), name_map.keys(), n=1, cutoff=fuzzy_cutoff)
         if close:
-            return close[0]
+            return name_map[close[0]]
 
     return None
 
