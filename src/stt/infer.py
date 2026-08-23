@@ -829,6 +829,17 @@ def stt_transcribe(
     if not text:
         return text
 
+    # 2026-08-24 추가 — "김치볶음밥"이 화면/채팅창에 "김치볶�밥"처럼 깨져 나오는 문제
+    # 실측 확인. beam_size(1이든 5든 동일 재현 — 그 파라미터 문제 아님)와 무관하게, 같은
+    # 문장을 여러 번 녹음해도 그중 일부만 이렇게 깨진다 — CTranslate2가 서브워드 토큰을
+    # 텍스트로 역토큰화(detokenize)하는 과정에서, 드물게 완전한 UTF-8 문자를 이루지 못하는
+    # 토큰 경계가 선택되는 것으로 보인다(모델/토크나이저 수준 현상이라 이 함수에서 근본
+    # 수정은 어려움). 이런 결과를 그대로 화면에 보여주거나 요리명 매칭에 넘기면 사용자
+    # 혼란·오매칭으로 이어지므로, U+FFFD(깨진 문자 표시)가 하나라도 있으면 EC-01(인식
+    # 실패)과 똑같이 빈 문자열로 취급한다 — 호출부가 "다시 말씀해주세요"로 안내한다.
+    if "�" in text:
+        return ""
+
     text = normalize_stt_text(text)
     text = correct_high_risk_with_context(text, ingredient_context)
     return text

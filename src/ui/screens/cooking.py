@@ -104,6 +104,12 @@ def screen_recipe_confirm() -> None:
     # 않음, 나중에 되돌릴 수 있게). 텍스트 입력 대체 경로는 그대로 남아있다.
     text = listen("recipe_confirm", show_mic=False)
     if text:
+        # 2026-08-24 추가 — 이 화면은 process_utterance()를 안 거치고 직접 문자열을
+        # 비교하는 구조라(바로 아래 이유 참고), process_utterance() 맨 앞에서 하던
+        # chat_log 기록(`st.session_state.chat_log.append(("user", text))`)도 안 타고
+        # 있었다 — 그래서 "응"/"좋아" 같은 확정 발화가 대화 기록에서 통째로 빠지는
+        # 실측 리포트("내가 했던 대화 내용이 없다")로 확인, 여기서 직접 기록해준다.
+        st.session_state.chat_log.append(("user", text))
         norm = text.strip().rstrip("?!. ")
         # 2026-08-22 원래 의도로 되돌림 — 이 화면은 원래 "확정 단어 목록 -> 진행,
         # 그 외 전부 -> 처음 화면"이라는 단순한 이분법으로 설계됐었는데, 그동안
@@ -124,7 +130,10 @@ def screen_recipe_confirm() -> None:
         elif "다시" in norm:
             st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
             st.rerun()
-        elif any(word in norm for word in ("응", "네", "좋아", "다음", "그래", "시작")) or norm.lower() == "next":
+        # 2026-08-24 — "좋아"를 "좋"(어근)으로 완화. 실측: "좋아"라고 말했는데 STT가
+        # "좋다고?"로 인식하면서 "좋아"가 부분 문자열로도 안 걸려 화면이 안 넘어간 사례
+        # 확인됨 — "좋"만 확인하면 좋아/좋아요/좋다/좋네/좋다고 전부 커버된다.
+        elif any(word in norm for word in ("응", "네", "좋", "다음", "그래", "시작")) or norm.lower() == "next":
             st.session_state.pipeline_session["step_number"] = 1
             # register_steps의 "네, 저장할게요"와 같은 이유(2026-08-22 리포트) — 여기서
             # speak()가 그리는 재생바는 바로 다음 줄 goto()의 st.rerun()에 곧장 지워져서

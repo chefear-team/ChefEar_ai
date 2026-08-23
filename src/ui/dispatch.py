@@ -38,8 +38,20 @@ _HOME_WORDS = {"처음", "처음으로", "처음화면", "처음 화면", "처�
 def is_home_word(text: str) -> bool:
     """recipe_confirm/register_intro/register_dish_name처럼 classify_intent()를 안 거치고
     자기 화면 안에서 직접 몇 단어만 확인하는 화면들도 이걸로 "처음" 발화를 똑같이 잡아낼
-    수 있게 공개 함수로 둔다."""
-    return text.strip().rstrip("?!. ") in _HOME_WORDS
+    수 있게 공개 함수로 둔다.
+
+    2026-08-24 수정 — "처음으로"라고 말했는데 main이 아니라 등록 페이지로 가버리는
+    버그 실측 확인. 예전엔 정규화한 발화 전체가 _HOME_WORDS 중 하나와 "정확히" 같아야만
+    인정했는데, STT 결과엔 조사/군더더기가 자주 붙는다("어 처음으로 가주세요" 등) — 그러면
+    이 함수가 False를 돌려줘서 process_utterance() 맨 위의 조기 처리를 놓치고, 그 발화가
+    그대로 classify_intent()/LLM 파이프라인까지 흘러간다. "처음"은 그 파이프라인이 아는
+    의도가 아니라서 대개 "미분류"로 떨어지고, dispatch.py의 미분류 분기가 등록 유도
+    화면(register_intro)으로 보내버려서 정확히 이 증상(처음으로 말했는데 등록 화면으로
+    이동)이 나온다. recipe_confirm 화면의 "처음"/"다시" 로컬 처리가 이미 포함(in) 방식으로
+    바뀐 것과 똑같이, 여기도 전체 일치 대신 포함 여부로 완화한다.
+    """
+    norm = text.strip().rstrip("?!. ")
+    return any(word in norm for word in _HOME_WORDS)
 
 
 def reset_to_start() -> None:

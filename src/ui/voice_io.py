@@ -155,12 +155,23 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
     독점하고 있으므로(speak()의 TTS 합성, dispatch.process_utterance()의 LLM/DB 조회
     둘 다 이 함수를 거침), 여기 한 군데서 팝업을 그리면 두 경우 다 자동으로 덮인다.
     None을 넘기면 팝업 없이 조용히 드레인만 한다(현재는 항상 기본 메시지로 부름).
+
+    2026-08-24 리포트 — 이 팝업이 다음 화면까지 잔상으로 남고, 그 상태에서 계속
+    진행하면 오디오가 두 개 겹쳐 들리는 문제 실측 확인. st.markdown()으로 그냥 그리기만
+    하면 그 엘리먼트가 이 스크립트 실행이 끝날 때까지(그리고 다음 rerun이 완전히
+    반영될 때까지) DOM에 남아있는데, 화면 전환 시점에 rerun이 연달아 겹치면(마이크
+    재연결 강제 rerun 등) 프론트엔드가 이 잔상을 제때 못 지우는 것으로 보인다.
+    st.empty()로 자리를 직접 잡아두고, 대기가 끝나는 즉시(다음 코드로 넘어가기 *전에*)
+    명시적으로 비워서 — 다음 rerun의 DOM 정리에 기대지 않고 이 함수 안에서 스스로
+    정리를 끝낸다.
     """
     import queue
     import time
 
+    overlay_slot = st.empty()
     if loading_message:
-        render_loading_overlay(loading_message)
+        with overlay_slot:
+            render_loading_overlay(loading_message)
 
     while not job["done"]:
         context = st.session_state.get(_mic_component_key())
@@ -176,6 +187,8 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
             # _run_mic_loop()의 같은 레이스와 같은 이유 — 드레인 도중 연결이 끊기면
             # audio_receiver가 None으로 바뀔 수 있다. 조용히 다음 루프에서 다시 확인.
             pass
+
+    overlay_slot.empty()
 
 
 def speak(
