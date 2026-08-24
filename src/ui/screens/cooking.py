@@ -60,48 +60,12 @@ def screen_recipe_confirm() -> None:
         goto("start")
         return
 
-    render_badge("조회수 1위 표준 레시피 자동 선택 · 되묻지 않음 (FR-05)")
-    # 2026-08-22 재요청: 이전 대화 기록(사용자 질문 등)은 아예 안 보여주고, 마지막 AI
-    # 메시지를 챗봇 말풍선 없이 요리명/문장 두 줄로 줄바꿈해서(요리명은 크게) 타자기처럼
-    # 한 글자씩 나타나는 순수 텍스트로 보여준다. 세 줄 문구는 dispatch.process_utterance()의
-    # 조회 확인 메시지(`speak(f'{dish_name}, 조회수 1위 표준 레시피예요. 이걸로
-    # 시작할까요?')`)와 내용이 같아야 한다 — 그쪽은 TTS로 자연스럽게 읽히려고 한 문장
-    # 그대로 두고, 화면 표시만 여기서 줄 단위로 다시 나눈다.
-    chat_log = st.session_state.chat_log
-    if chat_log and chat_log[-1][0] == "ai":
-        # dispatch.py가 이 화면으로 넘어오기 직전 speak(..., hidden=True)로 미리 합성/캐싱만
-        # 해둔 문구를 여기서 다시 찾아 들려준다(2026-08-22 리포트 — 화면 전환 중 이전
-        # 화면 하단에 재생바가 "떴다 사라짐" 깜빡이는 문제, no_match/unclassified와 같은 패턴).
-        # nonce(2026-08-23) — 아래 "다시" 처리가 이 값을 올려서 같은 문구를 한 번 더 듣게 한다.
-        _render_cached_speech(chat_log[-1][1], nonce=st.session_state.get("_audio_replay_nonce", 0))
-        # render_spacer()로 뱃지와의 사이를 벌려서, 텍스트 블록이 위쪽에 바짝 붙지 않고
-        # 아래쪽 "재료 미리보기" 사이 빈 공간의 세로 중앙쯤에 오게 한다(2026-08-22
-        # 스크린샷 지적 — screen_start() 등 다른 화면의 render_spacer() 패턴과 동일).
-        render_spacer()
-        render_typewriter_message(
-            [view["dish_name"], "조회수 1위 표준 레시피예요.", "이걸로 시작할까요?"],
-            key=f"recipe_confirm:{chat_log[-1][1]}",
-        )
-
-    st.markdown("**재료 미리보기**")
-    render_chips(_ingredients_to_chips(view["ingredients_raw"]))
-
-    # 2026-08-23 요청 — "연결됐는지 안 됐는지 모르겠다": listening을 항상 True로 고정하지
-    # 않고 실제 연결 상태(mic_is_playing())를 그대로 보여준다.
-    _mic_ready = mic_is_playing()
-    render_mic_bar(
-        "듣는 중" if _mic_ready else "마이크 연결 중...",
-        '"응" 또는 다른 요청을 말씀해주세요',
-        listening=_mic_ready,
-    )
-
-    # "응"(긍정) 확인은 classify_intent()가 처리하지 않는다(의도적 제외,
-    # tests/integration_test.md 기록) — 이 화면 안에서만 문자열로 직접 우회 처리.
-    # cooking_step/register_intro/register_dish_name과 같은 이유(2026-08-21/22) — 바로 위
-    # render_mic_bar()가 이미 "듣는 중" 펄스 애니메이션으로 마이크가 켜져 있음을 보여주고
-    # 있어서, listen()이 따로 그리는 실제 녹음 위젯("말씀해주세요" 박스)까지 있으면 마이크
-    # 안내가 중복돼 보인다는 지적(2026-08-22)으로 show_mic=False로 꺼둔다(완전히 지우진
-    # 않음, 나중에 되돌릴 수 있게). 텍스트 입력 대체 경로는 그대로 남아있다.
+    # 2026-08-24 추가 — cooking_step과 같은 이유("화면 전환 잔상" 리포트 대응, 그쪽 함수
+    # 주석 참고): listen()을 뱃지/타이프라이터/재료칩/마이크바보다 먼저 불러서, "처음"/
+    # 확정 단어처럼 실제로 다른 화면(cooking_step, start)으로 넘어가는 경우엔 이 화면의
+    # UI를 이번 실행에서 아예 안 그리고 바로 넘어가게 한다. 단, "다시"(같은 화면 유지)와
+    # "확정 단어 아님"(같은 화면 유지) 두 경우는 원래도 이 화면에 그대로 머무는 게 맞으므로
+    # 아래로 흘러가서(fall-through) 평소처럼 화면 전체를 그린다 — 동작 자체는 그대로다.
     text = listen("recipe_confirm", show_mic=False)
     if text:
         # 2026-08-24 추가 — 이 화면은 process_utterance()를 안 거치고 직접 문자열을
@@ -156,6 +120,47 @@ def screen_recipe_confirm() -> None:
         # 화면으로 돌려보냈지만, 이제는 아무 일도 안 하고 이 화면(recipe_confirm)에 그대로
         # 머문다 — 사용자가 다시 확정 단어로 말해볼 수 있게. "다른 레시피 찾을래요" 버튼은
         # 그대로 남아있어 처음으로 가고 싶으면 그걸로 가면 된다.
+        #
+        # 위 분기들 중 "처음"/확정 단어는 reset_to_start()/goto()가 내부적으로
+        # st.rerun()을 던져서 이 지점 아래 코드를 절대 실행하지 않는다(2026-08-24,
+        # 화면 전환 잔상 완화 목적으로 listen()을 이 함수 맨 위로 옮기면서 이 화면
+        # UI(뱃지/타이프라이터/재료칩/마이크바)를 아래로 내림 — "다시"/미매칭만 여기까지
+        # 내려와서 평소처럼 화면 전체를 그린다).
+
+    render_badge("조회수 1위 표준 레시피 자동 선택 · 되묻지 않음 (FR-05)")
+    # 2026-08-22 재요청: 이전 대화 기록(사용자 질문 등)은 아예 안 보여주고, 마지막 AI
+    # 메시지를 챗봇 말풍선 없이 요리명/문장 두 줄로 줄바꿈해서(요리명은 크게) 타자기처럼
+    # 한 글자씩 나타나는 순수 텍스트로 보여준다. 세 줄 문구는 dispatch.process_utterance()의
+    # 조회 확인 메시지(`speak(f'{dish_name}, 조회수 1위 표준 레시피예요. 이걸로
+    # 시작할까요?')`)와 내용이 같아야 한다 — 그쪽은 TTS로 자연스럽게 읽히려고 한 문장
+    # 그대로 두고, 화면 표시만 여기서 줄 단위로 다시 나눈다.
+    chat_log = st.session_state.chat_log
+    if chat_log and chat_log[-1][0] == "ai":
+        # dispatch.py가 이 화면으로 넘어오기 직전 speak(..., hidden=True)로 미리 합성/캐싱만
+        # 해둔 문구를 여기서 다시 찾아 들려준다(2026-08-22 리포트 — 화면 전환 중 이전
+        # 화면 하단에 재생바가 "떴다 사라짐" 깜빡이는 문제, no_match/unclassified와 같은 패턴).
+        # nonce(2026-08-23) — 위 "다시" 처리가 이 값을 올려서 같은 문구를 한 번 더 듣게 한다.
+        _render_cached_speech(chat_log[-1][1], nonce=st.session_state.get("_audio_replay_nonce", 0))
+        # render_spacer()로 뱃지와의 사이를 벌려서, 텍스트 블록이 위쪽에 바짝 붙지 않고
+        # 아래쪽 "재료 미리보기" 사이 빈 공간의 세로 중앙쯤에 오게 한다(2026-08-22
+        # 스크린샷 지적 — screen_start() 등 다른 화면의 render_spacer() 패턴과 동일).
+        render_spacer()
+        render_typewriter_message(
+            [view["dish_name"], "조회수 1위 표준 레시피예요.", "이걸로 시작할까요?"],
+            key=f"recipe_confirm:{chat_log[-1][1]}",
+        )
+
+    st.markdown("**재료 미리보기**")
+    render_chips(_ingredients_to_chips(view["ingredients_raw"]))
+
+    # 2026-08-23 요청 — "연결됐는지 안 됐는지 모르겠다": listening을 항상 True로 고정하지
+    # 않고 실제 연결 상태(mic_is_playing())를 그대로 보여준다.
+    _mic_ready = mic_is_playing()
+    render_mic_bar(
+        "듣는 중" if _mic_ready else "마이크 연결 중...",
+        '"응" 또는 다른 요청을 말씀해주세요',
+        listening=_mic_ready,
+    )
 
     if st.button("다른 레시피 찾을래요", use_container_width=True):
         goto("start")
@@ -167,6 +172,22 @@ def screen_cooking_step() -> None:
     session = st.session_state.pipeline_session
     if not view or not view["steps"]:
         goto("start")
+        return
+
+    # 2026-08-24 추가 — "다른 화면으로 넘어갔는데 이 화면 요소(채팅/뱃지/재료칩 등)가
+    # 잔상으로 남는다"는 리포트 대응. listen()을 원래 이 화면 맨 끝(뱃지·카드·재료칩·
+    # 채팅·마이크바를 전부 그린 뒤)에서 불렀는데, 그러면 음성 명령으로 다른 화면(예:
+    # "처음")으로 넘어갈 때 이미 이 화면의 UI 전체가 이번 실행에서 다 그려진(=프론트엔드로
+    # 전송된) 뒤에 goto()가 rerun을 부르게 된다 — 진짜 원인(Streamlit이 취소/겹치는
+    # rerun을 처리하는 타이밍)은 확정 못 했지만, "이미 그려진 게 많을수록 잔상 후보도
+    # 많다"는 건 확실하므로, 발화를 이 화면의 다른 UI보다 먼저 받아서 다른 화면으로
+    # 넘어가는 경우엔 이 화면 UI를 이번 실행에서 아예 안 그리고 바로 넘어가게 한다.
+    # (버튼 클릭 기반 이동(점/화살표)은 render_step_card() 자체가 그 클릭을 그려야
+    # 하니 이 최적화 대상이 아니다 — 그쪽은 이미 뱃지+카드 정도만 그려진 상태라 잔상
+    # 후보가 원래도 작다.)
+    text = listen("cooking_step", show_mic=False)
+    if text:
+        process_utterance(text)
         return
 
     total = len(view["steps"])
@@ -234,21 +255,15 @@ def screen_cooking_step() -> None:
     if st.session_state.chat_log:
         render_chat(st.session_state.chat_log[-4:])
 
+    # 2026-08-24 — listen() 호출 자체는 함수 맨 위로 옮겼다(위 주석 참고). 여기 남은
+    # 건 순수 상태 표시용 — 이미 이번 실행 초반에 text가 없었다는 걸 알고 이 지점까지
+    # 왔으므로, 마이크 바는 그냥 지금 연결 상태만 그대로 보여주면 된다.
     _mic_ready = mic_is_playing()
     render_mic_bar(
         "듣는 중" if _mic_ready else "마이크 연결 중...",
         '"이전" · "다시" · "다음"',
         listening=_mic_ready,
     )
-
-    # register_intro/register_dish_name과 같은 이유(2026-08-21) — 바로 위 render_mic_bar()가
-    # 이미 "듣는 중" 펄스 애니메이션으로 마이크가 켜져 있음을 보여주고 있어서, listen()이
-    # 따로 그리는 실제 녹음 위젯("말씀해주세요" 박스)까지 있으면 마이크 안내가 중복돼
-    # 보인다는 지적(2026-08-22)으로 여기도 show_mic=False로 꺼둔다(완전히 지우진 않음,
-    # 나중에 되돌릴 수 있게). 텍스트 입력 대체 경로는 그대로 남아있다.
-    text = listen("cooking_step", show_mic=False)
-    if text:
-        process_utterance(text)
 
     fallback_buttons("cooking_step")
 
@@ -260,10 +275,20 @@ def screen_cooking_complete() -> None:
     패턴: 전환 직전(dispatch.py)에서 COOKING_COMPLETE_MESSAGE를 hidden=True로 미리
     합성/캐싱해두고, 여기서 _render_cached_speech()로 같은 캐시를 다시 찾아 들려준다.
     """
-    dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
     if render_back_link("처음으로"):
         goto("start")
 
+    # 2026-08-24 추가 — cooking_step/recipe_confirm과 같은 이유("화면 전환 잔상" 완화,
+    # cooking_step 주석 참고). process_utterance()는 인식된 발화가 있으면 항상 다른
+    # 화면으로 넘어가므로(어떤 intent든 마지막에 goto() 호출), 이 화면의 나머지 UI를
+    # 그리기 전에 먼저 듣고 처리한다 — 넘어갈 거면 이 화면 UI 자체를 이번 실행에서
+    # 아예 안 그린다.
+    text = listen("cooking_complete", show_mic=False)
+    if text:
+        process_utterance(text)
+        return
+
+    dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
@@ -273,13 +298,6 @@ def screen_cooking_complete() -> None:
     )
     _render_cached_speech(COOKING_COMPLETE_MESSAGE)
     render_spacer()
-
-    # 2026-08-23 요청 — 상시 마이크가 start 화면 말고는 끊기지 않아야 해서, 이 완료
-    # 화면도 계속 듣는다("처음"이라고 말하면 아래 버튼과 동일하게 reset_to_start()로
-    # 처리됨 — dispatch.process_utterance()가 맨 앞에서 먼저 걸러냄).
-    text = listen("cooking_complete", show_mic=False)
-    if text:
-        process_utterance(text)
 
     if st.button("처음 화면으로", type="primary", use_container_width=True):
         reset_to_start()
