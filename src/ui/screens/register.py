@@ -35,6 +35,14 @@ _REGISTER_SAVED_MESSAGE = "저장이 완료됐어요!"
 
 
 def screen_no_match() -> None:
+    # 2026-08-24 추가 — cooking.py 화면들과 같은 이유("화면 전환 잔상" 완화). process_utterance()는
+    # 인식된 발화가 있으면 항상 다른 화면으로 넘어가므로, 이 화면의 나머지 UI를 그리기
+    # 전에 먼저 듣고 처리한다 — 넘어갈 거면 이번 실행에서 이 화면 UI 자체를 안 그린다.
+    text = listen("no_match", show_mic=False)
+    if text:
+        process_utterance(text)
+        return
+
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon warn">{ICON_X_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
@@ -52,11 +60,6 @@ def screen_no_match() -> None:
     st.caption("실데이터 검색만으로 판단해요 — 없는 레시피를 지어내지 않아요 (1.5 원칙).")
     render_spacer()
 
-    # 2026-08-23 요청 — start 화면 말고는 상시 마이크가 안 끊겨야 해서 여기도 계속 듣는다.
-    text = listen("no_match", show_mic=False)
-    if text:
-        process_utterance(text)
-
     c1, c2 = st.columns(2)
     with c1:
         if st.session_state.pipeline_session.get("current_recipe_id") and st.button(
@@ -69,6 +72,14 @@ def screen_no_match() -> None:
 
 
 def screen_unclassified() -> None:
+    # 2026-08-24 추가 — no_match와 같은 이유("화면 전환 잔상" 완화). process_utterance()는
+    # 인식된 발화가 있으면 항상 다른 화면으로 넘어가므로, 이 화면의 나머지 UI를 그리기
+    # 전에 먼저 듣고 처리한다.
+    text = listen("unclassified")
+    if text:
+        process_utterance(text)
+        return
+
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon warn">{ICON_QUESTION_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
@@ -83,10 +94,6 @@ def screen_unclassified() -> None:
         _render_cached_speech(chat_log[-1][1])
     render_spacer()
     render_mic_bar("다시 말씀해주세요", "또는 아래 버튼을 눌러주세요", listening=False)
-
-    text = listen("unclassified")
-    if text:
-        process_utterance(text)
 
     fallback_buttons("unclassified")
 
@@ -301,6 +308,14 @@ def screen_register_steps() -> None:
 
 
 def screen_complete() -> None:
+    # 2026-08-24 추가 — 다른 화면들과 같은 이유("화면 전환 잔상" 완화). process_utterance()는
+    # 인식된 발화가 있으면 항상 다른 화면으로 넘어가므로, 이 화면의 나머지 UI를 그리기
+    # 전에 먼저 듣고 처리한다.
+    text = listen("complete", show_mic=False)
+    if text:
+        process_utterance(text)
+        return
+
     dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
@@ -316,11 +331,6 @@ def screen_complete() -> None:
         unsafe_allow_html=True,
     )
     render_spacer()
-
-    # 2026-08-23 요청 — start 화면 말고는 상시 마이크가 안 끊겨야 해서 여기도 계속 듣는다.
-    text = listen("complete", show_mic=False)
-    if text:
-        process_utterance(text)
 
     if st.button("처음 화면으로", type="primary", use_container_width=True):
         reset_to_start()
