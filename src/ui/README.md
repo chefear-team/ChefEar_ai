@@ -2,34 +2,35 @@
 
 ## 이 폴더가 하는 일
 
-Streamlit 화면 컴포넌트 모음(마이크 입력, 단계 표시, 재료대체 확인 등). `src/app.py`가
-엔트리포인트이고 이 폴더는 그 안에서 쓰일 화면 조각들을 분리해두는 자리다.
+`src/app.py`(엔트리포인트, ~130줄)가 조립해서 쓰는 화면·상태·발화 처리 모듈들.
+2026-08-22부터 실제로 쓰인다 — 원래 `src/app.py` 한 파일(1100줄+)에 다 있던 걸 화면
+컴포넌트화하면서 여기로 옮겼다.
 
-## 현재 상태 (확인: 2026-08-16)
+**이름 주의**: 이 폴더(`src/ui/`)는 `src`가 `sys.path`에 있어서 `ui.session`처럼 패키지로
+import된다. 저장소 루트의 최상위 `ui/`(`theme.py` 등, `src/app.py`가 별도로
+`sys.path.insert(0, PROJECT_ROOT/"ui")` 해줘서 `from theme import ...`로 씀)와는 이름만
+같고 서로 다른 경로다 — 헷갈리지 않게 각 파일 상단에도 같은 안내를 남겨뒀다.
 
-`.gitkeep`만 있고 컴포넌트 파일이 아직 하나도 없다. `src/app.py`(엔트리포인트)도 여전히 비어있다.
+## 파일 구성 (확인: 2026-08-22)
 
-다만 **동일한 화면 구조가 최상위 `ui/`(저장소 루트, 이 폴더와 다른 위치)에 이미 프로토타입으로
-구현돼 있다** — mock 데이터 기준이지만 11개 화면 전부 상태 전이까지 실제로 동작한다
-(`../../ui/README.md` 참고, `streamlit run ui/app.py`로 바로 확인 가능). 여기(`src/ui/`)로 옮겨
-담을 때는 그 구조를 그대로 가져와서 mock 데이터 대신 실제 백엔드 호출로 바꾸면 된다.
+- `session.py` — 세션 상태 초기화(`init_state`), 화면 전환(`goto`), 쿠키 owner_id(`get_owner_id`)
+- `voice_io.py` — STT/TTS 연결(`speak`/`listen`), 다음 단계 음성 백그라운드 프리페치
+  (`prefetch_next_step_audio`)
+- `recipe_view.py` — `recipes` 테이블 조회/캐싱(`refresh_recipe_view`), 재료 칩 변환
+- `dispatch.py` — 발화 처리 핵심 디스패처(`process_utterance`), 수동 이전/다시/다음
+  버튼(`fallback_buttons`)
+- `screens/cooking.py` — start/recipe_confirm/cooking_step (조리 진행 핵심 흐름)
+- `screens/register.py` — no_match/unclassified/register_*/complete (신규 레시피 등록 흐름)
+- `screens/my_recipes.py` — login/my_recipes/edit_recipe (마이 레시피)
 
-## 진행 방법
+의존 방향은 `screens/* → dispatch → voice_io/recipe_view → session`이고 순환 없음.
+`orchestration/`(DB·의도분류·재료대체 등 백엔드 로직)은 이미 준비돼 있어서 그대로 가져다
+쓴다 — 이 폴더는 그 위에 Streamlit 화면만 얹는 계층이다.
 
-1. 최상위 `ui/streamlit_screens/`·`ui/app.py`·`ui/theme.py`·`ui/nav.py` 구조를 이 폴더로 옮겨온다.
-2. `ui/mock_data.py` 호출 부분을 실제 백엔드로 교체: `orchestration.pipeline.handle_utterance()`로
-   응답 텍스트를 받고, `tts.infer.tts_synthesize()`로 음성을 합성해 `st.audio()`로 재생한다.
-3. 익명 사용자 식별에는 `src/orchestration/identity.py`의 `get_or_create_anon_id(cookies)`를 쓴다
-   (로그인 없음, `streamlit-cookies-manager` 필요).
-4. 레시피 확인 화면의 "응"(긍정) 응답은 `classify_intent()`가 처리하지 않으므로(`tests/integration_test.md`
-   참고) 이 레이어에서 별도로 처리해야 한다.
-
-## 필요한 것 / 막힌 것
-
-- `src/orchestration/pipeline.py`의 `handle_utterance()`, `src/tts/infer.py`의 `tts_synthesize()`는
-  준비됐다. 남은 건 `src/stt/infer.py`의 배포용 단일 발화 함수(`stt_transcribe()`, faster-whisper
-  변환) 정리뿐 — 이거 하나만 끝나면 mock 대신 실제 백엔드로 완전히 교체 가능
+최상위 `ui/streamlit_screens/*.py`(mock 프로토타입)는 여전히 실제 서비스에서 안 쓴다 —
+`src/app.py` 최상단 docstring 참고(자유발화를 못 받는 하드코딩 시나리오 방식이라서).
 
 ## 관련 문서
 
-`docs/ChefEar_PRD_SDD_v0.8.md` 3.4(UI, 최소구현 우선), `docs/ChefEar_팀_진행_가이드_v2.md` 디렉토리 구조.
+`docs/ChefEar_PRD_SDD_v0.8.md` 3.4(UI, 최소구현 우선), `docs/ChefEar_팀_진행_가이드_v2.md` 디렉토리 구조,
+`docs/specs/app_e2e.md`.

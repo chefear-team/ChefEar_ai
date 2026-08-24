@@ -8,8 +8,8 @@ substitution.py 맨 위 설명에 있는 "세션이 뭔지" 부분과 같은 개
 from __future__ import annotations
 
 from orchestration.db import get_client
-from orchestration.intent_classifier import classify_intent
-from orchestration.recipe_search import search_variant_recipe, select_standard_recipe
+from orchestration.intent_classifier import FALLBACK_NEED_CONTEXT, classify_intent
+from orchestration.recipe_search import extract_dish_name, search_variant_recipe, select_standard_recipe
 from orchestration.registration import register_recipe
 from orchestration.substitution import apply_substitution, cancel_substitution
 
@@ -135,12 +135,13 @@ def handle_utterance(
     cancel_substitution)로 라우팅해서 TTS에 넘길 응답을 만들어 돌려준다.
 
     classify_intent()는 "무슨 의도인지"만 분류하고 "무슨 요리/재료인지" 같은
-    세부 정보(entity)는 추출하지 않는다 — 이 프로젝트에 발화 텍스트에서 요리명·
-    재료명을 뽑아내는 자연어 처리 로직이 따로 없기 때문이다. 그래서 그런 세부
-    정보가 필요한 의도(조회/재료대체/등록/정정)는 dish_name/requested_ingredient/
-    excluded_ingredient/registration_step/registration_value 같은 키워드 인자로
-    호출부가 직접 넘겨줘야 한다 — app.py가 UI 입력이나 별도 로직으로 채워서
-    호출하는 구조다.
+    세부 정보(entity)는 추출하지 않는다. 조회 의도는 예외로, dish_name을 직접
+    안 넘겨주면(None) extract_dish_name()이 utterance 자체에서 요리명을 찾아준다
+    (완전일치→부분일치→편집거리 3단계, recipe_search.py 참고) — 그래서 발화
+    텍스트 하나만 있어도 조회가 끝까지 된다. 나머지(재료대체/등록/정정)는 아직
+    발화에서 재료명·순서 같은 걸 뽑아내는 로직이 없어서, requested_ingredient/
+    excluded_ingredient/registration_step/registration_value를 여전히 호출부가
+    직접 넘겨줘야 한다 — app.py가 UI 입력이나 별도 로직으로 채워서 호출하는 구조다.
     """
     client = client or get_client()
     context_recipe_id = session.get("current_recipe_id")
@@ -151,6 +152,15 @@ def handle_utterance(
         return {"intent": intent, "message": result["fallback_message"]}
 
     if intent in _DIRECTION_BY_INTENT:
+        # classify_intent()는 "다음"/"이전" 같은 발화를 context_recipe_id 유무와
+        # 무관하게 진행/재청취/이전으로 분류한다(AC-01 스펙, EC-05는 재료대체에만
+        # 적용됨). 그래서 아직 아무 레시피도 고른 적 없는 상태(context_recipe_id
+        # 없음)에서 "다음"이 오면 여기서 걸러야 한다 — 안 그러면 advance_step()이
+        # session에서 current_recipe_id를 못 찾아 KeyError로 죽는다(실측: STT/TTS
+        # 텍스트 테스트 화면에서 첫 발화로 "다음"을 보냈다가 실제로 재현됨,
+        # 2026-08-20). 재료대체의 EC-05와 같은 메시지로 정직하게 되묻는다.
+        if context_recipe_id is None:
+            return {"intent": "미분류", "message": FALLBACK_NEED_CONTEXT}
         step_result = advance_step(session, _DIRECTION_BY_INTENT[intent], client=client)
         return {"intent": intent, **step_result}
 
@@ -167,7 +177,13 @@ def handle_utterance(
         return {"intent": intent, **match}
 
     if intent == "조회":
-        found = select_standard_recipe(dish_name, owner_id=session.get("owner_id"), client=client)
+        # dish_name을 호출부가 안 넘겨주면(None) 발화 텍스트 자체에서 뽑아낸다
+        # (extract_dish_name, recipe_search.py) — 넘겨주면 그 값을 그대로 우선한다
+        # (기존 테스트/향후 UI가 이미 알고 있는 요리명을 직접 넘기는 경로도 계속 지원).
+        resolved_dish_name = dish_name or extract_dish_name(utterance, client=client)
+        if resolved_dish_name is None:
+            return {"intent": intent, "message": DISH_NOT_FOUND_MESSAGE}
+        found = select_standard_recipe(resolved_dish_name, owner_id=session.get("owner_id"), client=client)
         if found is None:
             return {"intent": intent, "message": DISH_NOT_FOUND_MESSAGE}
         session["current_recipe_id"] = found["recipe_id"]

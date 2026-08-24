@@ -7,6 +7,7 @@ from fake_supabase import FakeSupabaseClient
 
 from orchestration.recipe_search import (
     NOT_FOUND_MESSAGE,
+    extract_dish_name,
     search_by_ingredient_content,
     search_variant_recipe,
     select_standard_recipe,
@@ -175,3 +176,60 @@ def test_owner_id_scoping_never_leaks_others_custom_when_no_standard_exists():
     result = select_standard_recipe("이색요리", owner_id="user-A", client=client)
 
     assert result is None
+
+
+def test_extract_dish_name_exact_match():
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "부대찌개", "ingredients": "김치, 스팸", "source": "api_standard"})
+
+    assert extract_dish_name("부대찌개", client=client) == "부대찌개"
+
+
+def test_extract_dish_name_substring_prefers_longer_match():
+    """"김치"와 "김치찌개" 둘 다 발화에 포함되면, 더 구체적인 "김치찌개"를 채택해야 함."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "김치", "ingredients": "배추", "source": "api_standard"})
+    client.table("recipes").seed({"dish_name": "김치찌개", "ingredients": "김치, 돼지고기", "source": "api_standard"})
+
+    assert extract_dish_name("김치찌개 어떻게 만들어?", client=client) == "김치찌개"
+
+
+def test_extract_dish_name_fuzzy_matches_stt_misheard_whole_utterance():
+    """STT 오인식("부대찌개" -> "부대찌게")이 발화 전체일 때 편집거리로 보정돼야 함."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "부대찌개", "ingredients": "김치, 스팸", "source": "api_standard"})
+
+    assert extract_dish_name("부대찌게", client=client) == "부대찌개"
+
+
+def test_extract_dish_name_fuzzy_matches_misheard_word_inside_sentence():
+    """오인식된 요리명이 문장 속에 섞여 있어도(부분일치로는 못 잡음) 편집거리로 잡혀야 함."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "부대찌개", "ingredients": "김치, 스팸", "source": "api_standard"})
+
+    assert extract_dish_name("부대찌게 어떻게 만들어?", client=client) == "부대찌개"
+
+
+def test_extract_dish_name_fuzzy_matches_phoneme_level_mishearing():
+    """2026-08-23 실사용 보고: 상시 마이크로 "된장찌개"라고 말했는데 STT가 "된장치게"로
+    오인식(찌/치 된소리-거센소리 혼동 + 개/게 애-에 모음 혼동, 자모 하나씩만 다름).
+    음절 단위 SequenceMatcher.ratio()는 0.5로 FUZZY_CUTOFF(0.7) 미달이라 기존 구현은
+    이 케이스를 못 잡았다 — 자모 분해 비교(_decompose_hangul)로 고쳐서 잡아야 한다."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부, 감자", "source": "api_standard"})
+
+    assert extract_dish_name("된장치게", client=client) == "된장찌개"
+
+
+def test_extract_dish_name_returns_none_when_nothing_close():
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "부대찌개", "ingredients": "김치, 스팸", "source": "api_standard"})
+
+    assert extract_dish_name("완전히 다른 이야기입니다", client=client) is None
+
+
+def test_extract_dish_name_empty_utterance_returns_none():
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "부대찌개", "ingredients": "김치, 스팸", "source": "api_standard"})
+
+    assert extract_dish_name("   ", client=client) is None

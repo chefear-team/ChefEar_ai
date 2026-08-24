@@ -20,8 +20,20 @@ RECIPES: dict[str, dict] = {
             {"name": "감자", "qty": "1개", "emoji": "🥔"},
             {"name": "두부", "qty": "1/2모", "emoji": "🧈"},
             {"name": "애호박", "qty": "1/3개", "emoji": "🥒"},
-            {"name": "양파", "qty": "1/2개", "emoji": "🧅"},
             {"name": "된장", "qty": "1큰술", "emoji": "🫘"},
+            {"name": "양파", "qty": "1/2개", "emoji": "🧅"},
+        ],
+        # recipe_confirm 화면의 "재료 미리보기"는 HTML 목업(02_recipe_confirm.html)처럼
+        # 수량 없이 7개를 보여준다. cooking_step 화면의 "오늘의 재료"는 수량이 있는
+        # 위 ingredients를 그대로 쓰므로 건드리지 않는다.
+        "preview_ingredients": [
+            {"name": "감자", "emoji": "🥔"},
+            {"name": "두부", "emoji": "🧈"},
+            {"name": "애호박", "emoji": "🥒"},
+            {"name": "양파", "emoji": "🧅"},
+            {"name": "대파", "emoji": "🌱"},
+            {"name": "멸치육수", "emoji": "🐟"},
+            {"name": "된장", "emoji": "🫘"},
         ],
         "steps": [
             {"text": "멸치와 다시마로 육수를 끓입니다.", "minutes": 5},
@@ -47,6 +59,40 @@ RECIPES: dict[str, dict] = {
             {"text": "바지락 해감한 것을 준비합니다.", "minutes": 3},
             {"text": "육수에 바지락을 먼저 넣고 끓입니다.", "minutes": 4},
             {"text": "된장을 풀고 두부를 넣어 마무리합니다.", "minutes": 3},
+        ],
+    },
+    "budaejjigae": {
+        "id": "budaejjigae",
+        "dish_name": "부대찌개",
+        "view_count": 214500,
+        "intro": "표준 레시피 기준으로는 김치·스팸·소시지에 사골곰탕 육수를 쓰는 부대찌개예요.",
+        # TTS 실측용으로 실제 wav를 붙인 유일한 레시피(ui/assets/audio/budaejjigae/) —
+        # 다른 레시피는 오디오가 없어서 cooking_step.py가 재생 위젯을 안 보여준다.
+        "ingredients": [
+            {"name": "김치", "qty": "1/4밥공기(1줌)", "emoji": "🥬"},
+            {"name": "비엔나", "qty": "20개", "emoji": "🌭"},
+            {"name": "스팸", "qty": "1개", "emoji": "🥫"},
+            {"name": "두부", "qty": "1/3모", "emoji": "🧈"},
+            {"name": "떡", "qty": "1줌", "emoji": "🍡"},
+            {"name": "대파", "qty": "10센티 4개", "emoji": "🌱"},
+            {"name": "홍고추", "qty": "2개", "emoji": "🌶️"},
+            {"name": "청양고추", "qty": "큰거 2개", "emoji": "🌶️"},
+            {"name": "사골곰탕", "qty": "1봉지", "emoji": "🍲"},
+            {"name": "된장", "qty": "1/2큰술", "emoji": "🫘"},
+            {"name": "고추가루", "qty": "4큰술", "emoji": "🌶️"},
+            {"name": "마늘", "qty": "2큰술", "emoji": "🧄"},
+            {"name": "국간장", "qty": "2큰술", "emoji": "🍶"},
+            {"name": "설탕", "qty": "1/2큰술", "emoji": "🍬"},
+            {"name": "물", "qty": "1/2소주컵", "emoji": "💧"},
+        ],
+        "steps": [
+            {"text": "김치, 두부, 떡을 먹기 좋은 크기로 썰어주세요.", "minutes": 3, "audio": "01.wav"},
+            {"text": "대파, 홍고추, 청양고추 큰거, 고추가루를 썰어 준비해주세요.", "minutes": 3, "audio": "02.wav"},
+            {"text": "된장, 국간장, 설탕을 섞어 양념을 만들어주세요.", "minutes": 2, "audio": "03.wav"},
+            {"text": "사골곰탕과 물을 넣고 끓여주세요.", "minutes": 5, "audio": "04.wav"},
+            {"text": "김치, 비엔나, 스팸, 두부, 떡, 대파를 넣어주세요.", "minutes": 2, "audio": "05.wav"},
+            {"text": "준비한 양념을 넣고 끓여주세요.", "minutes": 5, "audio": "06.wav"},
+            {"text": "재료가 익으면 간을 확인하고 마무리해주세요.", "minutes": 2, "audio": "07.wav"},
         ],
     },
     "haemul": {

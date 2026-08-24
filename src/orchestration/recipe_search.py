@@ -1,15 +1,141 @@
-"""7.3/7.6 — 표준 레시피 선정, 재료 대체 검색(6.4).
+"""7.3/7.6 — 표준 레시피 선정, 재료 대체 검색(6.4), 발화 속 요리명 추출.
 
-이 파일의 세 함수는 전부 "DB에서 조건에 맞는 레시피를 찾는다"는 공통점이
+이 파일의 함수들은 전부 "DB에서 조건에 맞는 레시피를 찾는다"는 공통점이
 있는데, 못 찾았을 때 절대로 답을 지어내지 않는다(1.5 원칙: 서비스 실행 중
 LLM 생성 fallback 없음). 못 찾으면 그냥 "없다"고 정직하게 답한다 — 이게 이
 프로젝트 재료 대체 기능의 핵심 설계다.
 """
 from __future__ import annotations
 
+import difflib
+import unicodedata
+from functools import lru_cache
+
 from orchestration.db import get_client
 
 NOT_FOUND_MESSAGE = "죄송해요, 이 조합의 레시피는 없어요."
+
+# extract_dish_name()의 3단계 중 편집거리 유사도(3번) 판정 기준값. intent_classifier.py의
+# THRESHOLD와 같은 성격 — 실측 튜닝 전 임시값이다. 0.75로 하면 "부대찌개"/"부대찌게"(글자
+# 하나 차이, 실제 SequenceMatcher 유사도 0.75)가 걸러져버려서, 이 프로젝트가 다루려는
+# "STT가 글자 하나 잘못 들은" 케이스를 못 잡는다. 그래서 0.7로 여유를 뒀다.
+FUZZY_CUTOFF = 0.7
+
+
+@lru_cache(maxsize=8)
+def _all_dish_names(client) -> list[str]:
+    """recipes 테이블에 있는 모든 요리명을 중복 없이 가져온다.
+
+    Supabase(PostgREST)는 select() 결과를 기본적으로 최대 1000행까지만 돌려준다
+    (실측 확인: 60,196건 중 1000건만 반환됨, 2026-08-20) — 필터 없이 그냥
+    .execute()만 부르면 나머지 59,196건은 조용히 빠져버려서, 하필 뒤쪽에 있는
+    요리명(예: "부대찌개")은 매칭 후보에서 아예 사라지는 실제 버그가 있었다.
+    그래서 .range()로 1000행씩 페이지를 넘겨가며 끝까지 다 끌어온다(마지막
+    페이지가 1000행보다 적게 오면 그게 끝이라는 뜻).
+
+    같은 요리명이 api_standard/user_custom 여러 행으로 존재할 수 있어서 set으로
+    중복을 지운다 — extract_dish_name()이 편집거리 비교를 돌 때 같은 이름을
+    여러 번 비교하지 않게 하려는 것뿐, 정확도엔 영향 없다.
+
+    @lru_cache(client 객체별로 캐시): 실측 결과 60,196건을 페이지네이션으로 다
+    끌어오는 데 12~18초가 걸려서(2026-08-20), 발화 하나마다 매번 이걸 반복하면
+    "다음"/"이전" 같은 흔한 명령까지 다 그만큼 느려진다. client 객체(진짜
+    Supabase 클라이언트든 테스트용 FakeSupabaseClient든)를 캐시 키로 써서, 같은
+    클라이언트로 다시 부르면 두 번째부터는 즉시 반환한다 — 테스트는 매번 새
+    FakeSupabaseClient를 만들어 쓰므로 캐시가 테스트끼리 섞이지 않는다.
+    단점: 이 캐시가 살아있는 동안(같은 프로세스, 같은 client 객체) 새로 등록되거나
+    load_data.py로 재적재된 요리명은 안 잡힌다 — 필요해지면 _all_dish_names.
+    cache_clear()로 비우거나, 더 정교한 무효화 전략을 나중에 붙여야 한다.
+    """
+    names: set[str] = set()
+    page_size = 1000
+    start = 0
+    while True:
+        res = client.table("recipes").select("dish_name").range(start, start + page_size - 1).execute()
+        rows = res.data
+        names.update(row["dish_name"] for row in rows if row.get("dish_name"))
+        if len(rows) < page_size:
+            break
+        start += page_size
+    return list(names)
+
+
+def _decompose_hangul(text: str) -> str:
+    """음절 단위 한글을 초성/중성/종성 자모로 풀어헤친다(유니코드 NFD 정규화 — 한글
+    완성형 음절은 초성+중성(+종성) 조합으로 알고리즘적으로 합성되므로, 표준 라이브러리
+    unicodedata만으로 새 의존성 없이 분해된다).
+
+    extract_dish_name() 3단계(편집거리 유사도)가 difflib을 음절 그대로 비교하면,
+    "찌"(ㅉ+ㅣ)/"치"(ㅊ+ㅣ)처럼 자음 하나(된소리/거센소리)만 다르거나 "개"(ㄱ+ㅐ)/
+    "게"(ㄱ+ㅔ)처럼 모음 하나(애/에, 실제 발화에서 거의 구분 안 되는 경우가 흔함)만
+    다른 음절을 "완전히 다른 글자"로 취급해버린다. 실측: STT가 "된장찌개"를
+    "된장치게"로 오인식한 실사례에서 음절 단위 SequenceMatcher.ratio()는 0.5로
+    FUZZY_CUTOFF(0.7) 미달이라 매칭 자체가 실패했는데, 자모 단위로 풀어서 비교하면
+    0.8로 올라가 정상적으로 "된장찌개"에 매칭된다(2026-08-23 실측 확인). 기존에
+    이 커트오프를 통과하던 "부대찌개"/"부대찌게" 케이스는 자모 단위에서도 여전히
+    통과하고(0.75 -> 0.875), 완전히 다른 요리("된장찌개"/"감자조림")는 자모
+    단위에서도 여전히 낮게 나와(0.3) 오탐이 늘지 않음을 같이 확인했다.
+    """
+    return unicodedata.normalize("NFD", text)
+
+
+@lru_cache(maxsize=8)
+def _decomposed_name_map(client) -> dict[str, str]:
+    """자모 분해된 요리명 -> 원본 요리명 매핑. _all_dish_names()와 같은 client별
+    캐시 전략을 그대로 따른다(같은 클라이언트로 반복 호출 시 재계산 없음, 캐시 무효화
+    한계도 동일 — _all_dish_names() docstring 참고). 서로 다른 두 요리명이 자모까지
+    완전히 같아지는 경우는 곧 원본 문자열이 같다는 뜻이라(NFD는 결정적/가역적 변환)
+    키 충돌로 서로 다른 요리명이 묻히는 일은 없다.
+    """
+    return {_decompose_hangul(name): name for name in _all_dish_names(client)}
+
+
+def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_CUTOFF) -> str | None:
+    """STT 텍스트 한 문장에서 DB에 실제로 있는 요리명을 찾아낸다.
+
+    이 함수가 돌려주는 문자열을 select_standard_recipe()의 dish_name 인자로
+    그대로 넘기면 된다 — 지금까지는 이 자리를 호출하는 쪽(테스트/app.py)이
+    손으로 채워 넣고 있었다.
+
+    LLM에게 "이 문장의 요리명이 뭐야?"라고 묻지 않는다(1.5 원칙, 로컬 LLM도
+    포함 — 판단을 LLM에 맡기는 구조 자체를 안 쓰기로 한 결정). 대신 3단계
+    문자열 비교만으로 처리한다.
+
+      1) 완전일치 — 발화 전체가 요리명 그 자체인 경우 ("된장찌개")
+      2) 부분일치 — 발화 안에 요리명이 그대로 들어있는 경우
+         ("된장찌개 어떻게 만들어?"). 여러 요리명이 동시에 걸리면(예: "김치"와
+         "김치찌개" 둘 다 발화에 포함) 더 구체적인(긴) 이름을 채택한다.
+      3) 편집거리 유사도 — STT가 요리명 자체를 잘못 들은 경우("부대찌게",
+         "된장치게") 보정. 발화 전체와 공백으로 나눈 각 단어를 모두 후보로
+         비교해서, 문장 속에 섞여 있어도("부대찌게 어떻게 만들어?") 잡히게
+         한다. 비교는 음절 그대로가 아니라 자모로 분해해서 한다(_decompose_hangul
+         참고) — 된소리/거센소리, 애/에처럼 음절 단위로는 "다른 글자"로 보이지만
+         실제로는 음소 하나 차이인 흔한 오인식까지 잡아내기 위함.
+
+    셋 다 실패하면 None — 억지로 아무 요리나 골라주지 않는다(1.5 원칙과 같은
+    태도: 모르면 모른다고 한다). 호출하는 쪽은 None일 때 "레시피 없음" 안내 후
+    신규 등록으로 유도하면 된다(EC-11).
+    """
+    client = client or get_client()
+    text = utterance.strip()
+    if not text:
+        return None
+
+    names = _all_dish_names(client)
+    if text in names:
+        return text
+
+    contained = [name for name in names if name and name in text]
+    if contained:
+        return max(contained, key=len)
+
+    name_map = _decomposed_name_map(client)
+    for candidate in (text, *text.split()):
+        close = difflib.get_close_matches(_decompose_hangul(candidate), name_map.keys(), n=1, cutoff=fuzzy_cutoff)
+        if close:
+            return name_map[close[0]]
+
+    return None
 
 
 def _max_view_count(rows: list[dict]) -> dict:
@@ -81,6 +207,12 @@ def select_standard_recipe(dish_name: str, owner_id: str | None = None, client=N
         "view_count": winner.get("view_count", 0),
         "total_candidates": len(candidates),
         "representativeness": winner.get("view_count", 0) / total_view,
+        # 2026-08-20 추가: ui/start.py가 실제 화면(recipe_confirm)에 "오늘의 재료" 미리보기를
+        # 그리려면 원문 재료 텍스트가 필요한데, 이전엔 이 함수가 요약 정보만 돌려주고
+        # ingredients는 빼놓고 있었다. winner는 이미 .select("*")로 전체 컬럼을 갖고
+        # 있으니 그냥 같이 얹어준다 — 새 쿼리 없음. 기존 호출부는 키를 그대로 골라 쓰므로
+        # (예: result["recipe_id"]) 딕셔너리에 키가 하나 늘어나는 건 하위 호환에 안전하다.
+        "ingredients": winner.get("ingredients", ""),
     }
 
 

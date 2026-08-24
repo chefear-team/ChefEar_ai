@@ -22,6 +22,14 @@ recipe_steps에 단계별로 넣는다" 순서로 짜여 있다(run() 함수의 
 사용법:
     python src/orchestration/load_data.py --csv <CSV 경로>
     python src/orchestration/load_data.py --csv <CSV 경로> --dry-run   # DB 연결 없이 파싱만 검증
+
+CSV_NM/CKG_MTRL_CN/COOKING_STEPS 3개 컬럼만 있는 축약 CSV(예: 전처리 완료본으로
+INQ_CNT/FIRST_REG_DT가 빠진 파일)도 그대로 넣을 수 있다 — 없는 컬럼은 그냥
+DB 기본값(view_count=0, created_at=now())으로 채워진다(select_standard_rows,
+build_recipe_payload 참고). 재실행 시 기존 api_standard 레코드를 먼저 삭제하고
+다시 넣으므로([2/4] 단계), 이 스크립트를 다시 돌리는 것 자체가 "기존 표준
+데이터 삭제 + 새 CSV 적재"다 — user_custom(사용자가 직접 등록한 레시피)은
+건드리지 않는다.
 """
 from __future__ import annotations
 
@@ -62,11 +70,11 @@ def parse_first_reg_dt(raw: str) -> str:
     m = FIRST_REG_DT_RE.match(raw.strip())
     if not m:
         return datetime.utcnow().isoformat()
-      
-try:
-    return datetime.strptime(m.group(1), "%Y%m%d%H%M%S").isoformat()
-except ValueError:
-    return datetime.utcnow().isoformat()
+
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d%H%M%S").isoformat()
+    except ValueError:
+        return datetime.utcnow().isoformat()
 
 
 def parse_steps(raw: str) -> list[str]:
@@ -98,6 +106,12 @@ def select_standard_rows(csv_path: Path) -> dict[str, dict]:
     조회수를 비교해서 더 높을 때만 교체한다 — 이게 바로 "동일 요리명 다건 시
     조회수 1위 채택"을 코드로 옮긴 것이다. 전체 CSV를 다 읽고 나면 winners에는
     요리명마다 딱 하나, 제일 조회수 높은 행만 남는다.
+
+    INQ_CNT 컬럼이 아예 없는 CSV(예: 요리명별_조리과정_전처리완료_2.csv처럼
+    이미 표준선정이 끝난 상태로 CKG_NM/CKG_MTRL_CN/COOKING_STEPS 3개 컬럼만
+    남긴 축약 파일)도 그대로 지원한다 — row.get()으로 없으면 0 취급한다. 이런
+    파일은 애초에 요리명 중복이 없는 전제라(이미 한 번 골라진 상태), 조회수를
+    전부 0으로 봐도 최종 결과(요리명당 1행)는 똑같다.
     """
     winners: dict[str, dict] = {}
     with csv_path.open(encoding="utf-8-sig") as f:  # utf-8-sig: 엑셀이 저장한 BOM(파일 맨 앞의 보이지 않는 표시)을 자동으로 무시
@@ -106,9 +120,10 @@ def select_standard_rows(csv_path: Path) -> dict[str, dict]:
             name = row["CKG_NM"].strip()
             if not name:
                 continue  # 요리명이 빈 값인 이상한 행은 건너뜀
-            inq = int(row["INQ_CNT"])
+            inq = int(row["INQ_CNT"]) if row.get("INQ_CNT") else 0
             current = winners.get(name)
-            if current is None or inq > int(current["INQ_CNT"]):
+            current_inq = int(current["INQ_CNT"]) if current and current.get("INQ_CNT") else 0
+            if current is None or inq > current_inq:
                 winners[name] = row
     return winners
 
@@ -125,15 +140,26 @@ def chunked(seq: list, size: int):
 
 
 def build_recipe_payload(row: dict) -> dict:
-    """CSV의 한 행(딕셔너리)을 recipes 테이블에 그대로 넣을 수 있는 딕셔너리로 변환한다."""
-    return {
+    """CSV의 한 행(딕셔너리)을 recipes 테이블에 그대로 넣을 수 있는 딕셔너리로 변환한다.
+
+    INQ_CNT/FIRST_REG_DT가 없는 CSV(축약 전처리 파일)는 그 키를 payload에서
+    아예 빼버린다 — insert할 때 그 컬럼을 안 보내면 DB가 스스로 기본값
+    (view_count=0, created_at=now(), schema.sql 참고)을 채워주므로, 여기서
+    0이나 현재시각을 직접 흉내 낼 필요가 없다. external_id/servings는 기존
+    코드에서도 채운 적이 없는 미사용 컬럼이라(코드 전체 검색 결과 참조하는
+    곳이 없음) 여기서도 그대로 안 채운다.
+    """
+    payload = {
         "dish_name": row["CKG_NM"].strip(),
         "ingredients": row["CKG_MTRL_CN"].strip(),
         "source": "api_standard",
         "origin_id": None,
-        "view_count": int(row["INQ_CNT"]),
-        "created_at": parse_first_reg_dt(row["FIRST_REG_DT"]),
     }
+    if row.get("INQ_CNT"):
+        payload["view_count"] = int(row["INQ_CNT"])
+    if row.get("FIRST_REG_DT"):
+        payload["created_at"] = parse_first_reg_dt(row["FIRST_REG_DT"])
+    return payload
 
 
 def run(csv_path: Path, dry_run: bool) -> None:

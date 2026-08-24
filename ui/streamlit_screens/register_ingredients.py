@@ -24,7 +24,7 @@ def render() -> None:
     with c2:
         if st.button("추가", use_container_width=True) and new_item.strip():
             name, _, qty = new_item.strip().partition(" ")
-            data["ingredients"].append({"name": name, "qty": qty or "적당량", "emoji": "🥄"})
+            data["ingredients"].append({"name": name, "qty": qty or "적당량", "emoji": "✅"})
             st.rerun()
 
     if data["ingredients"]:

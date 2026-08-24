@@ -57,6 +57,7 @@ class FakeQuery:
         self.order_col = None
         self.want_single = False
         self.select_count = None
+        self.range_bounds = None
 
     def select(self, *args, count=None):
         self.op = "select"
@@ -81,6 +82,14 @@ class FakeQuery:
 
     def order(self, col):
         self.order_col = col
+        return self
+
+    def range(self, start: int, end: int):
+        # 진짜 supabase-py(PostgREST)의 .range(start, end)를 흉내 낸다 — start/end
+        # 둘 다 포함(inclusive)하는 구간만 남긴다. 실제 Supabase가 select() 결과를
+        # 기본 1000행으로 자르는 것과 같은 동작을 재현해야, _all_dish_names()의
+        # 페이지네이션 루프를 목업 클라이언트로도 똑같이 테스트할 수 있다.
+        self.range_bounds = (start, end)
         return self
 
     def single(self):
@@ -121,6 +130,9 @@ class FakeQuery:
 
         if self.order_col:
             rows = sorted(rows, key=lambda r: r.get(self.order_col, 0))
+        if self.range_bounds:
+            start, end = self.range_bounds
+            rows = rows[start : end + 1]
         if self.want_single:
             return FakeResult(rows[0] if rows else None)
         return FakeResult(rows, count=len(rows) if self.select_count else None)

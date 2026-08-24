@@ -9,9 +9,10 @@
   `src/orchestration/pipeline.py`의 `handle_utterance()`를 Python에서 직접 호출해서 오케스트레이션
   레이어(의도분류→라우팅→DB)까지만 검증한다. `app.py`가 준비되면 아래 시나리오를 화면에서 그대로
   다시 확인해야 한다. 아래 AC-14 실행은 `tests/integration_scenario_test.py`로 자동화해서 확인함.
-- TTS(`src/tts/infer.py`)는 이제 작성 완료됐지만(`tts_synthesize()`), **AC-16(TTS 딥러닝 검증)은
-  아직 실행 안 됨** — `tests/tts_stt_roundtrip_test.py`(GPU 필요)를 하주성/홍민하님이 실행해야 함,
-  결과 기록 자리만 만들어두고 나오는 대로 채운다.
+- TTS(`src/tts/infer.py`)는 작성 완료됐고(`tts_synthesize()`), **AC-16(TTS 딥러닝 검증)도
+  2026-08-19 실행 완료** — `tests/tts_stt_roundtrip_test.py`(GPU) 평균 CER 0.0000,
+  `tests/tts_cpu_inference_test.py` 대신 `tts_synthesize()`를 CPU 강제 실행한 벤치마크는
+  평균 36.06초(목표 5초 미달, 아래 표 참고).
 - STT는 배포 완료됐지만, 이 문서의 시나리오는 마이크 입력이 아니라 "STT가 이렇게 인식했다고 가정한
   텍스트"를 `handle_utterance()`에 직접 넣는 방식으로 진행한다(STT 인식 자체의 정확도는 이 문서의
   범위가 아니라 STT 자체 평가 스크립트의 몫).
@@ -119,20 +120,30 @@ session = {}
 
 ---
 
-## AC-16 딥러닝 검증 (TTS) — 현재 블로킹
+## AC-16 딥러닝 검증 (TTS) — 실행 완료(2026-08-19)
 
 > GIVEN TTS 파인튜닝 전/후 동일 텍스트셋
 > WHEN WER·청취 평가 실시
 > THEN 파인튜닝 후 지표가 파인튜닝 전 대비 개선됨을 수치로 제시(발표자료 필수 포함)
 
-**상태: TTS 모델 학습 중이라 실행 불가.** TTS 파인튜닝 완료 후 아래를 채운다.
+**실행됨**: `tests/tts_stt_roundtrip_test.py`(GPU, TTS 합성→ChefEar STT 재인식→CER)와
+`tts_synthesize()` CPU 강제 실행 벤치마크로 확인. "파인튜닝 전" 대조군(제로샷 베이스 모델)은
+이번 실행 범위에서 별도로 측정하지 않아 미기재(지어내지 않음, 1.5 원칙) — 대신 같은 파인튜닝
+계열 안에서 체크포인트별 이력(epoch-8 → epoch-24 → 13에포크+voice-clone)을 비교 지표로 남김.
 
-| 항목 | 파인튜닝 전 | 파인튜닝 후 | 개선폭 |
+| 항목 | epoch-8 | epoch-24 | 13에포크+voice-clone(현재) |
 |---|---|---|---|
-| WER | | | |
-| 청취 평가(주관 점수) | | | |
+| CER(라운드트립, 5문장 평균) | 1.5189 | 14.26(반복 루프 다수) | **0.0000** |
+| CPU 추론 속도(공식 스크립트, 전체 평균, 목표 5초) | 197.48초(구 code path) | 미측정 | **26.11초**(`tests/tts_cpu_inference_test.py` 재실행, 여전히 목표 미달) |
+| GPU(RTX 5070) 추론 속도(참고치, 5문장 평균) | 미측정 | 미측정 | eager 6.34→SDPA 5.48→`torch.compile(dynamic=True)` 5.21초(4문장 기준)까지 개선했으나, 98자 긴 문장 추가+`MAX_NEW_TOKENS` 250→197 변경 후 **8.75초**로 재악화(긴 문장 하나가 20.1초). 이 문장이 197 토큰 한도(196/197 사용)에 거의 붙어서 끝남 — 다른 시행에선 잘릴 가능성 있음(기존 이슈 #6과 동일 유형). flash-attn은 재시도했으나 여전히 설치 불가 |
 
-관련: `src/tts/README.md`, `docs/decisions.md`(OOM/CPU 속도 미확인 항목).
+`flash-attn`은 이 환경(WSL/Python 3.14/torch 2.13+cu130/RTX 5070 `sm_120`)에서 설치 불가 확인(wheel
+없음, `nvcc` 없어 소스 빌드도 불가). `torch.compile()`도 시도했으나 문장 길이가 바뀔 때마다
+재컴파일돼서 효과가 일관되지 않음(5문장 중 2개만 목표 통과). 상세: `docs/decisions.md`.
+
+결과 파일: `results/tts/roundtrip_cer.csv`, `results/tts/cpu_inference_test.csv`,
+`results/tts/gpu_inference_test_20260819.csv`.
+관련: `src/tts/README.md`, `docs/decisions.md`.
 
 ---
 
@@ -142,6 +153,6 @@ session = {}
 |---|---|
 | AC-14 (핵심 시나리오 완주) | [O] 전체 PASS / [ ] 일부 FAIL(사유: ) / [ ] 미실행 |
 | AC-15 (반복 질의 일관성) | [O] 전체 PASS / [ ] 일부 FAIL(사유: ) / [ ] 미실행 |
-| AC-16 (TTS 딥러닝 검증) | [O] 블로킹(TTS 파인튜닝은 완료, `tests/tts_stt_roundtrip_test.py` 실행 대기 — GPU 필요) |
+| AC-16 (TTS 딥러닝 검증) | [O] 실행 완료 — CER 0.0000(PASS) / CPU 속도 26.11초(목표 5초, FAIL) / GPU 참고치 7.63초 |
 
 **실행일**: 2026-08-16 **실행자**: 김승욱 (`tests/integration_scenario_test.py`로 자동 실행, 31/31 PASS)

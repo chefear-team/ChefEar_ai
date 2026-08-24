@@ -6,18 +6,11 @@ from theme import ICON_CHECK_CIRCLE, ICON_CHECK_SMALL, render_spacer
 
 
 def render() -> None:
-    dish_name = None
-    if st.session_state.get("register_data"):
-        dish_name = st.session_state.register_data.get("dish_name")
-    elif st.session_state.get("recipe"):
-        dish_name = st.session_state.recipe.get("dish_name")
-    dish_name = dish_name or "레시피"
-
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="ce-center"><h1>저장이 완료됐어요!</h1>'
-        f"<p>{dish_name}, 다음에 다시 찾으면 회원님 버전으로 먼저 안내해드릴게요.</p></div>",
+        '<div class="ce-center"><h1>저장이 완료됐어요!</h1>'
+        "<p>다음에 다시 찾으면 회원님 버전으로 먼저 안내해드릴게요.</p></div>",
         unsafe_allow_html=True,
     )
 

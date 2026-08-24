@@ -5,8 +5,6 @@
 "자격증명이 없을 때 정말로 자동 폴백이 되는지" 자체를 확인해야 하므로 일부러
 client를 생략해서 orchestration.db.get_client()가 실제로 호출되게 만든다.
 """
-import os
-
 import pytest
 
 from orchestration import db

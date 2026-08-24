@@ -85,3 +85,21 @@ end $$;
 -- 따라 같은 요리명으로 여러 버전을 가질 수 있으므로 이 제약에서 제외한다(where 조건).
 create unique index if not exists uq_recipes_dish_name_standard
     on recipes (dish_name) where source = 'api_standard';
+
+-- ── users(2026-08-22 추가): 마이 레시피 로그인용 실제 계정 ──────────────────
+-- 작업3(위 recipes.owner_id, FR-08)의 쿠키 익명 UUID와는 별개 개념이다. 쿠키는
+-- "회원가입 없이 같은 브라우저면 내 레시피를 기억"하는 용도로 조리 흐름(자유발화
+-- 등록)에 계속 쓰고, 이 테이블은 그 위에 "로그인해서 기기와 무관하게 내 레시피를
+-- 관리"하는 진짜 계정을 추가한 것 — 로그인 상태면 recipes.owner_id에 쿠키 UUID
+-- 대신 이 테이블의 id를 저장한다(src/ui/session.py의 get_owner_id() 참고).
+-- recipes.owner_id 컬럼 타입(text)은 안 바꾼다 — 이미 있는 쿠키 UUID 값들과
+-- 형식이 같아서(둘 다 uuid 문자열) 그대로 재사용 가능하고, 로그인 없이 등록된
+-- 기존 데이터도 깨지지 않는다.
+create table if not exists users (
+    id uuid primary key default gen_random_uuid(),
+    username text not null unique,
+    -- 원문 비밀번호는 저장하지 않는다. "salt(hex):hash(hex)" 형태의 PBKDF2-HMAC-SHA256
+    -- 해시 문자열(orchestration/auth.py의 hash_password() 참고).
+    password_hash text not null,
+    created_at timestamptz not null default now()
+);

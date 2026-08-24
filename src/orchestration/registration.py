@@ -156,3 +156,48 @@ def save_recipe(
         client.table("recipe_steps").insert(step_payload).execute()
 
     return {"recipe_id": recipe_id, "saved": True}
+
+
+def update_recipe(
+    recipe_id: str,
+    dish_name: str,
+    ingredients: list[str],
+    instructions: list[str],
+    client=None,
+) -> dict:
+    """이미 저장된 user_custom 레시피 한 건을 제자리에서 고친다(마이 레시피 화면의 "수정").
+
+    save_recipe()는 일부러 매번 새 행을 insert만 하고 절대 덮어쓰지 않는다(EC-17) —
+    "새 버전으로 등록"과 "이미 있는 내 레시피를 고치기"는 다른 동작이라서 함수도
+    나눴다. recipe_steps는 통째로 지우고 다시 넣는다 — 조리순서는 몇 단계짜리로
+    바뀔지 몰라서(늘거나 줄 수 있음) 행 단위로 하나씩 맞춰 UPDATE하는 것보다
+    delete-then-insert가 훨씬 단순하고, on delete cascade와 달리 recipes 행 자체는
+    안 건드리므로 recipe_id/created_at/owner_id 등은 그대로 유지된다.
+    """
+    client = client or get_client()
+    client.table("recipes").update(
+        {"dish_name": dish_name, "ingredients": ", ".join(ingredients)}
+    ).eq("id", recipe_id).execute()
+
+    client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
+    step_payload = [
+        {"recipe_id": recipe_id, "step_number": i, "step_text": text, "source": "user_custom"}
+        for i, text in enumerate(instructions, start=1)
+    ]
+    if step_payload:
+        client.table("recipe_steps").insert(step_payload).execute()
+
+    return {"recipe_id": recipe_id, "updated": True}
+
+
+def delete_recipe(recipe_id: str, client=None) -> dict:
+    """user_custom 레시피 한 건을 완전히 지운다(마이 레시피 화면의 "삭제").
+
+    recipe_steps부터 먼저 지운다 — schema.sql의 on delete cascade가 recipes 삭제 시
+    딸린 recipe_steps도 자동으로 지워주긴 하지만, 여기서 명시적으로 먼저 지워서 그
+    설정 여부에 기대지 않고 항상 같은 순서로 정리되게 한다.
+    """
+    client = client or get_client()
+    client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
+    client.table("recipes").delete().eq("id", recipe_id).execute()
+    return {"recipe_id": recipe_id, "deleted": True}

@@ -19,7 +19,9 @@ env-main/
 data/kss/
 data/synthesized/
 models/
-results/tts/roundtrip_audio/
+# roundtrip 테스트로 생성되는 오디오 산출물 폴더 전부(roundtrip_audio/, roundtrip_audio_epoch24/ 등
+# 에포크별로 계속 늘어남) — CSV 결과(roundtrip_cer*.csv)는 대상 아님, 그건 계속 커밋함
+results/tts/roundtrip_*/
 
 # 대용량 원본 CSV(수십MB) — git 커밋 금지, load_data.py --csv 로 외부 경로 직접 참조
 data/standard/*.csv
@@ -36,6 +38,14 @@ build/
 .DS_Store
 .idea/
 .vscode/
+.claude/
 
 # 로그
 *.log
+
+#test 배포 절대 하지 말 것
+result_test/*
+tests/test-audio/*
+result_test_backup_ep13_working/*
+ui/assets/*
+run_local.sh

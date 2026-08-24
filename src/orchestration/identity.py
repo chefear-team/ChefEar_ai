@@ -14,10 +14,24 @@ streamlit-cookies-manager 라이브러리로 브라우저 쿠키를 읽고 쓴�
 """
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
 COOKIE_KEY = "chefear_anon_id"  # 브라우저에 저장될 쿠키의 이름(키)
+
+
+class _SuppressStCacheDeprecation(logging.Filter):
+    """streamlit-cookies-manager==0.2.0이 내부적으로 옛날 @st.cache를 그대로 써서
+    (라이브러리 코드, 우리 코드 아님) 매 실행마다 뜨는 "st.cache is deprecated..."
+    경고만 콘솔에서 숨긴다. 실제 동작엔 영향 없는 순수 deprecation 알림이라 무해함.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "`st.cache` is deprecated" not in record.getMessage()
+
+
+logging.getLogger("streamlit.deprecation_util").addFilter(_SuppressStCacheDeprecation())
 
 
 def get_or_create_anon_id(cookies) -> str:
@@ -64,7 +78,20 @@ def build_cookie_manager():
         anon_id = get_or_create_anon_id(cookies)
         st.session_state["owner_id"] = anon_id  # 이후 요청들은 session_state에서 꺼내 씀
     """
-    from streamlit_cookies_manager import EncryptedCookieManager
+    import streamlit as st
+
+    # streamlit_cookies_manager.encrypted_cookie_manager가 옛날 @st.cache로 함수를
+    # 감싸놓은 탓에, 이 모듈을 맨 처음 import하는 순간(데코레이터가 적용되는 시점)
+    # Streamlit이 "st.cache is deprecated..." 경고를 st.warning()으로 화면에도 띄운다
+    # (라이브러리 코드라 우리가 못 고침, 위 로깅 필터는 콘솔 출력만 막아서 화면 표시는
+    # 못 막았음). import하는 그 순간만 st.warning을 무력화해서 화면에도 안 뜨게 한다 —
+    # 모듈은 최초 1회만 import되므로 이후 다른 st.warning 호출엔 영향 없다.
+    _original_warning = st.warning
+    st.warning = lambda *args, **kwargs: None
+    try:
+        from streamlit_cookies_manager import EncryptedCookieManager
+    finally:
+        st.warning = _original_warning
 
     password = os.environ.get("COOKIE_SECRET")
     if not password:

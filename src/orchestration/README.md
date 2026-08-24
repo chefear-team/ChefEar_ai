@@ -2,11 +2,14 @@
 
 ## 이 폴더가 하는 일
 
-의도분류·조리순서 조회·재료대체·신규등록·DB 연결을 담당하는 순수 로직 계층. LLM을 쓰지 않고
-sentence-transformers 임베딩 유사도 + Supabase 실데이터 조회로만 동작한다(AGENTS.md 절대 원칙).
-Streamlit 세션(`st.session_state`)을 함수 인자로 받는 형태라 Streamlit 없이도 dict만으로 테스트 가능.
+의도분류·조리순서 조회·재료대체·신규등록·DB 연결을 담당하는 순수 로직 계층. 대부분 LLM 없이
+sentence-transformers 임베딩 유사도 + Supabase 실데이터 조회로 동작한다. **AGENTS.md 1.5 원칙이
+막는 건 "서비스 실행 중 외부 LLM API 호출"이지 로컬 LLM 자체가 아니다** — `entity_extract_llm.py`
+(2026-08-20 추가)는 GPU 데스크탑 프로세스 안에 직접 로드한 로컬 LLM(EXAONE)을 쓰는 유일한
+예외이고, 네트워크로 남의 서버에 텍스트를 보내지 않으므로 이 원칙에 걸리지 않는다(`docs/specs/llm_dish_name_extract.md`
+Why 참고). Streamlit 세션(`st.session_state`)을 함수 인자로 받는 형태라 Streamlit 없이도 dict만으로 테스트 가능.
 
-## 파일별 상태 (확인: 2026-08-16)
+## 파일별 상태 (확인: 2026-08-21)
 
 | 파일 | 상태 | 역할 |
 |---|---|---|
@@ -19,6 +22,8 @@ Streamlit 세션(`st.session_state`)을 함수 인자로 받는 형태라 Stream
 | `registration.py` | 완성 | `register_recipe`(다단계 세션) / `save_recipe`(최종 저장) |
 | `load_data.py` | 완성 | CSV → Supabase 적재 CLI. `python src/orchestration/load_data.py --csv <경로> [--dry-run]` |
 | `pipeline.py` | 완성 | `get_precomputed_steps`/`get_current_step`/`advance_step`/`manual_fallback`(7.4/7.1.1) + `handle_utterance()`(STT 텍스트 → `classify_intent()` → 의도별 라우팅 → 응답, `app.py`가 호출할 최종 진입점) |
+| `entity_extract.py` | 신규(2026-08-19), **재료명 추출만 `app.py`가 사용 중** | 자유발화에서 요리명/재료명을 뽑는 규칙 기반 v1(`extract_dish_name`/`extract_substitution_ingredients`) — `classify_intent()`는 의도만 분류하고 세부 정보는 안 뽑아서, 원래 `app.py`가 채워야 했던 부분. 정규식/토큰 분리만 씀. **`extract_dish_name()`은 2026-08-20부로 `app.py`가 더 이상 안 부름**(아래 `entity_extract_llm.py`로 교체), 파일 자체는 그대로 남아있음(회귀 비교용) |
+| `entity_extract_llm.py` | **신규(2026-08-20)** | 요리명 추출을 로컬 LLM(EXAONE-3.5-2.4B-Instruct, `../llm/infer.py`)으로 하는 신규 경로 — `extract_dish_name_llm(text) -> str \| None`. `entity_extract.py`의 규칙 기반 한계(문형 밖 표현을 놓침)를 보완. 실패/형식오류/불확실 응답이면 전부 `None`(지어내지 않음). `app.py`가 요리명 추출에 이 함수를 사용(재료명 추출은 여전히 `entity_extract.py`). 상세: `docs/specs/llm_dish_name_extract.md`, `../llm/README.md` |
 
 ## 진행 방법
 
@@ -37,10 +42,12 @@ Streamlit 세션(`st.session_state`)을 함수 인자로 받는 형태라 Stream
 pytest tests/ -k "not tts_cpu_inference"
 ```
 
-2026-08-17 재확인: 50/50 PASS. 다만 재료대체 매칭 실패 시 응답에 `match_type: "none"`이 들어가는지는
-어떤 pytest도 검증하지 않는다(`test_substitution.py`는 `apply_substitution()` 자체만 봄, 실제 발견은
-`tests/integration_test.md` 시나리오 C 수동 테스트에서 나왔다) — `main` 브랜치의 `pipeline.py`엔 이
-필드가 빠져 있어(`docs/decisions.md` 참고) 병합 시 회귀 위험이 있다.
+2026-08-18 재확인(main 브랜치): 50/50 PASS. `pipeline.py`의 `match_type: "none"` 필드는 main에
+이미 병합 완료됐고(`tests/integration_scenario_test.py` C-1로 실제 Supabase 연결 재확인, 31/31 PASS),
+main·seunguk 브랜치 `pipeline.py` diff 없음 — 병합 회귀 위험은 해소됐다. 다만 이 필드를 검증하는
+pytest는 여전히 없다(`test_substitution.py`는 `apply_substitution()` 자체만 봄, 실제 발견은
+`tests/integration_test.md` 시나리오 C 수동 테스트에서 나왔다) — 향후 다른 브랜치에서 이 필드가
+조용히 빠지는 걸 pytest로는 못 잡으므로 회귀 테스트 추가가 필요하다.
 
 ## 관련 문서
 
