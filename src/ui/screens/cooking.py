@@ -30,6 +30,26 @@ def screen_start() -> None:
         '<p style="color:var(--text-faint); font-size:13.5px;">예: "된장찌개 어떻게 만들어?"</p></div>',
         unsafe_allow_html=True,
     )
+    # 2026-08-25 추가 — dispatch.py::process_utterance()가 로그인 안 한 상태의 "등록"
+    # 발화에 goto() 없이 이 화면에 그대로 머무르며 speak(..., hidden=True)로 안내
+    # 음성만 미리 합성/캐싱해둔다(그 자리에서 바로 재생 위젯을 그리면 뒤이은 rerun에
+    # 곧장 지워져 소리가 거의 안 들리는 문제가 실측 확인됨, dispatch.py 주석 참고) —
+    # no_match/recipe_confirm과 같은 패턴으로, 이 화면 자신이 다음 rerun에서 chat_log의
+    # 마지막 ai 메시지를 여기서 다시 찾아 들려준다.
+    #
+    # cooking_complete 완료 멘트 건과 똑같은 이유로(위 screen_cooking_complete() 문서의
+    # "_cooking_complete_audio_played" 참고 — Streamlit이 이 오디오 iframe을 rerun마다
+    # 새 DOM 엘리먼트로 다시 만들어서, 같은 파일이라도 브라우저의 "이미 로드된 오디오는
+    # 다시 안 튼다" 방어가 안 먹히는 게 실측 확인됨) 여기도 "정확히 한 번만 재생"을
+    # 플래그로 명시적으로 강제한다 — start 화면은 다른 화면보다도 훨씬 자주(마이크
+    # idle 폴링 등으로) 다시 그려지는 화면이라, 이 가드 없이 chat_log만 보고 매번
+    # 다시 재생을 시도하면 가만히 있는 동안 안내 음성이 계속 반복될 위험이 실제로
+    # 있다. 재생한 뒤 바로 chat_log를 비워서 다음 rerun엔 조건 자체가 안 걸리게 한다
+    # (이 화면은 대화 기록을 화면에 안 보여주므로 비워도 다른 부작용 없음).
+    chat_log = st.session_state.chat_log
+    if chat_log and chat_log[-1][0] == "ai":
+        _render_cached_speech(chat_log[-1][1])
+        st.session_state.chat_log = []
     # 2026-08-23 요청 — "준비됐는지 안 됐는지 모르겠다": 실제 연결 상태(mic_is_playing())를
     # 큰 마이크 아이콘 색으로 보여준다. 아래 listen("start")가 이 값을 이번 rerun에서
     # 갱신하기 *전에* 먼저 읽으므로 화면 위쪽(아이콘)이 먼저, 실제 연결 시도는 그 아래에서
@@ -147,8 +167,13 @@ def handle_recipe_confirm(text: str) -> None:
     # 2026-08-24 재요청 — "진행"/"알려줘"/"부탁"도 확정 단어로 추가. 이 세 단어가
     # 없으면 "레시피 알려줘"/"진행해줘"/"부탁해" 같은 자연스러운 확정 발화가 어느
     # 분기에도 안 걸려서 화면이 조용히 멈춘 것처럼 보이는 리포트로 확인됨.
+    # 2026-08-26 재요청 — "할래"도 확정 단어로 추가("이걸로 할래" 등). 이 화면은
+    # 이미 위 세 분기(처음/다시/확정 단어) 외 나머지 발화는 전부 무시하도록 설계돼
+    # 있어서(바로 아래 "확정 단어도 처음도 다시도 아니면... 아무 일도 안 하고 이
+    # 화면에 그대로 머문다" 주석 참고), 지정 안 된 단어를 추가로 막을 필요 없이
+    # 이 튜플에 새 단어를 더하기만 하면 된다.
     elif (
-        any(word in norm for word in ("응", "네", "좋", "다음", "그래", "시작", "진행", "알려줘", "부탁"))
+        any(word in norm for word in ("응", "네", "좋", "다음", "그래", "시작", "진행", "알려줘", "부탁", "할래"))
         or norm.lower() == "next"
     ):
         st.session_state.pipeline_session["step_number"] = 1
@@ -287,7 +312,21 @@ def screen_cooking_complete() -> None:
         f"<p>{dish_name}, 수고하셨어요.</p></div>",
         unsafe_allow_html=True,
     )
-    _render_cached_speech(COOKING_COMPLETE_MESSAGE)
+    # 2026-08-25 리포트 실측 확인 — "처음"으로 이 화면을 벗어나 start로 넘어간 직후,
+    # 방금 그린 완료 멘트 오디오 iframe이 브라우저에서 처음부터 다시(4.05초 전체) 재생되는
+    # 문제를 window.performance.now() 타임스탬프 로거로 확인했다. _render_cached_speech()가
+    # 매 rerun마다 조건 없이 호출되는데, 평소엔 같은 오디오 파일이면 브라우저가 "이미 로드된
+    # 오디오"로 보고 autoplay를 다시 안 트는 것에 기대고 있었지만(nonce 문서 참고), 이
+    # 화면->start 전환 rerun에서는 Streamlit 프론트엔드가 이 iframe을 완전히 새 DOM
+    # 엘리먼트로 다시 만들어버려 그 방어가 안 먹히는 것으로 실측됐다(정확한 React
+    # reconciliation 내부 동작까지는 확정 못함, 화면 전환 잔상 조사와 같은 부류).
+    # 브라우저/Streamlit이 엘리먼트를 재사용해줄 거라는 가정에 기대는 대신, "이 완료
+    # 화면에 진입한 뒤 정확히 한 번만 재생"을 세션 플래그로 파이썬 쪽에서 명시적으로
+    # 강제한다 — 이미 한 번 그렸으면 이후 재실행에서는 아예 호출 자체를 건너뛴다(내용이
+    # 같으니 다시 그려봐야 방금 확인한 재생 이슈만 반복될 위험이 있다).
+    if not st.session_state.get("_cooking_complete_audio_played"):
+        _render_cached_speech(COOKING_COMPLETE_MESSAGE)
+        st.session_state["_cooking_complete_audio_played"] = True
     render_spacer()
 
     # 2026-08-25 — listen() 호출은 app.py::main()이 화면별 key 컨테이너 밖에서 직접

@@ -291,6 +291,10 @@ def process_utterance(text: str) -> None:
             # _render_cached_speech()로 다시 찾아 들려주므로 여기서는 hidden=True로 화면
             # 없는 자동재생만 하고, 실제로 들리는 소리는 도착 화면 쪽에 맡긴다(recipe_confirm/
             # register_steps와 같은 패턴).
+            # 2026-08-25 — 이번에 새로 도착하는 완료 화면이 한 번은 재생할 수 있게
+            # 플래그를 여기서 리셋한다(screen_cooking_complete()의 "화면 진입당 한 번만
+            # 재생" 가드 참고 — 이 플래그가 없으면 그 가드가 매번 True로 막혀버린다).
+            st.session_state["_cooking_complete_audio_played"] = False
             speak(COOKING_COMPLETE_MESSAGE, hidden=True)
             goto("cooking_complete")
         else:
@@ -374,6 +378,9 @@ def fallback_buttons(key_prefix: str) -> None:
                 elif result.get("step") is None:
                     # process_utterance()의 같은 분기와 동일한 이유(2026-08-22) — 마지막
                     # 단계에서 "다음" 버튼을 누르면 완료 화면으로 보낸다.
+                    # 2026-08-25 — process_utterance()의 같은 분기와 동일한 이유로 재생
+                    # 플래그를 리셋한다(screen_cooking_complete() 가드 참고).
+                    st.session_state["_cooking_complete_audio_played"] = False
                     speak(COOKING_COMPLETE_MESSAGE, hidden=True)
                     goto("cooking_complete")
                 else:

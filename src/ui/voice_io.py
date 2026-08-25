@@ -176,16 +176,30 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
     st.empty()로 자리를 직접 잡아두고, 대기가 끝나는 즉시(다음 코드로 넘어가기 *전에*)
     명시적으로 비워서 — 다음 rerun의 DOM 정리에 기대지 않고 이 함수 안에서 스스로
     정리를 끝낸다.
+
+    2026-08-25 리포트 — "메롱"처럼 결국 미분류로 아무 일도 안 하는 발화에도 이 팝업이
+    똑같이 뜬다는 지적. process_utterance()는 결과(진행/미분류 등)를 미리 알 수
+    없어서 LLM/임베딩 호출을 항상 먼저 해야 하지만, 그 자체가 항상 몇 초씩 걸리는 건
+    아니다(GPU가 이미 데워져 있으면 미분류 판정까지 수백 ms 안에 끝나는 경우도 많음).
+    처리 시작하자마자 무조건 팝업부터 띄우는 대신, `_SHOW_DELAY_S`(0.4초)보다 오래
+    걸릴 때만 뒤늦게 띄운다 — 빨리 끝나는 처리(성공이든 미분류든)는 팝업이 아예 안
+    보이고, 진짜 오래 걸리는 처리만 "넘어가고 있어요" 안내를 받는다.
     """
     import queue
     import time
 
+    _SHOW_DELAY_S = 0.4
+
     overlay_slot = st.empty()
-    if loading_message:
-        with overlay_slot:
-            render_loading_overlay(loading_message)
+    overlay_shown = False
+    start = time.monotonic()
 
     while not job["done"]:
+        if loading_message and not overlay_shown and (time.monotonic() - start) >= _SHOW_DELAY_S:
+            with overlay_slot:
+                render_loading_overlay(loading_message)
+            overlay_shown = True
+
         context = st.session_state.get(_mic_component_key())
         receiver = getattr(context, "audio_receiver", None) if context is not None else None
         if receiver is None:
@@ -200,7 +214,16 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
             # audio_receiver가 None으로 바뀔 수 있다. 조용히 다음 루프에서 다시 확인.
             pass
 
-    overlay_slot.empty()
+    if overlay_shown:
+        overlay_slot.empty()
+        # 2026-08-25 리포트 — 이 함수를 부른 쪽(process_utterance()의 미분류 분기 등)이
+        # 바로 다음 줄에서 st.rerun()을 부르는 경우, "지워라"(위 empty())와 "전체를 새로
+        # 그려라"(뒤이은 rerun) 두 신호가 브라우저에 너무 붙어서 도착하면 첫 신호가 다
+        # 반영되기 전에 두 번째가 덮쳐서 팝업이 지워지다 만 채로 남는 잔상이 실측
+        # 확인됐다. 정확한 프론트엔드 내부 메커니즘은 확정 못 했지만(화면 전환 잔상
+        # 전반과 같은 부류의 문제로 추정), 아주 짧은 간격을 둬서 "지워라" 델타가 먼저
+        # 반영될 시간을 벌어주는 임시 완화책 — 근본 fix는 아니다.
+        time.sleep(0.05)
 
 
 def speak(
@@ -475,7 +498,11 @@ def _recover_dead_mic() -> None:
     if st.session_state.get("_mic_ever_connected") and not signalling:
         st.session_state["_mic_gen"] = st.session_state.get("_mic_gen", 0) + 1
         st.session_state["_mic_ever_connected"] = False
-        st.warning("마이크 연결이 끊어져서 다시 연결하고 있어요...")
+        # 2026-08-25 요청 — 재연결 자체(WebRTC 재협상)는 몇 초~수십 초 걸리는 걸
+        # 못 없애지만, "끊어져서 다시 연결 중"이라고 대놓고 알리는 경고 배너가
+        # 오히려 더 느리고 눈에 띄게 느껴지게 만든다는 지적으로 조용히 지운다 —
+        # 화면 자체의 "마이크 연결 중..." 표시(render_mic_bar 등)가 이미 그
+        # 역할을 하고 있어서 중복이기도 하다.
 
 
 def _mic_muted() -> bool:
