@@ -130,7 +130,10 @@ def _render_always_on_mic(backend_session: dict, client, process_utterance) -> N
     webrtc_ctx = webrtc_streamer(
         key="always_on_mic",
         mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=256,
+        # 2026-08-24 — src/ui/voice_io.py와 같은 이유로 256(~5초)에서 1024(~20초)로 상향
+        # ("Queue overflow. Consider to set receiver size bigger." 경고 실측 확인, 처리
+        # 왕복 동안 get_frames()를 아무도 안 불러 큐가 쌓이는 문제).
+        audio_receiver_size=1024,
         media_stream_constraints={"video": False, "audio": True},
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
     )
@@ -149,6 +152,19 @@ def _render_always_on_mic(backend_session: dict, client, process_utterance) -> N
     segmenter = st.session_state.mic_segmenter
 
     import queue
+
+    # 2026-08-24 — src/ui/voice_io.py._run_mic_loop()와 같은 이유(위 audio_receiver_size
+    # 주석 참고) — process_utterance()가 도는 동안(TTS 합성 포함) get_frames()가 전혀
+    # 안 불려서 큐에 쌓인다. 버퍼 크기와 무관하게 재발하므로, 재개하자마자 밀린 프레임을
+    # 논블로킹으로 전부 비워서(barge-in 미지원이라 그 구간 오디오는 어차피 처리 대상 아님)
+    # 항상 "지금부터"만 실시간으로 처리한다.
+    try:
+        while True:
+            webrtc_ctx.audio_receiver.get_frames(timeout=0)
+    except queue.Empty:
+        pass
+    except AttributeError:
+        pass
 
     status_ph.info("🎙️ 듣고 있어요...")
     while webrtc_ctx.state.playing:

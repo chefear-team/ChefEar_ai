@@ -519,7 +519,14 @@ def _run_mic_loop() -> str | None:
         webrtc_ctx = webrtc_streamer(
             key=_mic_component_key(),
             mode=WebRtcMode.SENDONLY,
-            audio_receiver_size=256,
+            # 2026-08-24 — "Queue overflow. Consider to set receiver size bigger."
+            # 경고 실측 확인. 256(약 5초, 20ms/프레임 기준)로는 부족했다 — speak()가
+            # TTS 합성(3~9초+, docs/decisions.md #2)부터 재생까지 도는 동안은 이
+            # _run_mic_loop()를 아예 안 돌고 있어서 get_frames()를 아무도 안 부르고,
+            # 그동안 도착한 프레임이 전부 receiver 내부 큐에 쌓이기만 하다가 다음
+            # listen() 호출 때야 다시 드레인된다. handle_utterance() DB 조회 + TTS
+            # 합성 + 화면 재렌더 왕복을 넉넉히(약 20초) 버틸 수 있게 1024로 올린다.
+            audio_receiver_size=1024,
             # 2026-08-23 — noiseSuppression/autoGainControl을 껐던 시도는 되돌림. 실측
             # 로그로 확인해보니 autoGainControl을 끄는 순간 캡처 레벨 자체가 확 낮아졌다
             # (rms 0.07대 -> 0.013대, 약 1/5) — 이 마이크/방 환경은 원래 입력 자체가 작아서
@@ -561,6 +568,25 @@ def _run_mic_loop() -> str | None:
     import queue
 
     segmenter = _get_segmenter()
+
+    # 2026-08-24 — audio_receiver_size를 256->1024로 올려도 "Queue overflow" 경고가
+    # 반복되는 게 실측 확인됨. 근본 원인은 버퍼 크기가 아니라 드레인 공백 자체다 —
+    # speak()가 도는 동안(handle_utterance() DB 조회 + TTS 합성 3~9초+, docs/decisions.md
+    # #2 + 화면 재렌더) 이 함수가 아예 안 불려서 get_frames()가 전혀 호출되지 않는데,
+    # 그동안도 브라우저는 계속 프레임을 보내고 있어 큐에 쌓인다. 버퍼를 아무리 키워도
+    # "재개했을 때 밀린 걸 프레임 단위로 하나씩 처리하며 따라잡으려는" 방식 자체가
+    # 실시간 도착 속도를 못 이기면 다시 꽉 차서 반복된다. 게다가 이 프로젝트는 barge-in을
+    # 지원하지 않기로 했으므로(_mic_muted() 문서 참고) AI가 말하는 동안 들어온 오디오는
+    # 어차피 처리 대상이 아니다 — 그래서 밀린 걸 따라잡으려 하지 않고, 재개하자마자
+    # 큐에 쌓여있던 프레임을 전부 논블로킹으로 비워서(버려서) 항상 "지금부터"만
+    # 실시간으로 처리한다. 이러면 큐가 다시 꽉 찰 일이 없다.
+    try:
+        while True:
+            webrtc_ctx.audio_receiver.get_frames(timeout=0)
+    except queue.Empty:
+        pass
+    except AttributeError:
+        pass
 
     # 2026-08-23 리포트(헤드리스 브라우저 자동 테스트로 재현) — 루프를 도는 도중 연결이
     # 끊기면(탭 닫힘, 네트워크 끊김, 마이크 장치 분리 등) webrtc_ctx.audio_receiver

@@ -80,6 +80,12 @@ def listen_background_only(key_prefix: str, *, cancel_target: str) -> None:
         reset_to_start()
     elif norm in ("취소", "취소할래요", "취소해줘"):
         goto(cancel_target)
+    else:
+        # 2026-08-25 추가 — dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고) —
+        # 위 두 분기 다 goto()로 화면을 다시 그리며 listen()을 재호출해 마이크 드레인
+        # 루프를 이어가는데, 이 무시 케이스(재료/순서 자유 발화 등)만 rerun 없이 끝나서
+        # 그 순간부터 프레임이 안 비워져 "Queue overflow"로 이어졌다.
+        st.rerun()
 
 
 def process_utterance(text: str) -> None:
@@ -190,15 +196,24 @@ def process_utterance(text: str) -> None:
     intent = result.get("intent")
 
     if intent == "미분류":
-        # 문장 패턴 분류(classify_intent)가 "조회"로 못 알아들은 경우 전부 여기로 온다 —
-        # "분홍코끼리 어떻게 만들어?"처럼 LLM이 요리명을 뽑아낸 경우뿐 아니라, "111"처럼
-        # LLM조차 요리명으로 확신 못 해 dish_name_guess가 None인 경우도 포함한다.
-        # "잘 이해하지 못했어요"로 되묻고 끝내는 대신, 표준 데이터에 없는 요리일
-        # 가능성으로 보고 항상 등록 유도 화면으로 보낸다(2026-08-21 요청) — 등록
-        # 화면 자체가 "이 이름 맞아요?"로 다시 확인/수정을 받으므로, 여기서 추측이
-        # 틀려도 안전하다. LLM이 아무것도 못 뽑았으면 발화 원문을 그대로 짐작값으로 쓴다.
-        st.session_state.pending_dish_name = dish_name_guess or text.strip()
-        goto("register_intro")
+        # 문장 패턴 분류(classify_intent)가 기준예문.csv의 어떤 의도와도 못 매칭한
+        # 경우 전부 여기로 온다. 2026-08-24 재요청 — 기준예문에 없는 발화는 화면 전환도,
+        # 음성 응답도 없이 그냥 무시한다(예전엔 register_intro로 등록을 유도하거나
+        # unclassified 화면에서 "못 알아들었다"고 되물었는데, 조회 예문을 크게 넓힌
+        # 뒤로는 진짜 잡담/잡음만 여기로 남아서 매번 반응할 필요가 없다는 판단).
+        # register_intro/unclassified 화면 자체는 다른 경로(no_match의 "새 레시피로
+        # 등록할래요" 버튼, "알 수 없는 intent" 방어 분기 등)로 여전히 갈 수 있다.
+        #
+        # 2026-08-25 추가 — 이 분기만 유일하게 goto()(=st.rerun())를 안 불렀다. 다른
+        # 모든 분기는 화면을 옮기며 rerun이 걸리고, 그 rerun이 다시 listen()을 호출해
+        # _run_mic_loop()의 프레임 드레인 루프가 곧장 이어지는데, 여기는 그냥 return해서
+        # 이번 스크립트 실행이 끝나버린다 — 그 순간부터 아무도 get_frames()를 안 불러서
+        # (다음 rerun이 우연히 다른 이유로 트리거될 때까지) 마이크 큐가 쌓이기만 하다
+        # 넘친다("Queue overflow" 반복 + 그 직후 발화가 씹히는 리포트, 실측 확인 —
+        # "여기까지하면"/"좋아?"처럼 margin 미충족으로 미분류 처리된 직후에만 정확히
+        # 재현됨). 화면은 그대로 두고 같은 화면으로 rerun만 걸어서 드레인 루프가
+        # 끊기지 않게 한다.
+        st.rerun()
         return
 
     if intent == "조회":
