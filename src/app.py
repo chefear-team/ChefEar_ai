@@ -29,6 +29,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "ui"))
 
+import threading
+
 import streamlit as st
 
 from orchestration.db import load_env
@@ -76,80 +78,46 @@ SCREENS = {
 }
 
 
-def _warm_up_models() -> None:
-    """STT/LLM/TTS 모델을 화면이 뜨는 시점에 미리 로드해둔다(`tests/test_ui.py`와 동일 패턴).
+def _start_model_warmup() -> None:
+    """STT/LLM/TTS 모델을 백그라운드 스레드에서 미리 로드해둔다.
 
-    셋 다 첫 로딩 비용이 있어서(원인은 서로 다름, 아래 참고) 미리 안 해두면 사용자가
-    실제로 말을 걸거나("start" 화면 listen()) 첫 응답을 들을 때(speak()) 그 비용을
-    그대로 보게 된다 — speak()/listen()/process_utterance()가 stt.infer.stt_transcribe,
-    tts.infer.tts_synthesize, orchestration.entity_extract_llm.extract_dish_name_llm을
-    그 자리에서 lazy import해서 쓰기 때문이다. load_ct2_model()/load_llm()/
-    load_tts_model() 셋 다 전역 캐시라서(stt/infer.py의 _ct2_model, llm/infer.py의
-    _model, tts/infer.py의 전역 캐시) 이미 로드됐으면 즉시 반환 — 매 rerun(사용자
-    조작)마다 이 함수를 다시 호출해도 안전하고 빠르다.
+    2026-08-25 재작성(원래는 `_warm_up_models()`라는 이름으로 main() 안에서 동기/블로킹으로
+    세 모델을 다 로드한 뒤에야 화면(마이크 포함)을 그렸다 — "마이크 붙는 속도가 느리다"는
+    지적으로 재구성). 상시 마이크(webrtc_streamer())도 이 함수 *뒤에* 있는 화면 렌더링
+    단계에서만 처음 호출되므로, 예전 구조에서는 마이크의 WebRTC 협상(SDP offer/answer,
+    ICE)이 모델 로딩(콜드 스타트 시 최대 30초+, LLM 최초 다운로드 시엔 수 분)이 다 끝날
+    때까지 아예 시작도 못 했다 — 첫 페이지 로드에서 마이크가 늦게 붙는 것처럼 보인
+    실제 원인. load_ct2_model()/load_llm()/load_tts_model() 셋 다 이미 자기 안에 이중
+    확인 잠금(`_LOAD_LOCK`)을 갖고 있어서(여러 스레드가 동시에 로딩을 시작해도 안전 —
+    각 infer.py 파일의 `_LOAD_LOCK` 정의부 주석 참고) 백그라운드에서 미리 불러도, 나중에
+    실제 발화 처리 스레드가 같은 함수를 또 불러도 안전하게 합쳐진다(먼저 끝난 쪽이 이김,
+    뒤에 온 호출은 곧장 캐시를 돌려받음). 세션당 한 번만 스레드를 띄운다
+    (`_warmup_thread_started` 플래그로 중복 시작 방지).
 
-    STT: 처음엔 "CUDA 초기화가 느리다"고 짐작했으나(2026-08-20), 실측해보니 GPU/CPU
-    사용률이 로딩 내내 0%였다 — 프로젝트 폴더가 네트워크 공유 드라이브(CIFS, ~9MB/s)에
-    있어서 model.bin(778MB) 읽기 자체가 87초 걸렸던 것. .env의 STT_LOCAL_CACHE_DIR로
-    로컬 디스크 사본을 우선 읽게 고쳐서 1.2초로 줄었다(`src/stt/infer.py` 참고).
-    LLM: EXAONE 가중치는 원래 ~/.cache/huggingface(로컬 디스크)에 캐시되므로 이 문제가
-    없다 — 최초 1회 인터넷에서 받는 것만 느리고(수 분), 그다음부턴 13초 정도로 빠르다.
-    TTS: LLM과 마찬가지로 ~/.cache/huggingface에서 읽어서 네트워크 드라이브 문제는
-    없다 — 7.9GB 모델이라 로딩 자체에 17초 정도 걸리는 게 정상(실측).
-
-    test_ui.py는 파일 하나짜리 수동 테스트 화면이라 로딩 실패 시 그냥 죽어도 되지만,
-    이 파일(app.py)은 실제 서비스 화면 전체를 띄우는 진입점이다 — 세 모델 중 하나라도
-    준비가 안 돼 있으면(예: 아직 `src/stt/export_ct2.py`로 변환 전이라 CT2 모델이 없는
-    개발 환경) 여기서 예외가 그대로 올라가 화면 자체가 뜨지도 못하고 죽는다. speak()가
-    이미 따르는 EC-05 원칙(화면 텍스트는 항상 남고, 음성 관련 실패만 사용자에게 알림)과
-    똑같이 각 모델 로딩을 개별로 감싸서, 준비 안 된 모델이 있어도 앱은 계속 뜨고 나머지
-    기능(텍스트 입력 흐름 등)은 그대로 쓸 수 있게 한다.
+    st.spinner()/st.warning() 같은 st.* API는 ScriptRunContext가 있는 메인 스레드에서만
+    안전해서(voice_io.py의 `_synthesize_and_cache()` 등 다른 백그라운드 스레드들과 같은
+    이유) 이 함수는 그런 호출을 전혀 안 한다 — 로딩 실패는 print()로만 남기고 조용히
+    넘어간다(EC-05 원칙과 같은 정신 — 실패해도 서비스는 계속 뜨고, 실제 그 모델이 필요한
+    시점에 각 호출부(speak()/stt_transcribe() 등)가 이미 자기 실패 처리를 하고 있다).
+    트레이드오프: 로딩 중이라는 "STT/LLM/TTS 모델 준비 중..." 스피너 문구가 이제 화면에
+    안 뜬다 — 대신 화면들이 이미 갖고 있는 "마이크 연결 중..." 표시가 그 자리를 대신한다.
     """
-    from llm.infer import load_llm
-    from stt.infer import load_ct2_model
-    from tts.infer import load_tts_model
+    if st.session_state.get("_warmup_thread_started"):
+        return
+    st.session_state["_warmup_thread_started"] = True
 
-    # 2026-08-25 — GitHub streamlit/streamlit#14404("BUG: Stale widgets from previous
-    # page runs are not removed when a spinner is later invoked", 1.55.0 기준 아직 미해결)
-    # 조사 결과 추가 — 이 함수는 매 rerun(사용자 조작마다)마다 호출되는데, 안의
-    # load_*_model() 세 개가 이미 로드된 뒤엔 즉시 반환하더라도 st.spinner() 자체는
-    # 매번 새로 mount/unmount됐다. 이 이슈가 정확히 "스피너가 열렸다 닫히는 것" 자체가
-    # 같은 위치의 다른 엘리먼트를 정리 못 하게 만드는 패턴이라(재현 조건: 위젯 변경 후
-    # 스피너가 있는 화면으로 복귀), 화면 전환마다 반복되는 "화면 전환 잔상" 리포트와
-    # 메커니즘이 겹칠 가능성이 있다. 최초 1회(진짜 로딩이 필요할 때)만 스피너를 열고,
-    # 이미 로드된 뒤의 재실행에서는 스피너 컨텍스트 자체를 아예 안 만든다 — 함수 호출은
-    # 그대로 해서(즉시 반환) 캐시 재사용 안전성은 안 건드린다.
-    already_warmed = st.session_state.get("_models_warmed", False)
+    def _run() -> None:
+        from llm.infer import load_llm
+        from stt.infer import load_ct2_model
+        from tts.infer import load_tts_model
 
-    def _load_with_optional_spinner(label: str, loader, warn_prefix: str) -> None:
-        if already_warmed:
+        for name, loader in (("STT", load_ct2_model), ("LLM", load_llm), ("TTS", load_tts_model)):
             try:
                 loader()
-            except Exception as exc:  # noqa: BLE001 — EC-05, 화면은 계속 뜨게 함
-                st.warning(f"{warn_prefix}: {exc}")
-            return
-        with st.spinner(label):
-            try:
-                loader()
-            except Exception as exc:  # noqa: BLE001
-                st.warning(f"{warn_prefix}: {exc}")
+            except Exception as exc:  # noqa: BLE001 — 위 문서 참고, 조용히 넘어감
+                print(f"[app] {name} 모델 백그라운드 워밍업 실패: {exc!r}", flush=True)
 
-    _load_with_optional_spinner(
-        "STT 모델 준비 중... (최초 1회만, 몇 초 걸릴 수 있음)",
-        load_ct2_model,
-        "STT 모델을 준비하지 못했어요(음성 인식이 안 될 수 있어요, 텍스트 입력은 계속 됩니다)",
-    )
-    _load_with_optional_spinner(
-        "LLM(EXAONE) 모델 준비 중... (최초 1회는 다운로드로 몇 분 걸릴 수 있음)",
-        load_llm,
-        "LLM 모델을 준비하지 못했어요(요리명 추출이 안 될 수 있어요)",
-    )
-    _load_with_optional_spinner(
-        "TTS(Qwen3-TTS) 모델 준비 중... (약 17초, 최초 1회만)",
-        load_tts_model,
-        "TTS 모델을 준비하지 못했어요(음성 응답이 안 나올 수 있어요, 텍스트는 계속 표시돼요)",
-    )
-    st.session_state["_models_warmed"] = True
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def main() -> None:
@@ -223,10 +191,10 @@ def main() -> None:
     # 진입 전에 스스로 멈춘다.
     st.session_state._active_recipe_box["recipe_id"] = st.session_state.pipeline_session.get("current_recipe_id")
     # 새로고침해도 로그인이 풀리지 않게, 저장해둔 로그인 쿠키로 세션을 복원한다
-    # (2026-08-22 요청) - _warm_up_models()보다 먼저 해야 화면이 뜨자마자 바로
+    # (2026-08-22 요청) - _start_model_warmup()보다 먼저 해야 화면이 뜨자마자 바로
     # 로그인 상태로 보인다.
     restore_login_from_cookie()
-    _warm_up_models()
+    _start_model_warmup()
     inject_css()
     # 로그인 아이콘은 start 화면에서만 "ChefEar" 제목과 나란히 보여준다(2026-08-21 요청).
     # 로그인 상태면 아이콘 대신 아이디를 보여주고, 누르면 로그인 화면 대신 마이
