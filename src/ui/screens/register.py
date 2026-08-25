@@ -7,6 +7,13 @@ register_recipe()가 돌려주는 prompt/summary는 대화 중간(재료·순서
 다시 찾을 수 있어서, 전환 직전(호출부)과 도착 화면 양쪽이 똑같이 이 함수들을 불러 쓴다.
 (register_intro 자체는 2026-08-21부터 음성 안내를 뺐다 — 아래 screen_register_intro()
 참고.)
+
+2026-08-25 — listen()/listen_background_only() 호출은 이 파일의 화면 함수들이 아니라
+app.py::main()이 화면별 key 컨테이너 *밖에서* 직접 부른다(cooking.py 상단 주석/app.py
+주석 참고 — 화면 key 컨테이너가 바뀔 때마다 그 안의 webrtc 컴포넌트가 재마운트돼 마이크가
+화면 전환마다 새로 연결되는 문제 대응). process_utterance()로 충분한 화면은 별도 핸들러가
+없고, 문자열을 직접 비교하는 화면(register_intro/register_dish_name)만 handle_*() 함수를
+따로 둔다.
 """
 from __future__ import annotations
 
@@ -27,22 +34,14 @@ from theme import (
 )
 from orchestration.db import get_client
 from orchestration.registration import register_recipe
-from ui.dispatch import fallback_buttons, is_home_word, listen_background_only, process_utterance, reset_to_start
+from ui.dispatch import fallback_buttons, is_home_word, reset_to_start
 from ui.session import get_owner_id, goto
-from ui.voice_io import _render_cached_speech, listen, mic_is_playing, speak
+from ui.voice_io import _render_cached_speech, mic_is_playing, speak
 
 _REGISTER_SAVED_MESSAGE = "저장이 완료됐어요!"
 
 
 def screen_no_match() -> None:
-    # 2026-08-24 추가 — cooking.py 화면들과 같은 이유("화면 전환 잔상" 완화). process_utterance()는
-    # 인식된 발화가 있으면 항상 다른 화면으로 넘어가므로, 이 화면의 나머지 UI를 그리기
-    # 전에 먼저 듣고 처리한다 — 넘어갈 거면 이번 실행에서 이 화면 UI 자체를 안 그린다.
-    text = listen("no_match", show_mic=False)
-    if text:
-        process_utterance(text)
-        return
-
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon warn">{ICON_X_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
@@ -70,16 +69,11 @@ def screen_no_match() -> None:
         if st.button("새 레시피로 등록할래요", use_container_width=True):
             goto("register_intro")
 
+    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 process_utterance()에 그대로
+    # 넘긴다 — 이 화면은 별도 핸들러가 없다(위 파일 docstring 참고).
+
 
 def screen_unclassified() -> None:
-    # 2026-08-24 추가 — no_match와 같은 이유("화면 전환 잔상" 완화). process_utterance()는
-    # 인식된 발화가 있으면 항상 다른 화면으로 넘어가므로, 이 화면의 나머지 UI를 그리기
-    # 전에 먼저 듣고 처리한다.
-    text = listen("unclassified")
-    if text:
-        process_utterance(text)
-        return
-
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon warn">{ICON_QUESTION_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
@@ -96,6 +90,9 @@ def screen_unclassified() -> None:
     render_mic_bar("다시 말씀해주세요", "또는 아래 버튼을 눌러주세요", listening=False)
 
     fallback_buttons("unclassified")
+
+    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 process_utterance()에 그대로
+    # 넘긴다 — 이 화면은 별도 핸들러가 없다(위 파일 docstring 참고).
 
 
 def screen_register_intro() -> None:
@@ -115,25 +112,9 @@ def screen_register_intro() -> None:
         listening=_mic_ready,
     )
 
-    # 2026-08-21: 위 "듣는 중" 표시줄이 이미 마이크가 켜져 있다는 걸 보여주고 있어서,
-    # listen()이 따로 그리는 실제 녹음 위젯(제목 "말씀해주세요" + 녹음 버튼)까지 있으면
-    # 같은 화면에 마이크 관련 표시가 두 번 겹쳐 보인다는 지적이 있었다 — 일단 이 화면만
-    # show_mic=False로 꺼둔다(완전히 지우진 않음, 나중에 되돌릴 수 있게). 텍스트로
-    # "네, 등록할래요"/"괜찮아요"를 입력하는 대체 경로는 그대로 남아있다.
-    text = listen("register_intro", show_mic=False)
-    if text:
-        norm = text.strip().rstrip("?!. ")
-        if norm in ("네", "응", "좋아", "좋아요", "그래", "그래요", "등록", "등록할래요", "네, 등록할래요"):
-            get_owner_id()
-            goto("register_dish_name")
-        elif is_home_word(norm) or norm in ("아니", "아니요", "괜찮아", "괜찮아요", "취소"):
-            # 2026-08-23 — "처음"류는 reset_to_start()(진행 중이던 값 전부 초기화)로,
-            # 기존 "아니/취소"는 원래 하던 대로 단순 이동만(이 화면은 아직 등록 자체를
-            # 시작 전이라 초기화할 진행 상태가 없음).
-            if is_home_word(norm):
-                reset_to_start()
-            else:
-                goto("start")
+    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 아래 handle_register_intro()에
+    # 넘긴다(위 파일 docstring 참고). 텍스트로 "네, 등록할래요"/"괜찮아요"를 입력하는
+    # 대체 경로는 그대로 남아있다.
 
     c1, c2 = st.columns(2)
     with c1:
@@ -143,6 +124,28 @@ def screen_register_intro() -> None:
     with c2:
         if st.button("괜찮아요", use_container_width=True):
             goto("start")
+
+
+def handle_register_intro(text: str) -> None:
+    """screen_register_intro()가 그려진 뒤 app.py가 잡아온 발화를 처리한다."""
+    norm = text.strip().rstrip("?!. ")
+    if norm in ("네", "응", "좋아", "좋아요", "그래", "그래요", "등록", "등록할래요", "네, 등록할래요"):
+        get_owner_id()
+        goto("register_dish_name")
+    elif is_home_word(norm) or norm in ("아니", "아니요", "괜찮아", "괜찮아요", "취소"):
+        # 2026-08-23 — "처음"류는 reset_to_start()(진행 중이던 값 전부 초기화)로,
+        # 기존 "아니/취소"는 원래 하던 대로 단순 이동만(이 화면은 아직 등록 자체를
+        # 시작 전이라 초기화할 진행 상태가 없음).
+        if is_home_word(norm):
+            reset_to_start()
+        else:
+            goto("start")
+    else:
+        # 2026-08-25 추가 — dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고).
+        # 위 두 분기 다 goto()로 화면을 다시 그리며 listen()을 재호출해 마이크 드레인
+        # 루프를 이어가는데, 이 무시 케이스만 rerun 없이 끝나서 그 순간부터 프레임이
+        # 안 비워져 "Queue overflow"로 이어졌다.
+        st.rerun()
 
 
 def screen_register_dish_name() -> None:
@@ -163,33 +166,34 @@ def screen_register_dish_name() -> None:
         listening=_mic_ready,
     )
 
-    # register_intro와 같은 이유로(2026-08-21) 실제 녹음 위젯("말씀해주세요" 박스)은
-    # 일단 꺼둔다 - 위 "듣는 중" 아이콘이 펄스 애니메이션으로 이미 마이크가 활성화된
-    # 상태를 보여주고 있어서, 텍스트 대체 입력만으로 충분하다고 판단됨.
-    text = listen("register_dish_name", show_mic=False)
-    if text:
-        norm = text.strip().rstrip("?!. ")
-        if is_home_word(norm):
-            # 2026-08-23 추가 — 이 체크가 없으면 "처음"이라고 말해도 요리명("처음")으로
-            # 그대로 등록 시도돼버린다(아래 else가 "확정 단어 아니면 발화 전체를 요리명으로"
-            # 라서). 등록 도중이니 reset_to_start()로 진행 중이던 값도 같이 비운다.
-            reset_to_start()
-            return
-        if norm in ("네", "응", "맞아", "맞아요", "그래", "그래요") and st.session_state.pending_dish_name:
-            dish_name = st.session_state.pending_dish_name
-        else:
-            dish_name = text.strip()
-        # 2026-08-21: 여기서 speak(result["prompt"])로 음성 합성을 하고 있었지만, 그
-        # 재생 위젯은 바로 뒤 goto()의 st.rerun()에 지워지고, 도착 화면인
-        # register_ingredients는 텍스트 입력 전용(마이크 바·재생바 없음)이라 이 안내문을
-        # _render_cached_speech()로 다시 보여주지도 않는다. chat_log에도 남지만 등록
-        # 화면들은 render_chat()을 안 써서 그것도 어차피 안 보인다 — 즉 매번 로컬 CPU로
-        # 몇 분씩 걸리는 합성을 하고도 아무도 못 듣는 죽은 호출이라 제거했다.
-        register_recipe(st.session_state.pipeline_session, "dish_name", dish_name, client=get_client())
-        goto("register_ingredients")
+    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 아래 handle_register_dish_name()에
+    # 넘긴다(위 파일 docstring 참고).
 
     if st.button("취소", use_container_width=True):
         goto("register_intro")
+
+
+def handle_register_dish_name(text: str) -> None:
+    """screen_register_dish_name()이 그려진 뒤 app.py가 잡아온 발화를 처리한다."""
+    norm = text.strip().rstrip("?!. ")
+    if is_home_word(norm):
+        # 2026-08-23 추가 — 이 체크가 없으면 "처음"이라고 말해도 요리명("처음")으로
+        # 그대로 등록 시도돼버린다(아래가 "확정 단어 아니면 발화 전체를 요리명으로"
+        # 라서). 등록 도중이니 reset_to_start()로 진행 중이던 값도 같이 비운다.
+        reset_to_start()
+        return
+    if norm in ("네", "응", "맞아", "맞아요", "그래", "그래요") and st.session_state.pending_dish_name:
+        dish_name = st.session_state.pending_dish_name
+    else:
+        dish_name = text.strip()
+    # 2026-08-21: 여기서 speak(result["prompt"])로 음성 합성을 하고 있었지만, 그
+    # 재생 위젯은 바로 뒤 goto()의 st.rerun()에 지워지고, 도착 화면인
+    # register_ingredients는 텍스트 입력 전용(마이크 바·재생바 없음)이라 이 안내문을
+    # _render_cached_speech()로 다시 보여주지도 않는다. chat_log에도 남지만 등록
+    # 화면들은 render_chat()을 안 써서 그것도 어차피 안 보인다 — 즉 매번 로컬 CPU로
+    # 몇 분씩 걸리는 합성을 하고도 아무도 못 듣는 죽은 호출이라 제거했다.
+    register_recipe(st.session_state.pipeline_session, "dish_name", dish_name, client=get_client())
+    goto("register_ingredients")
 
 
 def screen_register_ingredients() -> None:
@@ -210,7 +214,8 @@ def screen_register_ingredients() -> None:
     # 2026-08-23 — 다만 상시 마이크 연결 자체는 start 화면 말고는 안 끊겨야 해서, 재료
     # 입력용 텍스트 폼은 그대로 두고 "취소"/"처음"만 배경에서 듣는다(listen_background_only()
     # 주석 참고) — 재료 자유 발화가 그대로 등록되는 걸 막기 위해 그 외 단어는 무시한다.
-    listen_background_only("register_ingredients", cancel_target="register_intro")
+    # 2026-08-25 — 그 listen_background_only() 호출 자체는 app.py::main()이 화면별 key
+    # 컨테이너 밖에서 직접 부른다(위 파일 docstring 참고).
 
     new_item = st.text_input("재료 추가(쉼표로 여러 개 가능)", key="reg_ing_new", placeholder="예: 두부, 감자")
     if st.button("추가") and new_item.strip():
@@ -281,7 +286,8 @@ def screen_register_steps() -> None:
 
     # register_ingredients와 같은 이유로(2026-08-21) 텍스트 입력 전용으로 되돌렸다.
     # 2026-08-23 — register_ingredients와 같은 이유로 배경 마이크만 유지("취소"/"처음"만 반응).
-    listen_background_only("register_steps", cancel_target="register_ingredients")
+    # 2026-08-25 — 그 listen_background_only() 호출 자체는 app.py::main()이 화면별 key
+    # 컨테이너 밖에서 직접 부른다(위 파일 docstring 참고).
 
     new_step = st.text_input("순서 추가", key="reg_step_new", placeholder="새 단계 추가")
     if st.button("단계 추가") and new_step.strip():
@@ -308,14 +314,6 @@ def screen_register_steps() -> None:
 
 
 def screen_complete() -> None:
-    # 2026-08-24 추가 — 다른 화면들과 같은 이유("화면 전환 잔상" 완화). process_utterance()는
-    # 인식된 발화가 있으면 항상 다른 화면으로 넘어가므로, 이 화면의 나머지 UI를 그리기
-    # 전에 먼저 듣고 처리한다.
-    text = listen("complete", show_mic=False)
-    if text:
-        process_utterance(text)
-        return
-
     dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
@@ -334,3 +332,6 @@ def screen_complete() -> None:
 
     if st.button("처음 화면으로", type="primary", use_container_width=True):
         reset_to_start()
+
+    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 process_utterance()에 그대로
+    # 넘긴다 — 이 화면은 별도 핸들러가 없다(위 파일 docstring 참고).

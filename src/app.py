@@ -33,9 +33,18 @@ import streamlit as st
 
 from orchestration.db import load_env
 from theme import inject_css, render_brand
-from ui.screens.cooking import screen_cooking_complete, screen_cooking_step, screen_recipe_confirm, screen_start
+from ui.dispatch import listen_background_only, process_utterance
+from ui.screens.cooking import (
+    handle_recipe_confirm,
+    screen_cooking_complete,
+    screen_cooking_step,
+    screen_recipe_confirm,
+    screen_start,
+)
 from ui.screens.my_recipes import screen_edit_recipe, screen_login, screen_my_recipes
 from ui.screens.register import (
+    handle_register_dish_name,
+    handle_register_intro,
     screen_complete,
     screen_no_match,
     screen_register_dish_name,
@@ -45,6 +54,7 @@ from ui.screens.register import (
     screen_unclassified,
 )
 from ui.session import goto, init_state, restore_login_from_cookie
+from ui.voice_io import listen
 
 load_env()
 
@@ -99,23 +109,47 @@ def _warm_up_models() -> None:
     from stt.infer import load_ct2_model
     from tts.infer import load_tts_model
 
-    with st.spinner("STT 모델 준비 중... (최초 1회만, 몇 초 걸릴 수 있음)"):
-        try:
-            load_ct2_model()
-        except Exception as exc:  # noqa: BLE001 — EC-05, 화면은 계속 뜨게 함
-            st.warning(f"STT 모델을 준비하지 못했어요(음성 인식이 안 될 수 있어요, 텍스트 입력은 계속 됩니다): {exc}")
+    # 2026-08-25 — GitHub streamlit/streamlit#14404("BUG: Stale widgets from previous
+    # page runs are not removed when a spinner is later invoked", 1.55.0 기준 아직 미해결)
+    # 조사 결과 추가 — 이 함수는 매 rerun(사용자 조작마다)마다 호출되는데, 안의
+    # load_*_model() 세 개가 이미 로드된 뒤엔 즉시 반환하더라도 st.spinner() 자체는
+    # 매번 새로 mount/unmount됐다. 이 이슈가 정확히 "스피너가 열렸다 닫히는 것" 자체가
+    # 같은 위치의 다른 엘리먼트를 정리 못 하게 만드는 패턴이라(재현 조건: 위젯 변경 후
+    # 스피너가 있는 화면으로 복귀), 화면 전환마다 반복되는 "화면 전환 잔상" 리포트와
+    # 메커니즘이 겹칠 가능성이 있다. 최초 1회(진짜 로딩이 필요할 때)만 스피너를 열고,
+    # 이미 로드된 뒤의 재실행에서는 스피너 컨텍스트 자체를 아예 안 만든다 — 함수 호출은
+    # 그대로 해서(즉시 반환) 캐시 재사용 안전성은 안 건드린다.
+    already_warmed = st.session_state.get("_models_warmed", False)
 
-    with st.spinner("LLM(EXAONE) 모델 준비 중... (최초 1회는 다운로드로 몇 분 걸릴 수 있음)"):
-        try:
-            load_llm()
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"LLM 모델을 준비하지 못했어요(요리명 추출이 안 될 수 있어요): {exc}")
+    def _load_with_optional_spinner(label: str, loader, warn_prefix: str) -> None:
+        if already_warmed:
+            try:
+                loader()
+            except Exception as exc:  # noqa: BLE001 — EC-05, 화면은 계속 뜨게 함
+                st.warning(f"{warn_prefix}: {exc}")
+            return
+        with st.spinner(label):
+            try:
+                loader()
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"{warn_prefix}: {exc}")
 
-    with st.spinner("TTS(Qwen3-TTS) 모델 준비 중... (약 17초, 최초 1회만)"):
-        try:
-            load_tts_model()
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"TTS 모델을 준비하지 못했어요(음성 응답이 안 나올 수 있어요, 텍스트는 계속 표시돼요): {exc}")
+    _load_with_optional_spinner(
+        "STT 모델 준비 중... (최초 1회만, 몇 초 걸릴 수 있음)",
+        load_ct2_model,
+        "STT 모델을 준비하지 못했어요(음성 인식이 안 될 수 있어요, 텍스트 입력은 계속 됩니다)",
+    )
+    _load_with_optional_spinner(
+        "LLM(EXAONE) 모델 준비 중... (최초 1회는 다운로드로 몇 분 걸릴 수 있음)",
+        load_llm,
+        "LLM 모델을 준비하지 못했어요(요리명 추출이 안 될 수 있어요)",
+    )
+    _load_with_optional_spinner(
+        "TTS(Qwen3-TTS) 모델 준비 중... (약 17초, 최초 1회만)",
+        load_tts_model,
+        "TTS 모델을 준비하지 못했어요(음성 응답이 안 나올 수 있어요, 텍스트는 계속 표시돼요)",
+    )
+    st.session_state["_models_warmed"] = True
 
 
 def main() -> None:
@@ -139,7 +173,93 @@ def main() -> None:
     current_user = st.session_state.current_user
     if render_brand(show_login=(st.session_state.screen == "start"), username=(current_user or {}).get("username")):
         goto("my_recipes" if current_user else "login")
-    SCREENS[st.session_state.screen]()
+
+    # 2026-08-24 — "화면 전체를 st.empty() 슬롯 하나로 감싸서 매번 통째로 교체" 시도는
+    # 되돌림(실측: "된장찌개 레시피 알려줘" 인식 후 무반응/회색 화면으로 멈추는 새 증상
+    # 재현). 상시 마이크(webrtc_streamer, _run_mic_loop() 내부)가 이 SCREENS[...]() 호출
+    # 트리 안에서 그려지는데, 그 부모 컨테이너가 매 rerun마다 새로 생성되는 st.empty()로
+    # 바뀌면서 프론트엔드 쪽 컴포넌트 정체성(=WebRTC 연결)이 흔들린 것으로 보인다 —
+    # 잔상보다 마이크 연결이 더 심각한 문제라 이 방향은 포기.
+
+    # 2026-08-24 — "화면 전환 잔상"(예: register_intro에서 "처음으로" 발화 후 시작
+    # 화면과 겹쳐 보임, 여러 화면을 거칠수록 계속 쌓이는 전반적인 문제) 리포트 조사 결과,
+    # 이 프로젝트만의 버그가 아니라 Streamlit 자체의 확인된 미해결 버그였다(GitHub
+    # streamlit/streamlit#8360 "Stale widgets fill screen after script reruns", P2로
+    # Streamlit 팀이 직접 확인). 원인: 스크립트 재실행이 직전 실행보다 이 위치(BlockNode)의
+    # 엘리먼트 개수가 "줄어들면", 프론트엔드가 위젯 ID를 재사용하면서 React key가
+    # 충돌하고(`Block.tsx`의 getElementWidgetID 기반 key 할당 방식이 원인), 그 결과 직전
+    # 실행의 "남는" 엘리먼트가 안 지워지고 화면에 그대로 남는다.
+    #
+    # 첫 시도(고정 개수 st.empty() 패딩)는 실측으로 효과가 없었다 — SCREENS[...]() 뒤에
+    # 매번 같은 개수(60개)를 더해봐야, 화면마다 원래 그리는 엘리먼트 개수 자체가 다르므로
+    # (예: no_match는 채팅 카드+캡션+버튼 2개+입력칸, start는 제목+마이크뿐) 두 화면
+    # 총합의 "차이"는 그대로 남는다 — 상수를 양쪽에 똑같이 더해도 그 차이가 없어지지
+    # 않는다("된장찌개" -> "처음" 재현으로 실측 확인, no_match 잔상 그대로 남음).
+    #
+    # 대신 화면마다 다른 key의 st.container()로 감싼다 — 화면이 바뀌면 완전히 다른
+    # key(다른 프론트엔드 엘리먼트 트리 네임스페이스)가 되므로, 애초에 이전 화면 위젯과
+    # 같은 자리를 두고 ID를 재사용/충돌시킬 일 자체가 없어진다(위 "엘리먼트 개수가
+    # 줄어드는" 조건 자체를 회피).
+    #
+    # 2026-08-25 실측 리포트 — 처음엔 "상시 마이크는 이 컨테이너 밖에서 그려지니 무관하다"고
+    # 적어뒀는데 틀렸다. 실제로는 각 screen_*() 함수가 자기 본문 끝에서 listen()을 직접
+    # 불렀고, 그 listen()이(= webrtc_streamer()가) 바로 이 컨테이너 *안에서* 그려지고
+    # 있었다 — 그래서 화면이 바뀔 때마다(=컨테이너 key가 바뀔 때마다) 마이크 컴포넌트까지
+    # 통째로 재마운트되면서 매번 새로 연결됐다(WRTCDBG 로그로 chefear_mic_0 -> _7까지
+    # 세대가 계속 올라가는 것 확인, "Queue overflow" 반복 + 그 직후 발화가 씹히는 리포트로
+    # 이어짐). 그래서 listen()/listen_background_only() 호출 자체를 각 screen_*() 함수
+    # 밖으로 빼서, 이 컨테이너가 닫힌 *뒤에* 화면과 무관하게 항상 같은 자리에서 부르도록
+    # 옮겼다(각 screen_*() 함수 상단 주석 참고) — 이제서야 진짜로 이 컨테이너 변경과
+    # 무관해졌다.
+    screen = st.session_state.screen
+    with st.container(key=f"screen_{screen}"):
+        SCREENS[screen]()
+
+    # 화면별로 원래 각 screen_*() 함수 안에서 하던 listen()/listen_background_only()
+    # 호출과 그 결과 처리를 그대로 여기로 옮겼다 — 파라미터(show_mic/show_text_fallback/
+    # key_prefix)와 처리 로직은 원래 화면 파일에 있던 것과 동일하다. login/my_recipes/
+    # edit_recipe는 원래도 마이크를 안 썼던 화면이라 여기서도 아무것도 안 부른다(다른
+    # 화면으로 넘어가면 다음 실행에서 다시 마이크가 붙는다).
+    if screen == "start":
+        text = listen("start", show_mic=False, show_text_fallback=False)
+        if text:
+            process_utterance(text)
+    elif screen == "recipe_confirm":
+        text = listen("recipe_confirm", show_mic=False, show_text_fallback=False)
+        if text:
+            handle_recipe_confirm(text)
+    elif screen == "cooking_step":
+        text = listen("cooking_step", show_mic=False)
+        if text:
+            process_utterance(text)
+    elif screen == "cooking_complete":
+        text = listen("cooking_complete", show_mic=False)
+        if text:
+            process_utterance(text)
+    elif screen == "no_match":
+        text = listen("no_match", show_mic=False)
+        if text:
+            process_utterance(text)
+    elif screen == "unclassified":
+        text = listen("unclassified")
+        if text:
+            process_utterance(text)
+    elif screen == "register_intro":
+        text = listen("register_intro", show_mic=False)
+        if text:
+            handle_register_intro(text)
+    elif screen == "register_dish_name":
+        text = listen("register_dish_name", show_mic=False)
+        if text:
+            handle_register_dish_name(text)
+    elif screen == "register_ingredients":
+        listen_background_only("register_ingredients", cancel_target="register_intro")
+    elif screen == "register_steps":
+        listen_background_only("register_steps", cancel_target="register_ingredients")
+    elif screen == "complete":
+        text = listen("complete", show_mic=False)
+        if text:
+            process_utterance(text)
 
 
 if __name__ == "__main__":

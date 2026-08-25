@@ -15,7 +15,6 @@ from orchestration.substitution import apply_substitution, cancel_substitution
 
 NOT_AVAILABLE_MESSAGE = "죄송해요, 이 레시피는 아직 등록되어 있지 않아요."
 DISH_NOT_FOUND_MESSAGE = "죄송해요, 그 요리는 아직 없어요."
-NO_ACTIVE_CORRECTION_MESSAGE = "지금은 정정할 내용이 없어요."
 
 
 def get_precomputed_steps(recipe_id: str, client=None) -> dict:
@@ -138,7 +137,7 @@ def handle_utterance(
     세부 정보(entity)는 추출하지 않는다. 조회 의도는 예외로, dish_name을 직접
     안 넘겨주면(None) extract_dish_name()이 utterance 자체에서 요리명을 찾아준다
     (완전일치→부분일치→편집거리 3단계, recipe_search.py 참고) — 그래서 발화
-    텍스트 하나만 있어도 조회가 끝까지 된다. 나머지(재료대체/등록/정정)는 아직
+    텍스트 하나만 있어도 조회가 끝까지 된다. 나머지(재료대체/등록)는 아직
     발화에서 재료명·순서 같은 걸 뽑아내는 로직이 없어서, requested_ingredient/
     excluded_ingredient/registration_step/registration_value를 여전히 호출부가
     직접 넘겨줘야 한다 — app.py가 UI 입력이나 별도 로직으로 채워서 호출하는 구조다.
@@ -191,20 +190,10 @@ def handle_utterance(
         session["previous_recipe_id"] = None
         return {"intent": intent, **found}
 
-    if intent in ("등록", "정정"):
-        step = "correct_ingredient" if intent == "정정" else registration_step
-        # register_recipe()는 session["registration"]이 없는 상태에서 dish_name이
-        # 아닌 step으로 불리면 ValueError를 던진다(모듈 자체의 방어 로직). "정정"
-        # 의도가 등록 중이 아닐 때 나오면(오분류 등) 서비스가 죽는 대신 정직하게
-        # "정정할 게 없다"고 안내한다(1.5 원칙).
-        if step is None:
+    if intent == "등록":
+        if registration_step is None:
             raise ValueError("등록 의도는 registration_step이 필요함")
-        try:
-            reg_result = register_recipe(session, step, registration_value, client=client)
-        except ValueError:
-            if intent == "정정":
-                return {"intent": intent, "message": NO_ACTIVE_CORRECTION_MESSAGE}
-            raise
+        reg_result = register_recipe(session, registration_step, registration_value, client=client)
         return {"intent": intent, **reg_result}
 
     raise ValueError(f"알 수 없는 intent: {intent}")

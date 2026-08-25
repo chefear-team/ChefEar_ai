@@ -14,7 +14,7 @@ from orchestration.entity_extract_llm import extract_intent_llm
 from orchestration.pipeline import handle_utterance, manual_fallback
 from ui.recipe_view import refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, get_owner_id, goto
-from ui.voice_io import _drain_mic_while, speak
+from ui.voice_io import _drain_mic_while, _GPU_LOCK, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -32,7 +32,22 @@ COOKING_COMPLETE_MESSAGE = "요리가 완성됐어요! 수고하셨어요."
 # 필요 없을 만큼 명확한 명령이라 굳이 그 비용(임베딩 유사도 계산 + LLM 호출)을 들일
 # 필요도 없다. 화면마다 있던 "처음 화면으로" 버튼(cooking.py screen_cooking_complete 등)과
 # 똑같이 pipeline_session/chat_log/recipe_view/pending_dish_name을 초기화한다.
-_HOME_WORDS = {"처음", "처음으로", "처음화면", "처음 화면", "처음 화면으로", "메인", "메인 화면", "홈"}
+_HOME_WORDS = {
+    "처음", "처음으로", "처음화면", "처음 화면", "처음 화면으로",
+    "메인", "메인 화면", "홈",
+    # 2026-08-25 추가 — 사용자가 실제로 쓰는 리셋 단어가 "초기"였는데(원 리포트: "'초기'라는
+    # 단어를 들으면 A 화면으로 돌아가야 한다"), 이 집합엔 "처음" 계열만 있고 "초기"가 없어서
+    # is_home_word()가 매번 False를 돌려주고 있었다 — process_utterance()가 이걸 홈 단축으로
+    # 못 잡고 classify_intent()/LLM 파이프라인으로 흘려보내 "초기"라고 말해도 반응이 없거나
+    # 엉뚱하게 처리되는 버그였다(화면 전환 잔상과는 별개 원인).
+    "초기", "초기화면", "초기 화면", "초기화",
+}
+
+# 2026-08-24 추가 — "등록"이라는 단어가 들어가면 곧장 등록 화면으로 보내라는 요청.
+# extract_intent_llm()(로컬 LLM)이 이미 "등록하고 싶다"는 의도를 판단하지만, LLM
+# 판단을 거치지 않고도 이 단어 하나만으로 확정할 수 있는 가장 명확한 신호라 is_home_word()와
+# 같은 자리(파이프라인 진입 전)에서 먼저 잡는다.
+_REGISTER_WORD = "등록"
 
 
 def is_home_word(text: str) -> bool:
@@ -80,6 +95,12 @@ def listen_background_only(key_prefix: str, *, cancel_target: str) -> None:
         reset_to_start()
     elif norm in ("취소", "취소할래요", "취소해줘"):
         goto(cancel_target)
+    else:
+        # 2026-08-25 추가 — dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고) —
+        # 위 두 분기 다 goto()로 화면을 다시 그리며 listen()을 재호출해 마이크 드레인
+        # 루프를 이어가는데, 이 무시 케이스(재료/순서 자유 발화 등)만 rerun 없이 끝나서
+        # 그 순간부터 프레임이 안 비워져 "Queue overflow"로 이어졌다.
+        st.rerun()
 
 
 def process_utterance(text: str) -> None:
@@ -88,6 +109,16 @@ def process_utterance(text: str) -> None:
         return
 
     st.session_state.chat_log.append(("user", text))
+
+    if _REGISTER_WORD in text:
+        # is_home_word()와 같은 자리 — classify_intent()/LLM까지 갈 것도 없이 "등록"
+        # 단어 하나로 확정되는 명령이라 바로 처리한다. wants_register 분기(아래)와
+        # 같은 이유로 register_intro(확인 화면)는 건너뛰고 register_dish_name으로
+        # 바로 간다 — 사용자가 "등록"이라고 직접 말한 건 시스템의 짐작이 아니다.
+        st.session_state.pending_dish_name = None
+        get_owner_id()
+        goto("register_dish_name")
+        return
 
     session = st.session_state.pipeline_session
     client = get_client()
@@ -113,19 +144,39 @@ def process_utterance(text: str) -> None:
 
     def _compute(job=job) -> None:
         try:
-            job["llm_result"] = extract_intent_llm(text)
+            try:
+                # 2026-08-24 — _GPU_LOCK(voice_io.py, 원래 _TTS_LOCK)으로 감쌈. extract_intent_llm()
+                # (로컬 LLM)과 handle_utterance() 안의 classify_intent()(임베딩 모델)가 STT/TTS와
+                # 같은 GPU를 쓰는데 서로 직렬화가 없었다 — 실사용 중 "STT는 됐는데 그 다음부터
+                # 터미널 로그까지 전부 멈춘다"는 리포트의 원인으로 지목됨(락 정의부 주석 참고).
+                with _GPU_LOCK:
+                    job["llm_result"] = extract_intent_llm(text)
+            except Exception as exc:  # noqa: BLE001 — 아래 이유로 여기서만 넓게 잡음
+                # llm/infer.py generate_json() 문서에 "모델 로드/추론 자체가 실패하면
+                # 예외를 그대로 올린다"고 명시돼 있다. 이 GPU 데스크탑은 STT(faster-whisper)
+                # /임베딩(sentence-transformers)/TTS/이 로컬 LLM(EXAONE)이 전부 같은 GPU를
+                # 공유해서 메모리 경합으로 가끔 실패할 수 있는데(2026-08-24 실사용 중
+                # 재현 — STT 인식은 됐는데 그 다음부터 화면이 조용히 멈춤), 여기서 안 잡으면
+                # job["llm_result"]가 None으로 남아 바로 아래 llm_result["dish_name"]에서
+                # TypeError로 메인 스레드가 죽는다(에러 박스가 떴다가 마이크 재연결 rerun에
+                # 덮여 "그냥 멈춘 것처럼" 보였을 가능성이 높음). extract_intent_llm()이 자신의
+                # 다른 실패 케이스(JSON 형식 오류 등)에 이미 쓰는 것과 같은 안전한 기본값으로
+                # 폴백한다 — 모르면 지어내지 않는다는 1.5 원칙과 같은 태도.
+                print(f"[dispatch] extract_intent_llm 실패, 안전한 기본값으로 폴백: {exc!r}")
+                job["llm_result"] = {"dish_name": None, "wants_register": False}
             job["requested"], job["excluded"] = extract_substitution_ingredients(text)
             if job["llm_result"]["wants_register"]:
                 return
             try:
-                job["result"] = handle_utterance(
-                    session,
-                    text,
-                    dish_name=job["llm_result"]["dish_name"],
-                    requested_ingredient=job["requested"],
-                    excluded_ingredient=job["excluded"],
-                    client=client,
-                )
+                with _GPU_LOCK:  # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀
+                    job["result"] = handle_utterance(
+                        session,
+                        text,
+                        dish_name=job["llm_result"]["dish_name"],
+                        requested_ingredient=job["requested"],
+                        excluded_ingredient=job["excluded"],
+                        client=client,
+                    )
             except ValueError:
                 job["value_error"] = True
         finally:
@@ -157,7 +208,7 @@ def process_utterance(text: str) -> None:
 
     if job["value_error"]:
         # 위 배경 스레드의 _compute() 안에서 handle_utterance()가 ValueError를 던진 경우 —
-        # "등록"/"정정" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
+        # "등록" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
         # 죽이는 대신 신규 등록으로 안전하게 보낸다. classify_intent()가 이미 "등록"으로
         # 확정 분류한 경우라 위 wants_register 분기와 같은 이유로 register_intro(확인
         # 화면)는 안 거치고 바로 register_dish_name으로 보낸다.
@@ -170,15 +221,24 @@ def process_utterance(text: str) -> None:
     intent = result.get("intent")
 
     if intent == "미분류":
-        # 문장 패턴 분류(classify_intent)가 "조회"로 못 알아들은 경우 전부 여기로 온다 —
-        # "분홍코끼리 어떻게 만들어?"처럼 LLM이 요리명을 뽑아낸 경우뿐 아니라, "111"처럼
-        # LLM조차 요리명으로 확신 못 해 dish_name_guess가 None인 경우도 포함한다.
-        # "잘 이해하지 못했어요"로 되묻고 끝내는 대신, 표준 데이터에 없는 요리일
-        # 가능성으로 보고 항상 등록 유도 화면으로 보낸다(2026-08-21 요청) — 등록
-        # 화면 자체가 "이 이름 맞아요?"로 다시 확인/수정을 받으므로, 여기서 추측이
-        # 틀려도 안전하다. LLM이 아무것도 못 뽑았으면 발화 원문을 그대로 짐작값으로 쓴다.
-        st.session_state.pending_dish_name = dish_name_guess or text.strip()
-        goto("register_intro")
+        # 문장 패턴 분류(classify_intent)가 기준예문.csv의 어떤 의도와도 못 매칭한
+        # 경우 전부 여기로 온다. 2026-08-24 재요청 — 기준예문에 없는 발화는 화면 전환도,
+        # 음성 응답도 없이 그냥 무시한다(예전엔 register_intro로 등록을 유도하거나
+        # unclassified 화면에서 "못 알아들었다"고 되물었는데, 조회 예문을 크게 넓힌
+        # 뒤로는 진짜 잡담/잡음만 여기로 남아서 매번 반응할 필요가 없다는 판단).
+        # register_intro/unclassified 화면 자체는 다른 경로(no_match의 "새 레시피로
+        # 등록할래요" 버튼, "알 수 없는 intent" 방어 분기 등)로 여전히 갈 수 있다.
+        #
+        # 2026-08-25 추가 — 이 분기만 유일하게 goto()(=st.rerun())를 안 불렀다. 다른
+        # 모든 분기는 화면을 옮기며 rerun이 걸리고, 그 rerun이 다시 listen()을 호출해
+        # _run_mic_loop()의 프레임 드레인 루프가 곧장 이어지는데, 여기는 그냥 return해서
+        # 이번 스크립트 실행이 끝나버린다 — 그 순간부터 아무도 get_frames()를 안 불러서
+        # (다음 rerun이 우연히 다른 이유로 트리거될 때까지) 마이크 큐가 쌓이기만 하다
+        # 넘친다("Queue overflow" 반복 + 그 직후 발화가 씹히는 리포트, 실측 확인 —
+        # "여기까지하면"/"좋아?"처럼 margin 미충족으로 미분류 처리된 직후에만 정확히
+        # 재현됨). 화면은 그대로 두고 같은 화면으로 rerun만 걸어서 드레인 루프가
+        # 끊기지 않게 한다.
+        st.rerun()
         return
 
     if intent == "조회":
@@ -261,7 +321,7 @@ def process_utterance(text: str) -> None:
         goto("cooking_step")
         return
 
-    if intent in ("등록", "정정"):
+    if intent == "등록":
         prompt = result.get("prompt") or result.get("summary") or result.get("message")
         if prompt:
             speak(prompt)

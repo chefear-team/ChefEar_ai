@@ -826,6 +826,17 @@ def stt_transcribe(
     segments, _info = model.transcribe(audio, language="ko", vad_filter=True, beam_size=1)
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
+
+    # 2026-08-25 추가 — STT/LLM/TTS/임베딩(classify_intent) 넷 다 같은 12GB GPU를
+    # 공유하는데, 모델 가중치는 셋 다 상주(재로딩 비용 커서 언로드 안 함, docs 참고)라
+    # 유휴 상태에서도 VRAM이 11GB대까지 차 있는 게 실측 확인됐다(여유 500MB 미만).
+    # 이 여유가 거의 없는 상태에서 추론 한 번마다 남는 활성화/중간 버퍼(가중치 자체는
+    # 아님)를 torch의 캐싱 allocator가 계속 쥐고 있으면, 다음 호출의 임시 할당이
+    # 실패/재시도하며 멎는 것으로 의심된다("Queue overflow" 반복 + GPU 사용률은 idle인
+    # 채로 응답이 하나도 안 잡히는 리포트, 2026-08-24/25). 가중치는 그대로 두고
+    # (재로딩 없음, 지연 없음) 이번 추론이 남긴 미사용 캐시 블록만 반환한다.
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     if not text:
         return text
 
