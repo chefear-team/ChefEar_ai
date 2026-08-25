@@ -944,9 +944,16 @@ def _compute_wave_bars(audio_path: str | Path, num_bars: int = 60, min_h: int = 
     return [round(min_h + (v / peak) * (max_h - min_h)) for v in rms_values]
 
 
-def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 250) -> bytes:
+def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450) -> bytes:
     """TTS 재생 시작 부분이 브라우저(특히 크롬)에서 살짝 씹혀 들리는 문제 완화용
     (2026-08-23 리포트 — "된장찌개"가 "장찌개"로 들림, 크롬에서 특히 뚜렷함).
+
+    2026-08-24 — 250ms로도 여전히 앞부분이 들린다는 재확인 리포트로 450ms로 올림.
+    _arm_tts_mute()의 0.6초 여유 안에는 여전히 들어오므로(0.45 < 0.6) 그쪽 계산은
+    안 건드려도 된다. 그래도 여전히 잘려 들리면 다음 단계는 이 값을 더 올리기보다,
+    브라우저 쪽 실제 페이드인 길이를 직접 재서(예: 개발자도구로 파형 캡처) 정확한
+    원인부터 좁히는 게 낫다 — 무작정 올리면 문장 시작이 그만큼 늦게 들리기 시작해서
+    "밀린다"는 인상을 오히려 키울 수 있다.
 
     정확한 브라우저 내부 메커니즘은 확정 못 했다(크롬이 autoplay로 막 시작한 오디오에
     pop 방지용으로 아주 짧은 페이드인을 거는 것으로 추정 — 그렇다면 그 페이드인이

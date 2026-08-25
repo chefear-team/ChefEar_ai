@@ -273,10 +273,22 @@ def speak(
             if job["error"] is not None:
                 raise job["error"]
 
+        # 2026-08-25 — hidden=True에서도 render_audio_autoplay()로 실제로 한 번 틀고
+        # 있었다. hidden=True는 항상 "이 문구를 goto() 직전에 미리 합성/캐싱만 해두고,
+        # 실제 재생은 도착 화면이 _render_cached_speech()/render_step_card()로 같은
+        # 캐시를 다시 찾아 들려준다"는 용도로만 쓰인다(모든 호출부 확인 — dispatch.py의
+        # 조회/진행/재료대체/취소, register.py의 저장완료 등 전부 도착 화면이 재생을
+        # 담당). 그런데 goto()의 st.rerun()이 이 iframe을 지우기 전 아주 짧게라도
+        # 브라우저가 재생을 시작해버리면, 도착 화면이 같은 파일을 처음부터 다시 재생할
+        # 때 "음성이 두 번 겹쳐 들린다"는 실측 리포트(2026-08-25)로 확인됐다. 이 자리
+        # (hidden 쪽)는 애초에 들려줄 필요가 없어서 render_audio_autoplay() 호출만
+        # 없앤다 — _arm_tts_mute()는 그대로 둔다. render_step_card()(cooking_step
+        # 도착 화면)는 자기 스스로 뮤트를 걸지 않고 이 speak(hidden=True) 호출의
+        # _arm_tts_mute() 부작용에 기대는 구조라(theme.py에 별도 뮤트 호출이 없음,
+        # 2026-08-25 확인), 여기서 뮤트까지 같이 없애면 그 경로에서 TTS가 자기
+        # 목소리를 마이크로 다시 주워듣는 회귀가 생긴다.
         _arm_tts_mute(audio_path)
-        if hidden:
-            render_audio_autoplay(audio_path)
-        else:
+        if not hidden:
             render_audio_player(audio_path)
     except Exception as exc:  # noqa: BLE001 — 사용자에게 보여줄 실패이지 숨길 실패가 아님
         st.warning(f"음성 재생에 실패했어요(텍스트는 위에 표시돼요): {exc}")
