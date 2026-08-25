@@ -103,14 +103,22 @@ def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_C
 
       1) 완전일치 — 발화 전체가 요리명 그 자체인 경우 ("된장찌개")
       2) 부분일치 — 발화 안에 요리명이 그대로 들어있는 경우
-         ("된장찌개 어떻게 만들어?"). 여러 요리명이 동시에 걸리면(예: "김치"와
-         "김치찌개" 둘 다 발화에 포함) 더 구체적인(긴) 이름을 채택한다.
+         ("된장찌개 어떻게 만들어?")
       3) 편집거리 유사도 — STT가 요리명 자체를 잘못 들은 경우("부대찌게",
          "된장치게") 보정. 발화 전체와 공백으로 나눈 각 단어를 모두 후보로
          비교해서, 문장 속에 섞여 있어도("부대찌게 어떻게 만들어?") 잡히게
          한다. 비교는 음절 그대로가 아니라 자모로 분해해서 한다(_decompose_hangul
          참고) — 된소리/거센소리, 애/에처럼 음절 단위로는 "다른 글자"로 보이지만
          실제로는 음소 하나 차이인 흔한 오인식까지 잡아내기 위함.
+
+    2)와 3)에서 나온 후보를 합쳐서 더 구체적인(긴) 이름을 채택한다(예: "김치"와
+    "김치찌개" 둘 다 발화에 포함되면 "김치찌개"). 2026-08-24 실측 확인 — STT가
+    "된장찌개"를 "된장찌장찌개"로 중복 오인식했을 때, 부분일치 단계가 "된장"
+    (짧지만 실제 존재하는 요리명)을 substring으로 찾자마자 그대로 반환해버려서,
+    편집거리 단계라면 훨씬 높은 유사도(0.8)로 잡아낼 수 있었을 "된장찌개"를
+    아예 시도조차 못 하고 놓쳤다. 부분일치가 있어도 편집거리 후보까지 항상 같이
+    구해서 더 긴 쪽을 채택해야 이런 "짧은 이름이 우연히 substring이라 먼저
+    걸리는" 케이스를 피할 수 있다.
 
     셋 다 실패하면 None — 억지로 아무 요리나 골라주지 않는다(1.5 원칙과 같은
     태도: 모르면 모른다고 한다). 호출하는 쪽은 None일 때 "레시피 없음" 안내 후
@@ -125,15 +133,23 @@ def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_C
     if text in names:
         return text
 
-    contained = [name for name in names if name and name in text]
-    if contained:
-        return max(contained, key=len)
+    # len(name) >= 2 — 2026-08-24 실측 확인. DB에 1글자 요리명이 41개 있는데("무",
+    # "국", "닭", "면", "장" 등), 부분일치를 글자 수 제한 없이 하면 "별빛나무 레시피
+    # 알려줘"(존재하지 않는 요리)가 "무"라는 아무 관련 없는 요리와 매칭돼버린다(1.5
+    # 원칙 위반 — 없는 걸 있다고 잘못 답함). 1글자 요리명이 정말 그 자체로 의도된
+    # 경우("무 어떻게 만들어?")는 아래 편집거리 단계가 문장을 공백으로 나눠서
+    # ("무"라는 단어 자체를 후보로) 여전히 잡아준다 — 그러니 여기서 부분일치만
+    # 2글자 이상으로 좁혀도 정상 케이스를 놓치지 않는다.
+    candidates = [name for name in names if name and len(name) >= 2 and name in text]
 
     name_map = _decomposed_name_map(client)
     for candidate in (text, *text.split()):
         close = difflib.get_close_matches(_decompose_hangul(candidate), name_map.keys(), n=1, cutoff=fuzzy_cutoff)
         if close:
-            return name_map[close[0]]
+            candidates.append(name_map[close[0]])
+
+    if candidates:
+        return max(candidates, key=len)
 
     return None
 
