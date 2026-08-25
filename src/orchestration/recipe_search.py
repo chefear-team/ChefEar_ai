@@ -166,9 +166,13 @@ def select_standard_recipe(dish_name: str, owner_id: str | None = None, client=N
     api_standard로 폴백하고, 그마저 없으면(이색 요리를 남이 등록했는데 나는
     등록한 적 없는 경우) None을 반환한다.
 
-    owner_id가 아직 없으면(예: UI가 아직 로그인 로직을 안 붙였거나, 이 함수를
-    owner 구분 없이 그냥 써보는 테스트) 예전 방식대로 아무 user_custom이나
-    우선한다 — 하위 호환을 위한 기본 동작이다.
+    owner_id가 아직 없으면(비로그인, 쿠키 실패 등으로 신원을 전혀 특정 못 하는
+    상태) api_standard만 후보로 본다 — EC-20/FR-08 스펙 문구가 "사용자가"
+    user_custom을 갖고 있는 경우라고 명시하므로(그 사용자 본인 것이라는 뜻),
+    누구 것인지 모르는 상태에서 아무나의 user_custom을 대신 보여주면 안 된다
+    (2026-08-24 수정 — 이전엔 "아무 user_custom이나 우선"하는 로그인 붙기 전
+    하위호환 코드가 남아 있어서, 비로그인 사용자에게 남이 등록한 개인 레시피가
+    표준보다 먼저 노출되는 문제가 있었다).
     """
     client = client or get_client()
     # .eq("dish_name", ...) : dish_name이 정확히 일치하는 행만
@@ -191,8 +195,9 @@ def select_standard_recipe(dish_name: str, owner_id: str | None = None, client=N
         if not candidates:
             return None  # 있는 건 남의 user_custom뿐 -> 노출하지 않음
     else:
-        user_custom_rows = [r for r in rows if r["source"] == "user_custom"]
-        candidates = user_custom_rows if user_custom_rows else rows  # EC-20/FR-08
+        candidates = [r for r in rows if r["source"] == "api_standard"]
+        if not candidates:
+            return None  # 표준 레시피가 없고 남의 user_custom만 있음 -> 노출하지 않음
 
     winner = _max_view_count(candidates)
 
