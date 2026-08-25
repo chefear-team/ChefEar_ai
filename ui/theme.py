@@ -14,10 +14,57 @@ import numpy as np
 import soundfile as sf
 import streamlit as st
 
+# 2026-08-26 요청 — 상단 "ChefEar" 아이콘+글자 로고를 실제 브랜드 로고 이미지로 교체.
+# ui/theme.py 자신이 ui/ 바로 밑에 있어서 .parent가 곧 ui/ 폴더 — images/ 하위 경로만
+# 더하면 된다(voice_io.py의 PROJECT_ROOT 패턴과 같은 방식, 계층만 하나 덜 올라감).
+# 모듈 임포트 시 딱 한 번만 파일을 읽어 base64로 인코딩해서 캐시해둔다(Streamlit이
+# 매 rerun마다 이 모듈을 다시 import하지 않고 이미 로드된 모듈 객체를 재사용하므로,
+# 모듈 최상단 코드는 프로세스 생애주기 동안 한 번만 실행됨 — 매번 디스크에서 다시
+# 안 읽어도 됨). 파일이 없거나(팀원 로컬 등) 읽기 실패해도 서비스가 죽으면 안 되므로
+# (EC-05와 같은 정신) 조용히 None으로 남겨서 render_brand()가 예전 아이콘+글자로
+# 대체(fallback)하게 한다.
+_LOGO_PATH = Path(__file__).resolve().parent / "images" / "chefear_logo_투명.png"
+try:
+    _LOGO_DATA_URI = "data:image/png;base64," + base64.b64encode(_LOGO_PATH.read_bytes()).decode("ascii")
+except Exception:
+    _LOGO_DATA_URI = None
+
+# 2026-08-26 요청 — 바깥 배경(.stApp, 모바일 폭 카드 바깥쪽 뷰포트 전체)에 배경 이미지를
+# 입힌다. 원본(ui/images/chefear_배경.png)이 2816x1536 PNG로 6.2MB나 돼서 그대로
+# base64로 CSS에 박으면 매 페이지 로드마다 8MB 넘게 더 얹는 꼴이라(무거운 화면 잔상
+# 스크립트에 시달린 오늘 밤 성능 감각으로 볼 때 절대 좋을 게 없음), 미리 리사이즈+JPEG
+# 재압축해서 로컬에 별도 캐시 파일로 저장해두고(_BG_OPTIMIZED_PATH) 그걸 읽어서 인코딩한다
+# (최초 1회만 리사이즈, 이후엔 캐시 파일만 읽음 — PIL을 매 프로세스 시작마다 또 돌릴
+# 필요 없음). 원본이 사람 손으로 바뀔 수 있어서 원본보다 캐시가 더 오래됐으면(또는
+# 캐시가 아직 없으면) 그때만 다시 만든다.
+_BG_PATH = Path(__file__).resolve().parent / "images" / "chefear_배경.png"
+_BG_OPTIMIZED_PATH = Path(__file__).resolve().parent / "images" / "_chefear_배경_optimized.jpg"
+
+
+def _load_bg_data_uri() -> str | None:
+    try:
+        if _BG_PATH.exists() and (
+            not _BG_OPTIMIZED_PATH.exists() or _BG_PATH.stat().st_mtime > _BG_OPTIMIZED_PATH.stat().st_mtime
+        ):
+            from PIL import Image
+
+            im = Image.open(_BG_PATH).convert("RGB")
+            target_w = 1600
+            if im.width > target_w:
+                ratio = target_w / im.width
+                im = im.resize((target_w, round(im.height * ratio)), Image.LANCZOS)
+            im.save(_BG_OPTIMIZED_PATH, "JPEG", quality=78, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(_BG_OPTIMIZED_PATH.read_bytes()).decode("ascii")
+    except Exception:
+        return None
+
+
+_BG_DATA_URI = _load_bg_data_uri()
+
 CSS = """
 <style>
 :root {
-  --bg: #f7f1e6;
+  --bg: #FFF7ED;
   --surface: #ffffff;
   --surface-alt: #fbf6ec;
   --border: #ece1cc;
@@ -147,8 +194,16 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 
 .ce-back-link { display:inline-flex; align-items:center; gap:4px; font-size:13px; color: var(--text-secondary); font-weight:700; margin-bottom: 4px; }
 
-.ce-brand { display:flex; align-items:center; gap:8px; font-size:22px; font-weight:800; color:var(--text); }
+.ce-brand { display:flex; align-items:center; gap:8px; font-size:22px; font-weight:800; color:var(--text); margin-top: -35px; }  /* 2026-08-26: 로고 위로 15px -> 로그인 버튼과 별도로 20px 추가(-35px) 재요청 */
 .ce-brand .icon { color: var(--accent); display:inline-flex; }
+/* 2026-08-26 — 로고 이미지 버전(.ce-brand-logo). 원본(1024x559)엔 "당신의 AI 요리
+   파트너" 부제도 같이 그려져 있어서, 아이콘+글자 한 줄(22px)보다 세로로 더 크다 —
+   상단 한 줄(로그인 버튼과 나란한 자리)에 자연스럽게 앉도록 높이만 고정하고 너비는
+   원본 비율 그대로 따라가게(auto) 한다. */
+.ce-brand-logo { height: 90px; width: auto; display: block; }  /* 2026-08-26: 40->60->1.5배(90px) 재요청 */
+/* 2026-08-26 — 로고와 같은 줄(render_brand()의 st.columns 오른쪽 칸)에 있는 로그인
+   아이콘 버튼도 같이 위로 15px 옮겨서 로고와 나란한 높이를 유지한다. */
+[class*="st-key-brand_login_wrap"] { margin-top: -15px; }
 
 .ce-section-title { display:flex; align-items:center; gap:7px; font-size:15px; font-weight:800; color:var(--text); margin-top: 18px; }
 .ce-section-title .icon { color: var(--text-secondary); display:inline-flex; }
@@ -606,6 +661,19 @@ ICON_CHEVRON_LEFT = _SVG.format(size=12, body='<polyline points="15 18 9 12 15 6
 
 def inject_css() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
+    # 2026-08-26 요청 — 배경 이미지(위 _BG_DATA_URI, 모듈 최상단 문서 참고). CSS 문자열
+    # 전체를 f-string으로 바꾸면(중괄호가 수백 개라) 이스케이프 위험이 커서, 이 작은
+    # 규칙 하나만 별도 <style> 블록으로 뒤에 이어붙인다 — 나중에 오는 규칙이 같은
+    # 선택자(.stApp)의 앞쪽 규칙(단색 background)을 자연스럽게 덮어써서 !important
+    # 없이도 이긴다. 이미지 로딩 실패 시(_BG_DATA_URI가 None) 아무것도 안 그려서
+    # 원래 단색 배경 그대로 유지된다.
+    if _BG_DATA_URI:
+        st.markdown(
+            f"<style>.stApp {{ background-image: url('{_BG_DATA_URI}'); "
+            "background-size: cover; background-position: center; background-repeat: no-repeat; "
+            "background-attachment: fixed; }}</style>",
+            unsafe_allow_html=True,
+        )
 
 
 def render_loading_overlay(message: str = "처리하고 있어요...") -> None:
@@ -694,12 +762,20 @@ def render_brand(show_login: bool = False, username: str | None = None) -> bool:
     app.py 쪽 개념이라, 여기서도 클릭 여부만 bool로 돌려준다. 로그아웃은 여기서
     바로 하지 않고 그 마이 레시피 화면의 로그아웃 버튼에 맡긴다.
     """
+    # 2026-08-26 요청 — 아이콘+글자 로고를 실제 브랜드 로고 이미지(ui/images/
+    # chefear_logo_투명.png)로 교체. 이미지를 못 읽은 경우(_LOGO_DATA_URI가 None —
+    # 위 모듈 최상단 로딩부 참고)에는 예전 아이콘+글자로 조용히 대체해서 서비스가
+    # 안 죽게 한다(EC-05와 같은 정신).
+    if _LOGO_DATA_URI:
+        brand_html = f'<div class="ce-brand"><img class="ce-brand-logo" src="{_LOGO_DATA_URI}" alt="ChefEar"></div>'
+    else:
+        brand_html = f'<div class="ce-brand"><span class="icon">{ICON_POT}</span> ChefEar</div>'
     if not show_login:
-        st.markdown(f'<div class="ce-brand"><span class="icon">{ICON_POT}</span> ChefEar</div>', unsafe_allow_html=True)
+        st.markdown(brand_html, unsafe_allow_html=True)
         return False
     left, right = st.columns([6, 1])
     with left:
-        st.markdown(f'<div class="ce-brand"><span class="icon">{ICON_POT}</span> ChefEar</div>', unsafe_allow_html=True)
+        st.markdown(brand_html, unsafe_allow_html=True)
     with right:
         # 버튼이 자기 칸 왼쪽에 붙어서 화면 오른쪽 끝까지 안 갔다(실측 지적,
         # 2026-08-21) - my_recipe_actions_와 같은 방식으로 감싸는 세로 블록에
@@ -1178,3 +1254,175 @@ def render_big_mic(ready: bool = False):
             f'<p class="ce-hint">{hint}</p>',
             unsafe_allow_html=True,
         )
+
+
+# 2026-08-25 — render_screen_cleanup()이 쓰는, "오디오를 절대 안 만드는 화면" 목록.
+# src/app.py::SCREENS의 각 screen_*() 함수 본문을 직접 확인해서 정함(speak()/
+# _render_cached_speech()/render_step_card(audio_path=...) 호출이 하나도 없는 화면만).
+# 화면을 새로 추가하거나 기존 화면에 오디오 호출을 새로 넣을 땐 이 목록도 같이 검토할 것.
+_AUDIO_FREE_SCREENS = (
+    "start",
+    "register_ingredients",
+    "register_steps",
+    "register_dish_name",
+    "register_intro",
+    "login",
+    "my_recipes",
+    "edit_recipe",
+)
+
+# 2026-08-25 — render_screen_cleanup()이 쓰는, "텍스트 대체 입력칸을 절대 안 만드는
+# 화면" 목록. src/app.py::main()의 화면별 listen() 호출부에서 show_text_fallback=False로
+# 넘기는 화면만(voice_io.py::listen() 참고 — False면 st.text_input() 자체를 안 그림).
+# 오디오 iframe과 같은 패턴의 잔상(cooking_complete의 "또는 텍스트로 입력" 칸이 start로
+# 넘어간 뒤에도 남는 것)이 실측 확인돼 같은 방식으로 추가.
+# no_match(2026-08-25 추가) — "초기"/"등록" 두 키워드만 반응하는 좁은 화면으로 바뀌면서
+# (register.py::handle_no_match() 참고) show_text_fallback=False로 바뀜.
+_NO_TEXT_FALLBACK_SCREENS = ("start", "recipe_confirm", "no_match")
+
+# 2026-08-25 — fallback_buttons()와 같은 부류의 잔상을 no_match 화면에서도 실측 확인:
+# screen_no_match()의 두 버튼(st.button()에 key= 없이 호출돼서 fallback_buttons()처럼
+# 화면 접두사로 잡아낼 CSS key가 없음 — 버튼 문구로 직접 특정한다)이 no_match ->
+# start(음성 "처음") 전환 뒤에도, 심지어 새로 생긴 st-key-screen_start 컨테이너
+# *안에* 자식으로 남아있는 게 확인됐다(단순히 컨테이너 밖으로 새는 정도가 아니라
+# React 재조정 과정에서 이전 화면의 자식 일부가 새 컨테이너 밑에 그대로 붙어버림).
+# {"버튼 문구": "그 버튼이 원래 속한 화면"} — CURRENT가 그 화면이 아니면 잔상으로
+# 판정해 지운다. 같은 증상이 다른 화면에서도 나오면 여기 계속 추가할 것.
+#
+# 2026-08-25 추가 확장 — register_dish_name -> start(음성 "처음") 전환에서 더 심한
+# 사례를 발견: "취소" 버튼뿐 아니라 캡션("짐작한 이름: ...")·마이크 바 문구까지
+# 통째로 새 screen_start 컨테이너 *안쪽 자식*으로 남아있었다. "취소"는 my_recipes.py/
+# register.py 여러 화면이 같이 쓰는 흔한 문구라 그것만으론 어느 화면 잔상인지 특정할
+# 수 없어서(잘못 지우면 다른 화면의 진짜 취소 버튼을 지울 위험) 버튼 문구 대신, 그
+# 화면에서만 나오는 고유한 문구(예: register_dish_name의 "짐작한 이름")를 마커로 삼고
+# "그 마커를 담은 자식부터 화면 컨테이너 끝까지(꼬리 전체)"를 지우는 방식으로 일반화했다
+# — 뒤에 뭐가 더 붙어있든(캡션+마이크바+취소 버튼처럼 여러 종류가 섞여도) 한 번에 잡힌다.
+#
+# 2026-08-25 추가 — 값이 항상 화면 이름 "리스트"다(예전엔 문자열 하나였는데, "처음
+# 화면으로" 문구가 cooking_complete/register_dish_name/register_ingredients/
+# register_steps/complete 다섯 군데에서 같이 쓰이는 게 실측 확인돼 단일 소유자로는
+# 표현이 안 됨 — CURRENT가 이 리스트 안에 있으면 정상, 없으면 잔상으로 판정).
+#
+# 2026-08-25 추가 통찰 — **음성으로 전환할 때가 버튼 클릭보다 잔상이 더 잘 남는다.**
+# 버튼 클릭(예: cooking_complete의 "처음 화면으로")은 screen_*() 함수 "본문 실행
+# 도중"에 reset_to_start()가 불려서 그 스크립트 실행이 그 자리에서 바로 끊긴다 —
+# 그 화면 자신의 뒷부분(이 경우엔 버튼 자체)조차 이 실행에서 완전히 커밋되기 전이라
+# 남을 거리 자체가 적다. 반면 음성 "처음"은 화면 본문이 SCREENS[screen]()로 완전히
+# 다 그려진 *뒤에*, app.py 하단 dispatch 블록에서 별도로 처리되므로 화면 전체가
+# 완전히 커밋된 상태에서 전환이 일어난다 — 남길 거리가 더 많다. 그래서 이 세션에서
+# 버튼 클릭 테스트는 깨끗했던 케이스도 실제 음성으로 하면 새 잔상이 나오는 경우가
+# 있었다(cooking_complete "처음 화면으로" 버튼 자체가 실사용 전체 플로우 테스트에서
+# 잔상으로 남는 것 확인, 2026-08-25). **앞으로 잔상 테스트는 반드시 음성(또는 음성과
+# 동등한 debug_panel 경로)으로 할 것 — 버튼 클릭만으로는 과소평가된다.**
+_STALE_CONTENT_MARKERS = {
+    "원래 레시피로 계속하기": ["no_match"],
+    "새 레시피로 등록할래요": ["no_match"],
+    # 2026-08-25(같은 날 밤) 사용자 실사용 재현 보고 — no_match 화면의 st.caption()
+    # 안내문(register.py, EC-05/1.5 원칙 문구)이 "새 레시피로 등록할래요" 버튼 마커보다
+    # *앞쪽*에 렌더링돼서, 그 버튼만 잡는 기존 마커로는 이 캡션까지는 못 잡았다(꼬리
+    # 제거는 마커를 찾은 지점부터 뒤만 지우므로, 이 캡션은 그 버튼 마커보다 앞에 있어서
+    # 버튼 마커의 "꼬리"에 포함이 안 됨) — 실측: "처음"으로 start 전환한 뒤에도 이
+    # 캡션 문구만 혼자 남아있었음. 독립 마커로 추가.
+    "실데이터 검색만으로 판단해요": ["no_match"],
+    # 2026-08-26 추가 — no_match의 "새 레시피로 등록할래요" 버튼 바로 아래 로그인
+    # 유도 배지(render_badge(), 2026-08-25에 st.caption()에서 바꾼 것)도 "실데이터
+    # 검색만으로..." 마커의 꼬리에 원래 포함되긴 하지만, 이 잔상 부류가 조각마다
+    # 비동기로 따로 새는 사례가 반복 확인돼서(위 "다른 레시피 찾을래요"/"비밀번호"
+    # 마커들과 같은 이유) 이것도 독립 마커로 예방 추가.
+    "로그인을 하시면 레시피를 등록할 수 있어요": ["no_match"],
+    # 2026-08-25(같은 날 밤) 사용자 실사용 재현 보고 — register_intro(표준 레시피에
+    # 없는 요리라 새로 등록할지 묻는 화면)의 마이크바 캡션('"네" 또는 "등록할래요"라고
+    # 말해보세요', render_mic_bar() 호출부)과 그 아래 "네, 등록할래요"/"괜찮아요" 버튼
+    # 행, 심지어 그 뒤에 register_ingredients의 "추가" 버튼까지 통째로 start로 샌 사례
+    # 확인(등록 플로우를 실제로 몇 단계 진행한 뒤 "처음"으로 나온 경우). 이 캡션이
+    # register_intro 본문에서 맨 앞쪽 위젯이라, 이 마커 하나의 꼬리 제거로 뒤따르는
+    # 버튼 행+register_ingredients 잔여물까지 한 번에 같이 잡힌다.
+    '"네" 또는 "등록할래요"라고 말해보세요': ["register_intro"],
+    # 2026-08-26 사용자 실사용 재현 보고 — login 화면(아이디/비밀번호 입력 폼)에서
+    # "처음으로 가기"로 나간 뒤 start에서 로그인 폼 전체(아이디/비밀번호 입력칸+
+    # 로그인/회원가입 버튼)가 그대로 남는 잔상 확인. "아이디" text_input 라벨이
+    # screen_login()의 login/signup 두 뷰 모두에서 공통으로 맨 앞에 오는 위젯이라
+    # (my_recipes.py 확인), 이 마커 하나로 두 뷰 다 커버되고 꼬리 제거로 뒤따르는
+    # 버튼들도 같이 잡힌다.
+    "아이디": ["login"],
+    # 2026-08-26 재현 추가 — "아이디" 마커로도 부족했다(실측!). 같은 login 잔상인데
+    # 이번엔 "아이디" 입력칸은 안 남고 "비밀번호"부터 그 뒤(로그인/회원가입 버튼)만
+    # 독립적으로 남는 경우가 확인됐다 — recipe_confirm의 배지+"다른 레시피 찾을래요"
+    # 버튼이 따로 늦게 도착해 하나의 마커로 못 잡혔던 것과 같은 패턴(위 "다른 레시피
+    # 찾을래요" 마커 주석 참고, 이 잔상 부류는 조각마다 비동기로 따로 도착해서 앞쪽
+    # 마커 하나로는 못 잡을 때가 있다). "비밀번호"도 독립 마커로 추가.
+    "비밀번호": ["login"],
+    # 2026-08-25(같은 날 밤, 위와 같은 리포트 — 등록 플로우를 register_ingredients까지
+    # 더 진행한 뒤 "처음") — register_intro 마커의 꼬리 제거로는 register_ingredients
+    # 자체의 잔상(재료 칩은 이미 구조적 규칙 7로 잡히지만, 그 아래 텍스트 입력칸+
+    # "추가"/"네, 맞아요" 버튼은 register_intro 마커의 꼬리 범위 밖 — 서로 다른 렌더링
+    # 시점/컨테이너 자식이라 안 잡힘)까지는 못 잡는다. register_ingredients/
+    # register_steps 각각 자기 화면 전용 텍스트 입력 라벨을 마커로 추가 — 두 화면 다
+    # 그 입력칸이 본문에서 맨 마지막 위젯 그룹 시작이라, 꼬리 제거로 뒤따르는 버튼들도
+    # 같이 잡힌다.
+    "재료 추가(쉼표로 여러 개 가능)": ["register_ingredients"],
+    "순서 추가": ["register_steps"],
+    "짐작한 이름": ["register_dish_name"],
+    # 2026-08-25 사용자 실사용 재현 보고 — cooking_step -> start(음성 "처음") 전환에서
+    # 4번 규칙(fallback_buttons 버튼 3개, CSS key 기반)은 버튼만 지우고, 그 버튼들
+    # 바로 위에 있는 마이크바 캡션("듣는 중"/"이전"·"다시"·"다음")과 fallback_buttons()
+    # 자체의 안내문("음성이 잘 안 될 땐...")은 못 잡았다 — 같은 "꼬리 전체 제거" 방식으로
+    # 보강. 이 마이크바 문구('"이전" · "다시" · "다음"')는 cooking_step 전용(다른 화면은
+    # 다른 문구를 씀, screen_cooking_step()의 render_mic_bar() 호출부 확인).
+    '"이전" · "다시" · "다음"': ["cooking_step"],
+    # 2026-08-25 사용자 실사용 재현 보고 — 실제 음성으로 "닭도리탕" 조회 -> recipe_confirm
+    # (레시피 소개 화면) -> "처음으로" -> start 전환에서, recipe_confirm의 재료 칩
+    # (예: "닭 1마리", "당근 1/3개")과 "다른 레시피 찾을래요" 버튼까지 통째로 남는 것
+    # 재현됨. screen_recipe_confirm()의 맨 첫 호출인 render_badge("조회수 1위 표준
+    # 레시피 자동 선택 · 되묻지 않음 (FR-05)")를 마커로 써서, 그 뒤에 나오는
+    # typewriter 메시지·재료 칩·마이크바·"다른 레시피 찾을래요" 버튼까지 한 번에
+    # (꼬리 전체 제거로) 잡는다 — 마커가 화면 본문 맨 앞이라 뒤에 뭐가 오든 다 잡힘.
+    "조회수 1위 표준 레시피 자동 선택": ["recipe_confirm"],
+    # 위 배지 마커 하나로는 부족했다(실측) — 배지+칩은 지워지는데 "다른 레시피
+    # 찾을래요" 버튼만 따로 늦게 도착해서 배지가 이미 지워진 뒤라 "그 지점부터 꼬리
+    # 전체 제거" 규칙의 앵커를 못 찾고 혼자 남는 사례 확인. 각자 독립적으로 잡히게
+    # 버튼 자체도 별도 마커로 추가(register.py엔 같은 문구가 주석으로만 있고 실제
+    # 버튼은 없음 — 안전하게 고유함, 2026-08-25 확인).
+    "다른 레시피 찾을래요": ["recipe_confirm"],
+    # 2026-08-25 사용자 실사용 재현 보고(전체 플로우 재검증 중) — 배지/버튼 마커로도
+    # recipe_confirm 자신의 마이크바 캡션('"응" 또는 다른 요청을 말씀해주세요',
+    # render_mic_bar() 호출부)이 여전히 새는 사례 확인 — 버튼과 같은 이유(비동기로
+    # 따로 늦게 도착)로 추정, 독립 마커로 추가.
+    '"응" 또는 다른 요청을 말씀해주세요': ["recipe_confirm"],
+    # 위와 같은 이유로 예방적으로 추가 — render_typewriter_message()의 나머지 고정
+    # 문구 두 줄(요리명은 매번 달라서 마커로 못 씀, 이 둘은 고정 문구라 가능).
+    "조회수 1위 표준 레시피예요.": ["recipe_confirm"],
+    "이걸로 시작할까요?": ["recipe_confirm"],
+    # 2026-08-25 사용자 실사용 재현 보고(버그.png, st.iframe() 교체 이후에도 재현) —
+    # 재료 칩 목록("재료 미리보기" 제목 + 칩들 + 마이크바 + 버튼)이 통째로 남는 사례
+    # 계속 확인. "재료 미리보기"는 cooking.py::screen_recipe_confirm()에만 있는
+    # 고유 문구(cooking_step은 "오늘의 재료"를 씀, register.py 재료 화면은 제목 없음).
+    "재료 미리보기": ["recipe_confirm"],
+    # 2026-08-25 사용자 실사용 전체 플로우 재현 보고 — 검색→확인→10단계 조리→완료→
+    # 음성 "처음"까지 실제로 끝까지 가본 뒤 재현. "처음 화면으로" 문구는 cooking.py의
+    # cooking_complete 버튼과 register.py의 register_dish_name/register_ingredients/
+    # register_steps(뒤로가기 링크)·complete(버튼) 다섯 화면이 전부 같이 쓴다 — 그래서
+    # 소유자를 리스트로 표현해야 한다(위 설명 참고).
+    "처음 화면으로": [
+        "cooking_complete",
+        "register_dish_name",
+        "register_ingredients",
+        "register_steps",
+        "complete",
+    ],
+}
+
+# 2026-08-25 사용자 실사용 재현 보고(버그.png) — cooking_step에서 실제 대화를 나눈 뒤
+# "처음"으로 start로 넘어가니, render_chat()이 그리는 대화 기록(render_chat()이 항상
+# 출력하는 고정 wrapper `<div class="ce-transcript">`)까지 통째로 남아있었다. 대화
+# 내용은 매번 달라서 텍스트 마커로 못 잡지만, 감싸는 클래스는 항상 같아서 그걸로
+# 구조적으로 잡는다 — _STALE_CONTENT_MARKERS(텍스트 앵커 기반)와 별개의 규칙.
+# render_chat()을 쓰는 화면 = cooking_step(cooking.py)·no_match(register.py).
+_CHAT_LOG_SCREENS = ("cooking_step", "no_match")
+
+# 2026-08-25 사용자 실사용 재현 보고(버그.png, st.iframe() 교체 이후에도 재현) —
+# render_chips()가 그리는 재료 칩 목록(고정 wrapper `<div class="ce-chip-grid">`)도
+# 같은 이유(내용이 매번 다른 요리의 재료라 텍스트 마커로 못 잡음)로 구조적 규칙이
+# 필요하다. render_chips()를 쓰는 화면 = recipe_confirm·cooking_step(둘 다 cooking.py)·
+# register_ingredients(register.py).
+_CHIP_GRID_SCREENS = ("recipe_confirm", "cooking_step", "register_ingredients")
