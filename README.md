@@ -104,7 +104,7 @@ AI
 | TTS 도메인 파인튜닝 | Qwen3-TTS 기반 짧은 단계 안내용 자연스러운 음성 생성 및 통합 테스트 | Must |
 | 화면 보조 UI | 현재 단계, 재료, 최근 대화를 Streamlit 화면에 표시 | Must |
 
-현재 UI는 HTML 11개 화면과 이에 대응하는 Streamlit 화면 프로토타입으로 구현되었으며, 최종 `src/app.py` 기반 통합은 진행 중입니다.
+초기엔 HTML 11개 화면 + Streamlit 프로토타입(`ui/`)으로 화면 흐름을 먼저 검증했고, 지금은 `src/app.py` 기반 실제 서비스(STT→의도분류→TTS 전체 파이프라인, 상시 마이크 포함)로 통합이 끝나 실사용 중입니다.
 
 ---
 
@@ -151,13 +151,15 @@ Whisper Small과 wav2vec2를 비교군으로 실험한 뒤, ChefEar 요리 도�
 
 ### TTS
 
-`Qwen3-TTS-12Hz-1.7B-VoiceDesign + KSS`
+`Qwen3-TTS-12Hz-1.7B-Base + KSS`
 
 짧은 조리 단계 안내에 적합한 자연스러운 발화를 목표로 QLoRA 기반 파인튜닝을 완료했습니다
 (HF Hub 비공개 업로드 완료). TTS→STT 재인식 검증(CER)은 체크포인트를 13에포크로 교체한 뒤
-5문장 전부 CER 0.0000으로 확인되어 품질 문제는 해소되었습니다(2026-08-19). 다만 HF Spaces
-CPU Basic 목표 응답시간(5초) 충족 여부는 옛 코드 경로 기준 실측(평균 197초, FAIL)만 있고
-새 체크포인트/코드 경로로는 아직 재측정 전이라 배포 경로 대안 검토가 계속 필요합니다.
+5문장 전부 CER 0.0000으로 확인되어 품질 문제는 해소되었습니다(2026-08-19). HF Spaces CPU
+Basic 목표 응답시간(5초)은 옛 코드 경로 기준 실측(평균 197초)에서 크게 못 미쳐 **배포 방향을
+GPU 기반(팀 로컬 데스크탑 + Tailscale 상시 노출)으로 전환하기로 결정**했습니다(2026-08-19,
+`docs/decisions.md` #2) — 실제 서비스는 이 GPU 경로로 동작 중이며, HF Spaces CPU 배포는
+더 이상 목표가 아닙니다.
 
 ---
 
@@ -173,13 +175,13 @@ CPU Basic 목표 응답시간(5초) 충족 여부는 옛 코드 경로 기준 �
 ↓  
 현재 조리 단계 결정  
 ↓  
-`Qwen3-TTS-12Hz-1.7B-VoiceDesign + KSS` TTS  
+`Qwen3-TTS-12Hz-1.7B-Base + KSS` TTS  
 ↓  
 음성 안내
 
 의도 분류는 서비스 실행 중 외부 LLM API를 호출하지 않고 임베딩 유사도 비교 방식으로 처리합니다.
 
-현재 STT 최종 모델 선정과 UI 프로토타입 구현은 완료되었으며, TTS 학습과 STT/TTS/Streamlit 통합 테스트를 진행 중입니다.
+STT 최종 모델 선정, TTS 파인튜닝, STT/TTS/Streamlit 통합 모두 완료되어 GPU 데스크탑 기반으로 실사용 중입니다(상시 마이크·의도분류·재료대체·신규등록 전체 흐름 포함).
 
 ---
 
@@ -194,7 +196,7 @@ CPU Basic 목표 응답시간(5초) 충족 여부는 옛 코드 경로 기준 �
 - 사용자 레시피 등록 및 저장
 - Whisper Small / wav2vec2 / Whisper Large 비교 및 STT 파인튜닝
 - `openai/whisper-large-v3-turbo` 최종 STT 모델 선정
-- `Qwen3-TTS-12Hz-1.7B-VoiceDesign + KSS` TTS 파인튜닝
+- `Qwen3-TTS-12Hz-1.7B-Base + KSS` TTS 파인튜닝
 - HTML + Streamlit 기반 화면 프로토타입 구현
 - STT Fixed100 / New500 WER·CER 평가
 - STT → 의도분류 → 레시피 처리 → TTS 통합 테스트

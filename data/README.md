@@ -12,7 +12,7 @@ git 대상이 아니다 — 팀원 간 별도 공유(드라이브 등) 필요.
 |---|---|---|
 | `standard/` | **실물 확보(각자 배포 완료, git 업로드 안 함)** | 요리명별_조리과정 60,282건 CSV — 서비스가 쓰는 조리순서 전량(실데이터). `load_data.py --csv`로 Supabase 적재. git-ignored |
 | `kadx_raw/` | **실물 확보(각자 배포 완료, git 업로드 안 함)** | KADX 원본 CSV 4개(234,538건 시드: 재료·요리명·메타). git-ignored |
-| `intent_examples/기준예문.csv` | **확보됨(49줄)** | 의도별 예문 세트(진행/재청취/긍정 등) — `intent_classifier.py`가 참조 |
+| `intent_examples/기준예문.csv` | **확보됨(99줄, 2026-08-25 기준 계속 보강 중)** | 의도별 예문 세트(조회/진행/재청취/긍정 등) — `intent_classifier.py`가 참조. 실사용 리포트로 "조회" 표현(존댓말/격식체/반말/조리시작 요청형)이 여러 차례 확장됨 |
 | `kss/wavs/` | **전체 확보(12,854개, 개인 보유·팀 미배포) + HF Hub 업로드 완료(`kimseunguk/recipe-kss-vits`). 로컬엔 412개만 스테이징** | TTS·STT 학습 원본 음성(공개 데이터셋, CC BY-NC-SA 4.0). git-ignored |
 | `synthesized/` | **비어있음** | Qwen3-TTS가 만들 합성음(STT 학습용 페어) — TTS 파인튜닝이 먼저 끝나야 채워짐. git-ignored |
 | `evaluation_scripts/stt/` | **확보됨** | `ChefEar_test_fixed_100.csv` + `test_audio_100/`(mp3 100개) — STT WER 실측용 검증셋 |

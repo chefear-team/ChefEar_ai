@@ -30,9 +30,11 @@ OpenAI/Anthropic/Gemini/Groq/OpenRouter처럼 인터넷 건너 남의 서버에�
   (`e949c91dec92095908d34e6b560af77dd0c993f8`, 2024-12-11)으로 고정해뒀다 — 이 리포에 이미 고정된
   `transformers==4.57.3`(`requirements-main.txt`)과 짝을 맞춰야 한다. 새 venv를 팔 때 이 버전을
   벗어나지 않도록 주의할 것.
-- `../orchestration/entity_extract_llm.py`가 `extract_dish_name_llm()` 호출을 `app.py`의
-  `process_utterance()`에서 아직 `try/except`로 감싸지 않고 있음 — 로드·추론 자체가 실패하면
-  지금은 `app.py`까지 예외가 그대로 올라간다(TODO, `docs/specs/llm_dish_name_extract.md` EC-05 참고).
+- ~~`../orchestration/entity_extract_llm.py`가 `extract_dish_name_llm()` 호출을 `app.py`의
+  `process_utterance()`에서 아직 `try/except`로 감싸지 않고 있음~~ — **해결(2026-08-24)**.
+  `src/ui/dispatch.py::process_utterance()`가 `extract_intent_llm()` 호출을 `try/except`로
+  감싸서, 실패(GPU 메모리 경합 등)하면 `{"dish_name": None, "wants_register": False}`
+  안전한 기본값으로 폴백한다(`docs/specs/llm_dish_name_extract.md` EC-05 참고).
 
 ## 진행 방법
 
