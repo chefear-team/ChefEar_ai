@@ -32,7 +32,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "ui"))
 import streamlit as st
 
 from orchestration.db import load_env
-from theme import inject_css, render_brand
+from theme import inject_css, render_brand, render_screen_cleanup
 from ui.dispatch import listen_background_only, process_utterance
 from ui.screens.cooking import (
     handle_recipe_confirm,
@@ -155,6 +155,67 @@ def _warm_up_models() -> None:
 def main() -> None:
     st.set_page_config(page_title="ChefEar", page_icon="🍲", layout="centered", initial_sidebar_state="collapsed")
     init_state()
+
+    # 2026-08-25 임시 디버그 진입로 — 화면 전환 잔상을 음성 없이(버튼/URL만으로) 재현해
+    # 보기 위해 넣음. URL에 ?debug_screen=cooking_complete 같은 쿼리 파라미터를 붙이면
+    # start/recipe_confirm(음성 전용, 버튼도 텍스트 입력도 없어서 우회 불가)을 건너뛰고
+    # 바로 그 화면으로 점프한다 — cooking_complete로 렌더링되는 데 필요한 최소한의
+    # recipe_view/pipeline_session만 가짜로 채운다. 검증 끝나면 지울 것 — 실제 사용자는
+    # 이 파라미터를 몰라도(안 붙이면) 평소와 완전히 동일하게 동작한다.
+    _debug_screen = st.query_params.get("debug_screen")
+    if _debug_screen and not st.session_state.get("_debug_jumped"):
+        st.session_state["_debug_jumped"] = True
+        st.session_state.screen = _debug_screen
+        # recipe_id는 실제 UUID 형식이어야 한다 — "debug-recipe" 같은 임의 문자열을
+        # 쓰면 manual_fallback()/advance_step()이 부르는 Supabase 쿼리가
+        # "invalid input syntax for type uuid"로 그대로 크래시한다(2026-08-25 실측,
+        # cooking_step에서 "다음" 버튼 클릭 시 재현). 존재하지 않는 UUID는 쿼리 자체는
+        # 통과하고 결과만 없는(None) 정상 흐름으로 처리된다.
+        st.session_state.recipe_view = {
+            "recipe_id": "00000000-0000-0000-0000-000000000001",
+            "dish_name": "디버그용 테스트 요리",
+            "ingredients_raw": "테스트 재료 1개",
+            "steps": [{"step_number": 1, "text": "테스트 1단계"}],
+        }
+        st.session_state.pipeline_session["current_recipe_id"] = "00000000-0000-0000-0000-000000000001"
+        st.session_state.pipeline_session["step_number"] = 1
+        # register_ingredients/register_steps는 pipeline_session["registration"]이 없으면
+        # 곧장 register_intro로 튕겨나간다(screen_register_ingredients() 상단 가드) — 그
+        # 화면으로 바로 점프해서 잔상을 테스트하려면 이것도 최소한으로 채워둬야 한다
+        # (registration.py::register_recipe()가 만드는 것과 같은 구조).
+        if _debug_screen in ("register_ingredients", "register_steps"):
+            st.session_state.pipeline_session["registration"] = {
+                "dish_name": "디버그용 테스트 요리",
+                "ingredients": ["테스트 재료 1개"],
+                "instructions": ["테스트 1단계"],
+            }
+        st.session_state.pending_dish_name = "디버그용 테스트 요리"
+
+    # 2026-08-25 임시 디버그 음성 패널 — 처음엔 ?debug_voice=<파일명>을 URL에 붙이는
+    # 방식으로 만들었는데, 페이지를 새로고침(URL 이동)할 때마다 마이크(WebRTC) 협상
+    # 초기 몇 초 구간과 겹쳐서 웹소켓이 끊기는 문제가 실측 확인됐다(연결 이미 안정된
+    # 뒤에도 화면이 브랜드 로고만 뜨고 빈 채로 멈춤, 콘솔에 "Cannot send rerun
+    # backMessage when disconnected from server" 반복) — 새로고침 자체가 원인이라
+    # ?debug_panel=1로 페이지 안에 버튼만 한 번 띄우고, 이후 주입은 그 버튼 클릭(=
+    # 새로고침 없는 일반 rerun)으로만 하도록 바꿨다. ui/assets/_mic_debug_dumps/에
+    # 발화 내용 그대로 이름 붙인 녹음 파일을 두면 그 파일명이 버튼 라벨이 된다 —
+    # 실제 stt_transcribe()에 태워서 나온 텍스트를 이번 턴의 발화로 취급한다(마이크만
+    # 안 쓸 뿐 STT/의도분류/화면전환까지 실제 파이프라인 그대로 탄다). 검증 끝나면
+    # _debug_screen과 함께 지울 것.
+    if st.query_params.get("debug_panel") == "1":
+        _dump_dir = Path(__file__).resolve().parent.parent / "ui" / "assets" / "_mic_debug_dumps"
+        _files = sorted(_dump_dir.glob("*.m4a")) if _dump_dir.exists() else []
+        with st.expander(f"🎙️ 디버그 음성 주입 ({len(_files)}개)", expanded=True):
+            _cols = st.columns(3)
+            for _i, _f in enumerate(_files):
+                with _cols[_i % 3]:
+                    if st.button(_f.stem, key=f"debug_voice_btn_{_f.stem}", use_container_width=True):
+                        from stt.infer import stt_transcribe
+
+                        _text = stt_transcribe(str(_f))
+                        st.session_state["_debug_voice_pending_text"] = _text
+                        print(f"[DEBUG_VOICE] button {_f.stem!r} -> STT: {_text!r}", flush=True)
+
     # voice_io.prefetch_remaining_steps_audio()의 백그라운드 스레드가 참조하는
     # "지금 활성 레시피" 표시를 매 rerun마다 최신 상태로 맞춘다(2026-08-22 요청) — 사용자가
     # 다른 레시피로 넘어가거나(재료대체 포함) 처음 화면으로 돌아가 pipeline_session이
@@ -215,41 +276,54 @@ def main() -> None:
     with st.container(key=f"screen_{screen}"):
         SCREENS[screen]()
 
+    # 2026-08-25 — 위 컨테이너 key 픽스로도 못 잡는 잔상(버튼/텍스트 잔상, 심지어
+    # cooking_complete의 완료 멘트가 start로 넘어간 뒤에도 다시 재생되는 경우까지 실측
+    # 확인)에 대한 최후 수단 — 브라우저에서 직접 이전 화면의 컨테이너를 찾아 지운다.
+    # theme.py::render_screen_cleanup() 문서 참고. 마이크(webrtc_streamer)는 완전히
+    # 격리된 별도 iframe에 살아서 이 스크립트가 절대 못 건드린다.
+    render_screen_cleanup(screen)
+
+    def _next_text(*args, **kwargs) -> str | None:
+        pending = st.session_state.pop("_debug_voice_pending_text", None)
+        if pending is not None:
+            return pending
+        return listen(*args, **kwargs)
+
     # 화면별로 원래 각 screen_*() 함수 안에서 하던 listen()/listen_background_only()
     # 호출과 그 결과 처리를 그대로 여기로 옮겼다 — 파라미터(show_mic/show_text_fallback/
     # key_prefix)와 처리 로직은 원래 화면 파일에 있던 것과 동일하다. login/my_recipes/
     # edit_recipe는 원래도 마이크를 안 썼던 화면이라 여기서도 아무것도 안 부른다(다른
     # 화면으로 넘어가면 다음 실행에서 다시 마이크가 붙는다).
     if screen == "start":
-        text = listen("start", show_mic=False, show_text_fallback=False)
+        text = _next_text("start", show_mic=False, show_text_fallback=False)
         if text:
             process_utterance(text)
     elif screen == "recipe_confirm":
-        text = listen("recipe_confirm", show_mic=False, show_text_fallback=False)
+        text = _next_text("recipe_confirm", show_mic=False, show_text_fallback=False)
         if text:
             handle_recipe_confirm(text)
     elif screen == "cooking_step":
-        text = listen("cooking_step", show_mic=False)
+        text = _next_text("cooking_step", show_mic=False)
         if text:
             process_utterance(text)
     elif screen == "cooking_complete":
-        text = listen("cooking_complete", show_mic=False)
+        text = _next_text("cooking_complete", show_mic=False)
         if text:
             process_utterance(text)
     elif screen == "no_match":
-        text = listen("no_match", show_mic=False)
+        text = _next_text("no_match", show_mic=False)
         if text:
             process_utterance(text)
     elif screen == "unclassified":
-        text = listen("unclassified")
+        text = _next_text("unclassified")
         if text:
             process_utterance(text)
     elif screen == "register_intro":
-        text = listen("register_intro", show_mic=False)
+        text = _next_text("register_intro", show_mic=False)
         if text:
             handle_register_intro(text)
     elif screen == "register_dish_name":
-        text = listen("register_dish_name", show_mic=False)
+        text = _next_text("register_dish_name", show_mic=False)
         if text:
             handle_register_dish_name(text)
     elif screen == "register_ingredients":
@@ -257,7 +331,7 @@ def main() -> None:
     elif screen == "register_steps":
         listen_background_only("register_steps", cancel_target="register_ingredients")
     elif screen == "complete":
-        text = listen("complete", show_mic=False)
+        text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
 

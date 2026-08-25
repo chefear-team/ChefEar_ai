@@ -1426,3 +1426,267 @@ _CHAT_LOG_SCREENS = ("cooking_step", "no_match")
 # 필요하다. render_chips()를 쓰는 화면 = recipe_confirm·cooking_step(둘 다 cooking.py)·
 # register_ingredients(register.py).
 _CHIP_GRID_SCREENS = ("recipe_confirm", "cooking_step", "register_ingredients")
+
+# 2026-08-25 — 로그인/회원가입 위젯(login_*/signup_* key)이 다른 화면으로 넘어간 뒤에도
+# 남는 사례가 있어서(각 위젯이 개별 텍스트 마커로 잡혔었는데, "아이디"/"비밀번호" 같은
+# 문구가 화면마다 다른 위치에 비동기로 나뉘어 도착해 위 마커 방식만으론 불안정했다),
+# 이 화면들의 위젯을 공유하는 key 접두사로 구조적으로 잡는 규칙을 추가했다. login/signup
+# 두 뷰(_login_view) 다 이 접두사를 쓴다(my_recipes.py::screen_login() 참고).
+LOGIN_KEY_PREFIXES = ("login_", "signup_")
+
+# ⚠️ 2026-08-26 재구성 — 이 아래 render_screen_cleanup()은 2026-08-25 새벽 세션에서 여러
+# 시행착오를 거쳐 완성된 원본이 커밋 한 번 안 된 채로(git에 저장된 적 없음, 워킹 디렉토리
+# 에서만 존재) 다른 세션의 편집 실수로 삭제됐다. git reflog·dangling object·VS Code Local
+# History 전부 뒤졌지만 원본 소스 자체는 복구 못 했고, 위에 남아있던 데이터(각 상수)와
+# chefear-screen-ghosting-investigation 메모리 기록(규칙별 원인/수정 내역이 상세히 남아있음)
+# 을 근거로 기능적으로 재구성한 버전이다 — 원본과 100% 동일하다는 보장은 없으니, 배포 전
+# 반드시 실제 브라우저로 화면 전환 잔상이 다시 깨끗한지 재검증할 것.
+#
+# 아래 JS는 st.html(unsafe_allow_javascript=True)로 메인 페이지 DOM에 직접 삽입된다
+# (iframe이 아님 — window.parent가 아니라 document/window를 바로 쓴다, 2026-08-25에
+# st.iframe()/components.html()에서 이걸로 교체한 이유는 전달 신뢰도 문제였다).
+#
+# ⚠️ 아래 문자열 안(코드·주석 전부)에는 "꺾쇠+영문자" 리터럴(예: script 태그·audio 태그·
+# div 태그를 <> 있는 그대로 적는 것)을 절대 쓰지 말 것 — Streamlit의 살균 단계가 그 패턴을
+# 실제 HTML 태그 시작으로 오인해서 이 지점부터 스크립트를 통째로 잘라버리는 게 실측
+# 확인됐다(2026-08-25). 꼭 필요하면 String.fromCharCode(60)으로 런타임에 조립해서 쓴다.
+_CE_SWEEP_JS = r"""
+<script>
+(function () {
+  var DATA = __CE_SWEEP_DATA__;
+  var CURRENT = DATA.current;
+  var LT = String.fromCharCode(60); // 꺾쇠 리터럴 회피용(위 경고 참고)
+
+  function hide(el) {
+    if (!el) return;
+    el.style.display = "none";
+    el.style.pointerEvents = "none";
+    el.setAttribute("aria-hidden", "true");
+    el.setAttribute("data-ce-hidden", "1");
+  }
+
+  function unhide(el) {
+    if (!el) return;
+    if (el.getAttribute("data-ce-hidden") === "1") {
+      el.style.display = "";
+      el.style.pointerEvents = "";
+      el.removeAttribute("aria-hidden");
+      el.removeAttribute("data-ce-hidden");
+    }
+  }
+
+  // 같은 화면이 자기 자신을 다시 그리며 생기는 중복(예: 미분류 발화로 인한 재실행)
+  // 대응 — DOM 순서상 마지막 인스턴스만 남기고 나머지는 숨긴다. allowList에 CURRENT가
+  // 없으면 이 화면엔 원래 있으면 안 되는 잔상이므로 전부 숨긴다.
+  function keepLastOnly(selector, allowList) {
+    var nodes = document.querySelectorAll(selector);
+    if (allowList.indexOf(CURRENT) === -1) {
+      for (var i = 0; i < nodes.length; i++) hide(nodes[i]);
+      return;
+    }
+    for (var i = 0; i < nodes.length; i++) {
+      if (i === nodes.length - 1) unhide(nodes[i]);
+      else hide(nodes[i]);
+    }
+  }
+
+  // 규칙 1 — 화면 컨테이너(app.py::main()의 st.container(key=f"screen_{screen}")).
+  // CURRENT와 클래스명이 안 맞는 이전 화면 컨테이너를 숨긴다.
+  function ruleScreenContainers() {
+    var wanted = "st-key-screen_" + CURRENT;
+    var nodes = document.querySelectorAll('[class*="st-key-screen_"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if ((el.className || "").indexOf(wanted) !== -1) unhide(el);
+      else hide(el);
+    }
+  }
+
+  // 규칙 2 — 오디오를 절대 안 만드는 화면(_AUDIO_FREE_SCREENS)에서 오디오를 담은
+  // st.iframe이 남아있으면 숨긴다(컨테이너 삭제만으론 못 잡는 경우가 실측 확인됨).
+  function ruleAudioFrames() {
+    var isFree = DATA.audioFreeScreens.indexOf(CURRENT) !== -1;
+    var frames = document.querySelectorAll("iframe");
+    var audioTag = (LT + "audio").toLowerCase();
+    for (var i = 0; i < frames.length; i++) {
+      var f = frames[i];
+      var srcdoc = (f.srcdoc || "").toLowerCase();
+      if (srcdoc.indexOf(audioTag) === -1) continue; // 오디오 iframe이 아님
+      if (isFree) hide(f);
+      else unhide(f);
+    }
+  }
+
+  // 규칙 3 — 텍스트 대체 입력칸을 절대 안 만드는 화면(_NO_TEXT_FALLBACK_SCREENS)에서
+  // listen()의 범용 텍스트 입력칸이 남아있으면 그 stElementContainer 조상을 숨긴다.
+  function ruleTextFallback() {
+    var isNoFallback = DATA.noTextFallbackScreens.indexOf(CURRENT) !== -1;
+    var inputs = document.querySelectorAll(
+      'input[placeholder="마이크 대신 직접 타이핑해도 돼요"]'
+    );
+    for (var i = 0; i < inputs.length; i++) {
+      var container = inputs[i].closest('[data-testid="stElementContainer"]');
+      if (!container) continue;
+      if (isNoFallback) hide(container);
+      else unhide(container);
+    }
+  }
+
+  // 규칙 4 — fallback_buttons()의 [이전][다시][다음] 버튼. key=f"{screen}_{한글버튼}"인데
+  // Streamlit이 한글을 CSS 클래스로 낼 때 전부 "--"로 뭉개서 화면 접두사로만 판정한다.
+  function ruleFallbackButtons() {
+    var nodes = document.querySelectorAll('[class*="st-key-"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var cls = el.className;
+      if (typeof cls !== "string") continue;
+      var at = cls.indexOf("st-key-");
+      if (at === -1) continue;
+      var rest = cls.slice(at + "st-key-".length);
+      var tail = rest.indexOf("_--");
+      if (tail === -1) continue;
+      var owner = rest.slice(0, tail);
+      if (owner === CURRENT) unhide(el);
+      else hide(el);
+    }
+  }
+
+  // 규칙 5(구 8번, 로그인/회원가입) — login_*/signup_* key 위젯은 login 화면 밖으로
+  // 새면 숨긴다(_STALE_CONTENT_MARKERS 텍스트 마커보다 안정적인 구조적 규칙).
+  function ruleLoginSignup() {
+    var prefixes = DATA.loginKeyPrefixes;
+    var nodes = document.querySelectorAll('[class*="st-key-"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var cls = el.className;
+      if (typeof cls !== "string") continue;
+      var at = cls.indexOf("st-key-");
+      if (at === -1) continue;
+      var rest = cls.slice(at + "st-key-".length);
+      var matched = false;
+      for (var p = 0; p < prefixes.length; p++) {
+        if (rest.indexOf(prefixes[p]) === 0) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) continue;
+      if (CURRENT === "login") unhide(el);
+      else hide(el);
+    }
+  }
+
+  // 규칙 6 — 텍스트 마커 기반 "꼬리 전체 제거"(_STALE_CONTENT_MARKERS). CURRENT 화면
+  // 컨테이너의 직계 자식을 매번 전부 unhide()로 초기화한 뒤, 그 화면 소속이 아닌 마커
+  // 문구를 담은 자식을 찾으면 그 지점부터 끝까지 전부 숨긴다.
+  function ruleStaleMarkers() {
+    var container = document.querySelector(
+      '[class*="st-key-screen_' + CURRENT + '"]'
+    );
+    if (!container) return;
+    var children = Array.prototype.slice.call(container.children);
+    for (var i = 0; i < children.length; i++) unhide(children[i]);
+
+    for (var i = 0; i < children.length; i++) {
+      var text = children[i].textContent || "";
+      var stale = false;
+      for (var marker in DATA.staleMarkers) {
+        if (!Object.prototype.hasOwnProperty.call(DATA.staleMarkers, marker)) continue;
+        var owners = DATA.staleMarkers[marker];
+        if (owners.indexOf(CURRENT) !== -1) continue; // 이 화면 소속 — 잔상 아님
+        if (text.indexOf(marker) !== -1) {
+          stale = true;
+          break;
+        }
+      }
+      if (stale) {
+        for (var j = i; j < children.length; j++) hide(children[j]);
+        break;
+      }
+    }
+  }
+
+  // 규칙 7/8 — render_chat()/render_chips()의 고정 wrapper(.ce-transcript/.ce-chip-grid).
+  // 내용이 매번 달라 텍스트 마커로 못 잡는 대신, 항상 같은 클래스로 구조적으로 잡는다.
+  function ruleChatAndChips() {
+    keepLastOnly(".ce-transcript", DATA.chatLogScreens);
+    keepLastOnly(".ce-chip-grid", DATA.chipGridScreens);
+  }
+
+  function sweep() {
+    ruleScreenContainers();
+    ruleAudioFrames();
+    ruleTextFallback();
+    ruleFallbackButtons();
+    ruleLoginSignup();
+    ruleStaleMarkers();
+    ruleChatAndChips();
+  }
+
+  sweep();
+
+  // 뒤늦게 도착하는 잔상(느린 rerun 연쇄 등)까지 잡기 위한 감시 — 화면 전환마다 이전
+  // 감시자를 갈아치워서(전역 플래그로 중복 설치만 막던 예전 방식은 옛 화면 기준
+  // closure가 새 화면 전환 뒤에도 계속 도는 문제가 있어, 재구성 시 항상 최신 closure로
+  // 교체하는 쪽으로 정리함) 항상 지금 CURRENT 기준으로만 청소되게 한다.
+  if (window.__ceSweepObserver) {
+    window.__ceSweepObserver.disconnect();
+    window.__ceSweepObserver = null;
+  }
+  if (window.__ceSweepInterval) {
+    clearInterval(window.__ceSweepInterval);
+    window.__ceSweepInterval = null;
+  }
+
+  window.__ceSweepObserver = new MutationObserver(function () {
+    sweep();
+  });
+  window.__ceSweepObserver.observe(document.body, { childList: true, subtree: true });
+  setTimeout(function () {
+    if (window.__ceSweepObserver) {
+      window.__ceSweepObserver.disconnect();
+      window.__ceSweepObserver = null;
+    }
+  }, 60000);
+
+  var ticks = 0;
+  window.__ceSweepInterval = setInterval(function () {
+    sweep();
+    ticks += 1;
+    if (ticks >= 20) {
+      clearInterval(window.__ceSweepInterval);
+      window.__ceSweepInterval = null;
+    }
+  }, 100);
+})();
+</script>
+"""
+
+
+def render_screen_cleanup(current_screen: str) -> None:
+    """화면 전환 잔상(이전 화면의 버튼/텍스트/오디오/재료칩/대화기록 등이 새 화면 위에
+    그대로 남는 문제) 최후 수단 — 브라우저에서 직접 이전 화면의 잔재를 찾아 숨긴다.
+
+    app.py::main()이 SCREENS[screen]() 호출 직후(st.container(key=f"screen_{screen}")가
+    닫힌 뒤) 매 rerun마다 부른다. 근본 원인은 Streamlit(1.61.1)/streamlit-webrtc 조합에서
+    화면이 바뀔 때 이전 실행의 일부 엘리먼트가 안 지워지는 stale-widget 부류의 문제로
+    추정되며(관련: streamlit/streamlit#14404, 아직 미해결) 화이트리스트 방식으로 하나씩
+    막는 whack-a-mole 성격이 있다 — 새 화면/새 위젯을 추가할 때 여기 쓰는 상수들
+    (_AUDIO_FREE_SCREENS/_NO_TEXT_FALLBACK_SCREENS/_STALE_CONTENT_MARKERS/
+    _CHAT_LOG_SCREENS/_CHIP_GRID_SCREENS/LOGIN_KEY_PREFIXES)도 같이 검토할 것.
+
+    마이크(webrtc_streamer())는 완전히 격리된 별도 origin-same-but-separate iframe에
+    살아서 이 스크립트가 절대 못 건드린다(의도된 것 — 잔상은 지우되 상시 마이크 연결은
+    안 끊는 게 이 함수의 핵심 제약, 위 파일 docstring 경고 참고).
+    """
+    payload = {
+        "current": current_screen,
+        "audioFreeScreens": list(_AUDIO_FREE_SCREENS),
+        "noTextFallbackScreens": list(_NO_TEXT_FALLBACK_SCREENS),
+        "chatLogScreens": list(_CHAT_LOG_SCREENS),
+        "chipGridScreens": list(_CHIP_GRID_SCREENS),
+        "loginKeyPrefixes": list(LOGIN_KEY_PREFIXES),
+        "staleMarkers": _STALE_CONTENT_MARKERS,
+    }
+    html = _CE_SWEEP_JS.replace("__CE_SWEEP_DATA__", json.dumps(payload, ensure_ascii=False))
+    st.html(html, unsafe_allow_javascript=True)
