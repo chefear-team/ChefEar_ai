@@ -112,6 +112,14 @@ def _pick_intent(ranked: list[tuple[str, tuple[float, str]]], context_recipe_id:
     """
     top_intent, (top_score, top_example) = ranked[0]
 
+    # 2026-08-25 임시 진단 로그 — "메롱"처럼 의미 없는 발화가 실제로 어떤 의도/점수로
+    # 판정되는지 확인하기 위함(margin 미충족일 때만 찍히던 기존 print()로는 threshold
+    # 미달로 조용히 미분류된 건지, 아니면 threshold+margin을 둘 다 넘겨서 실제로
+    # 채택된 건지 구분이 안 됐다 — "말도 안 되는 발화인데 직전 명령이 반복 실행된다"는
+    # 실측 리포트, 2026-08-25). 원인 확인되면 지울 것.
+    second_str = f"{ranked[1][0]}={ranked[1][1][0]:.3f}" if len(ranked) > 1 else "N/A"
+    print(f"[classify_intent] 1위: {top_intent}={top_score:.3f} (2위: {second_str}) 문장='{top_example}'")
+
     if top_score < THRESHOLD:
         # EC-01 / AC-02: 1등마저 threshold 미만 -> 아예 감이 안 잡히는 발화
         return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_UNCLASSIFIED}
@@ -156,7 +164,15 @@ def classify_intent(utterance: str, context_recipe_id: str | None = None) -> dic
         return {"intent": "미분류", "similarity_score": 0.0, "fallback_message": FALLBACK_EMPTY}
 
     intents, examples, example_embeddings = _example_embeddings()
-    query_embedding = _get_model().encode([utterance], normalize_embeddings=True)[0]
+    # 2026-08-25 추가 — STT가 "그래?"처럼 평서/응답 발화에도 끝에 물음표를 붙이는 경우가
+    # 흔한데(라이징 인토네이션을 의문문으로 오인), 기준예문.csv 쪽 예문엔 이런 문장부호가
+    # 거의 없다. 그 결과 끝에 "?"/"!"가 붙었을 뿐인 같은 의미의 발화가 예문과 미묘하게
+    # 다른 임베딩이 되어 margin이 근소하게(0.05 미만) 갈리는 사례가 실측 확인됐다
+    # ("그래?" -> 진행=0.616 vs 재청취=0.609, margin=0.007로 미분류 처리). is_home_word()가
+    # 이미 하는 것과 같은 정규화(끝 문장부호 제거)를 여기서도 적용해 분류용 벡터만 이
+    # 노이즈를 안 타게 한다 — chat_log 표시나 다른 후처리에 쓰는 원본 utterance는 그대로 둔다.
+    normalized = utterance.strip().rstrip("?!.,~ ")
+    query_embedding = _get_model().encode([normalized or utterance], normalize_embeddings=True)[0]
     # 2026-08-25 — src/stt/infer.py::stt_transcribe()와 같은 이유(그쪽 주석 참고) — STT/
     # LLM/TTS/임베딩(이 함수)이 12GB GPU를 같이 써서 유휴 상태에도 VRAM 여유가 500MB
     # 미만이다. 가중치는 그대로 두고(재로딩 없음) 이번 encode()가 남긴 미사용 캐시만 반환한다.

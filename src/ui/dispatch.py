@@ -32,7 +32,22 @@ COOKING_COMPLETE_MESSAGE = "요리가 완성됐어요! 수고하셨어요."
 # 필요 없을 만큼 명확한 명령이라 굳이 그 비용(임베딩 유사도 계산 + LLM 호출)을 들일
 # 필요도 없다. 화면마다 있던 "처음 화면으로" 버튼(cooking.py screen_cooking_complete 등)과
 # 똑같이 pipeline_session/chat_log/recipe_view/pending_dish_name을 초기화한다.
-_HOME_WORDS = {"처음", "처음으로", "처음화면", "처음 화면", "처음 화면으로", "메인", "메인 화면", "홈"}
+_HOME_WORDS = {
+    "처음", "처음으로", "처음화면", "처음 화면", "처음 화면으로",
+    "메인", "메인 화면", "홈",
+    # 2026-08-25 추가 — 사용자가 실제로 쓰는 리셋 단어가 "초기"였는데(원 리포트: "'초기'라는
+    # 단어를 들으면 A 화면으로 돌아가야 한다"), 이 집합엔 "처음" 계열만 있고 "초기"가 없어서
+    # is_home_word()가 매번 False를 돌려주고 있었다 — process_utterance()가 이걸 홈 단축으로
+    # 못 잡고 classify_intent()/LLM 파이프라인으로 흘려보내 "초기"라고 말해도 반응이 없거나
+    # 엉뚱하게 처리되는 버그였다(화면 전환 잔상과는 별개 원인).
+    "초기", "초기화면", "초기 화면", "초기화",
+}
+
+# 2026-08-24 추가 — "등록"이라는 단어가 들어가면 곧장 등록 화면으로 보내라는 요청.
+# extract_intent_llm()(로컬 LLM)이 이미 "등록하고 싶다"는 의도를 판단하지만, LLM
+# 판단을 거치지 않고도 이 단어 하나만으로 확정할 수 있는 가장 명확한 신호라 is_home_word()와
+# 같은 자리(파이프라인 진입 전)에서 먼저 잡는다.
+_REGISTER_WORD = "등록"
 
 
 def is_home_word(text: str) -> bool:
@@ -94,6 +109,16 @@ def process_utterance(text: str) -> None:
         return
 
     st.session_state.chat_log.append(("user", text))
+
+    if _REGISTER_WORD in text:
+        # is_home_word()와 같은 자리 — classify_intent()/LLM까지 갈 것도 없이 "등록"
+        # 단어 하나로 확정되는 명령이라 바로 처리한다. wants_register 분기(아래)와
+        # 같은 이유로 register_intro(확인 화면)는 건너뛰고 register_dish_name으로
+        # 바로 간다 — 사용자가 "등록"이라고 직접 말한 건 시스템의 짐작이 아니다.
+        st.session_state.pending_dish_name = None
+        get_owner_id()
+        goto("register_dish_name")
+        return
 
     session = st.session_state.pipeline_session
     client = get_client()
