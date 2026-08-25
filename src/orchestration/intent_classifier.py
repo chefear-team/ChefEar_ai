@@ -196,3 +196,34 @@ def classify_intent(utterance: str, context_recipe_id: str | None = None) -> dic
     # 유사도 점수가 높은 의도부터 순서대로 정렬 -> ranked[0]이 1등, ranked[1]이 2등.
     ranked = sorted(best_per_intent.items(), key=lambda kv: kv[1][0], reverse=True)
     return _pick_intent(ranked, context_recipe_id)
+
+
+def is_lookup_like(utterance: str) -> bool:
+    """발화가 "조회"(예: "된장찌개 어떻게 만들어?", "이 요리 레시피 알려줘") 기준예문과
+    비슷한지만 확인한다 — classify_intent()와 달리 다른 의도(진행/재료대체/등록 등)와
+    경쟁시키지 않고 "조회" 예문 묶음 하나만 놓고 유사도를 잰다.
+
+    2026-08-25 추가 — no_match 화면("이 조합의 레시피는 없어요")에서 "다른 레시피
+    알려줘"류 표현을 넓게 인식(정확한 문구가 아니어도 "다른 거 뭐 있어" 같은 변형도
+    잡히게)해서 start 화면으로 돌려보내는 용도로만 쓴다. **이 함수 자체는 실제 DB
+    조회를 절대 트리거하지 않는다** — 호출부(register.py::handle_no_match())가 True를
+    받으면 goto("start")만 하고 끝낸다. no_match 화면은 요리명+재료 둘 다로 이미 못
+    찾은 상태라, 여기서 새 요리명을 또 검색 시도하는 대신 항상 start로 보내 사용자가
+    거기서 다시 말하게 한다("조회 자체를 하면 안 됨" 요청, 2026-08-25).
+    """
+    norm = utterance.strip().rstrip("?!.,~ ")
+    if not norm:
+        return False
+
+    intents, examples, example_embeddings = _example_embeddings()
+    lookup_indices = [i for i, intent in enumerate(intents) if intent == "조회"]
+    if not lookup_indices:
+        return False
+    lookup_embeddings = example_embeddings[lookup_indices]
+
+    query_embedding = _get_model().encode([norm], normalize_embeddings=True)[0]
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    scores = lookup_embeddings @ query_embedding
+    return bool(scores.max() >= THRESHOLD)
