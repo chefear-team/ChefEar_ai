@@ -24,17 +24,6 @@ def test_ac06_full_flow_confirms_and_saves_as_user_custom():
     assert len(steps) == 2
 
 
-def test_ec14_correction_at_ingredient_checkpoint_swaps_item_without_db_search():
-    session = {}
-    register_recipe(session, "dish_name", "낙지볶음", client=FakeSupabaseClient())
-    register_recipe(session, "ingredients", ["문어", "양파"], client=FakeSupabaseClient())
-
-    result = register_recipe(session, "correct_ingredient", {"old": "문어", "new": "낙지"}, client=FakeSupabaseClient())
-
-    assert session["registration"]["ingredients"] == ["낙지", "양파"]
-    assert "낙지" in result["summary"]
-
-
 def test_ec15_instructions_can_be_appended_across_multiple_turns():
     session = {}
     register_recipe(session, "dish_name", "된장찌개", client=FakeSupabaseClient())

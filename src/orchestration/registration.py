@@ -41,12 +41,11 @@ def register_recipe(session: dict, step: str, value=None, client=None) -> dict:
     있느냐에 따라 같은 함수를 다르게 호출해가며 쓴다.
 
     step의 종류:
-      "dish_name"        : 등록 시작, 요리명 받기
-      "ingredients"       : 재료 목록 받기 (여러 턴에 나눠 말해도 계속 누적됨)
-      "correct_ingredient": 재료 확인 중 사용자가 정정 요청("문어 말고 낙지야")
-      "instructions"      : 조리 순서 받기 (역시 여러 턴 누적 가능)
-      "confirm"           : 최종 확인 완료 -> 진짜로 저장
-      "abort"             : 등록 중간에 사용자가 그만두겠다고 함
+      "dish_name"    : 등록 시작, 요리명 받기
+      "ingredients"  : 재료 목록 받기 (여러 턴에 나눠 말해도 계속 누적됨)
+      "instructions" : 조리 순서 받기 (역시 여러 턴 누적 가능)
+      "confirm"      : 최종 확인 완료 -> 진짜로 저장
+      "abort"        : 등록 중간에 사용자가 그만두겠다고 함
     """
     if step == "dish_name":
         # 등록의 첫 턴. 이전에 진행 중이던 등록 정보가 있었더라도 새로 시작하면
@@ -63,15 +62,6 @@ def register_recipe(session: dict, step: str, value=None, client=None) -> dict:
         # EC-15: "재료가 두부요" "아 감자도요" 처럼 한 번에 다 안 말하고 여러 턴에
         # 걸쳐 말할 수도 있어서, 기존 목록을 지우지 않고 extend(추가)한다.
         reg["ingredients"].extend(value)
-        return {"checkpoint": "ingredients", "summary": _ingredient_summary(reg["ingredients"])}
-
-    if step == "correct_ingredient":
-        # EC-14: 재료 확인 체크포인트에서 "문어 말고 낙지야"처럼 정정이 들어온 경우.
-        # 문서는 "FR-07(재료대체)과 동일 로직"이라고 하는데, 여기서는 아직 DB에
-        # 저장도 안 한 임시 목록이라 recipe_search.py처럼 DB를 검색할 필요가
-        # 없다 — 그냥 이 자리에서 문자열만 old -> new로 바꿔치기하면 된다.
-        old, new = value["old"], value["new"]
-        reg["ingredients"] = [new if item == old else item for item in reg["ingredients"]]
         return {"checkpoint": "ingredients", "summary": _ingredient_summary(reg["ingredients"])}
 
     if step == "instructions":

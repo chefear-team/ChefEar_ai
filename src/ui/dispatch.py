@@ -183,7 +183,7 @@ def process_utterance(text: str) -> None:
 
     if job["value_error"]:
         # 위 배경 스레드의 _compute() 안에서 handle_utterance()가 ValueError를 던진 경우 —
-        # "등록"/"정정" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
+        # "등록" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
         # 죽이는 대신 신규 등록으로 안전하게 보낸다. classify_intent()가 이미 "등록"으로
         # 확정 분류한 경우라 위 wants_register 분기와 같은 이유로 register_intro(확인
         # 화면)는 안 거치고 바로 register_dish_name으로 보낸다.
@@ -296,7 +296,7 @@ def process_utterance(text: str) -> None:
         goto("cooking_step")
         return
 
-    if intent in ("등록", "정정"):
+    if intent == "등록":
         prompt = result.get("prompt") or result.get("summary") or result.get("message")
         if prompt:
             speak(prompt)

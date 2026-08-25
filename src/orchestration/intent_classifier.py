@@ -53,7 +53,7 @@ MODEL_NAME = "jhgan/ko-sroberta-multitask"  # 한국어 문장 임베딩에 특�
 THRESHOLD = 0.5
 MARGIN = 0.05
 
-VALID_INTENTS = {"조회", "등록", "진행", "재청취", "이전", "재료대체", "정정", "취소"}
+VALID_INTENTS = {"조회", "등록", "진행", "재청취", "이전", "재료대체", "취소"}
 
 FALLBACK_UNCLASSIFIED = "죄송해요, 잘 이해하지 못했어요. 다시 한번 말씀해주시겠어요?"
 FALLBACK_EMPTY = "다시 말씀해주세요."
