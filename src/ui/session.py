@@ -53,6 +53,16 @@ def init_state() -> None:
 
 
 def goto(screen: str) -> None:
+    """화면을 전환한다.
+
+    2026-08-24 — "더블 rerun 플러시"(goto()마다 st.rerun()을 두 번 태워서 화면 전환
+    잔상을 지우려던 시도)는 되돌렸다. 잔상도 안 없어졌고("A->B->C에서 초기로 돌아가도
+    잔상이 남는다"는 리포트로 여러 화면을 거치면 계속 쌓이는 전반적인 문제임이 확인됨),
+    오히려 goto()마다 마이크 프레임을 하나도 안 비우는 "빈" 실행이 하나 더 끼어들면서
+    그 왕복 시간만큼 webrtc audio_receiver 큐가 못 비워지는 구간이 늘어나 "Queue
+    overflow" 경고가 급증하는 부작용만 생겼다(실측 확인). 단순한 st.rerun() 한 번으로
+    되돌린다.
+    """
     st.session_state.screen = screen
     st.rerun()
 
