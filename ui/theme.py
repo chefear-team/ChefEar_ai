@@ -499,7 +499,17 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
    ChefEar 사이만 더 붙이고 싶어서 이 항목에만 음수 margin-bottom을 줘서 gap을 상쇄한다.
    flex 아이템 자체(stLayoutWrapper)에 준 margin이라 콘텐츠 내부 margin 미반영 버그와는
    무관하게 정상적으로 다음 형제와의 간격을 줄인다. */
-[data-testid="stLayoutWrapper"]:has([class*="st-key-ce_back_link"]) { order: -1; margin-bottom: -14px; }
+/* 2026-08-25 버그 수정 — app.py::main()이 화면 전환 잔상 방지를 위해 각 화면을
+   st.container(key=f"screen_{screen}")로 한 겹 더 감싸면서(23b25d1), :has()가 자손을
+   깊이 상관없이 찾다 보니 back_link를 담은 "화면 전체 wrapper"까지 이 규칙에 걸려서
+   order:-1을 받아버렸다 — 로그인/회원가입 등 모든 화면에서 ChefEar 브랜드보다 화면
+   전체(뒤로가기+본문 전부)가 먼저 그려지고, 브랜드가 화면 맨 아래로 밀려나는 회귀가
+   실측 확인됨(Playwright로 DOM 순서 직접 확인). 진짜 대상(ce_back_link 자신의 바깥쪽
+   stLayoutWrapper)은 직계 자식이 st-key-ce_back_link인 반면, 잘못 걸리는 screen_*
+   wrapper는 직계 자식이 st-key-screen_*라는 차이가 있어 그걸로 구분해 제외한다. */
+[data-testid="stLayoutWrapper"]:has([class*="st-key-ce_back_link"]):not(:has(> [class*="st-key-screen_"])) {
+  order: -1; margin-bottom: -14px;
+}
 [class*="st-key-ce_back_link"] { position: relative; margin-bottom: 4px; display: inline-block; }
 [class*="st-key-ce_back_link"] [data-testid="stElementContainer"]:has(div.stButton) {
   position: absolute; inset: 0; z-index: 2;
