@@ -111,6 +111,27 @@ def process_utterance(text: str) -> None:
     st.session_state.chat_log.append(("user", text))
 
     if _REGISTER_WORD in text:
+        # 2026-08-25 재요청 — 등록은 로그인 계정 기준 기능이라(no_match 화면의 "새
+        # 레시피로 등록할래요" 버튼/음성 게이팅과 같은 이유, register.py::screen_no_match()/
+        # handle_no_match() 참고), 로그인 안 한 상태에서 "등록"이라고 말하면 화면 전환
+        # 없이 안내 음성만 들려준다. _arm_tts_mute()(speak() 내부)가 "재생 길이만큼
+        # 마이크 입력을 무시"하는 시각을 세션에 남겨서, 음성이 끝날 때까지 새 발화를
+        # 안 받고 끝나면 _run_mic_loop()가 자동으로 다시 받는다 — 별도 구현 없이 기존
+        # 메커니즘 그대로 재사용.
+        #
+        # hidden=True로 부른다(실측 확인 후 수정) — 처음엔 hidden 없이 바로 재생 위젯을
+        # 그렸는데, goto() 없이 이 자리에서 바로 st.rerun()을 불러야 해서(마이크 드레인
+        # 루프 유지, Queue overflow 방지 — 다른 무시 케이스들과 같은 이유) 그 rerun이
+        # 방금 그린 재생 위젯을 곧장 지워버려 소리가 거의 안 들리는 문제가 실사용
+        # 재현됐다(speak(hidden=True)를 도입한 원래 이유와 완전히 같은 증상 — 2026-08-25
+        # 앞쪽 주석 "hidden=True에서도... 두 번 겹쳐 들린다" 참고, 이번엔 "거의 안
+        # 들린다" 버전). goto() 없이 같은 화면(start)에 머무르므로, 도착 화면이 따로
+        # 없는 대신 screen_start() 자신이 다음 rerun에서 chat_log의 마지막 ai 메시지를
+        # _render_cached_speech()로 다시 찾아 들려준다(no_match/recipe_confirm과 같은
+        # 패턴, screen_start() 참고) — 그래서 여기는 hidden=True로 캐싱만 해둔다.
+        if st.session_state.current_user is None:
+            speak("로그인 후 이용해 주세요.", hidden=True)
+            st.rerun()
         # is_home_word()와 같은 자리 — classify_intent()/LLM까지 갈 것도 없이 "등록"
         # 단어 하나로 확정되는 명령이라 바로 처리한다. wants_register 분기(아래)와
         # 같은 이유로 register_intro(확인 화면)는 건너뛰고 register_dish_name으로

@@ -31,8 +31,17 @@ def screen_login() -> None:
     화면을 한 번 보여준 뒤 "로그인하기"를 눌러야 로그인 폼으로 돌아간다 - 아이디/비밀번호를
     직접 입력해서 로그인하는 과정 자체가 "계정이 잘 만들어졌다"는 확인이 되게 한다.
     """
+    # 2026-08-26 재요청 — 이 화면은 로고(ChefEar)+로그인 버튼이 맨 위, 그 아래에
+    # "첫화면으로 가기"가 오길 원함(다른 화면들과 반대 순서). key는 그대로 기본값
+    # ("ce_back_link")을 쓴다 — theme.py에 login 화면 전용으로 더 구체적인(specificity
+    # 높은) CSS를 추가해서 order/margin만 이 화면에서 되돌리고, 나머지 스타일(투명
+    # 버튼 오버레이 등)은 공용 규칙을 그대로 물려받게 했다(키를 바꾸면 그 공용 스타일도
+    # 같이 잃어서 버튼이 그대로 보이는 부작용이 생김 — CSS로 범위만 좁히는 쪽이 더 안전).
     if render_back_link("첫화면으로 가기"):
         st.session_state["_login_view"] = "login"
+        # 2026-08-25 — 로그인 안 하고 그냥 나가는 경우, 다음번 로그인 시도 때 이번
+        # 방문과 무관한 예전 화면으로 잘못 돌아가지 않게 버려둔 값을 같이 정리한다.
+        st.session_state.pop("_login_return_screen", None)
         goto("start")
 
     view = st.session_state.setdefault("_login_view", "login")
@@ -81,7 +90,14 @@ def screen_login() -> None:
             user = authenticate_user(user_id, password)
             if user:
                 login(user)
-                goto("start")
+                # 2026-08-25 요청 — 로그인 전에 있던 화면으로 돌아간다(app.py의 브랜드
+                # 로그인 버튼 클릭부/아래 screen_my_recipes()의 미로그인 방문 분기가
+                # 이 값을 남겨둠). "login" 자체가 남아있는 경우(이론상 안 생겨야 하지만
+                # 방어적으로)는 무한 루프를 피하려 start로 보낸다.
+                return_screen = st.session_state.pop("_login_return_screen", "start") or "start"
+                if return_screen == "login":
+                    return_screen = "start"
+                goto(return_screen)
             else:
                 st.error("아이디 또는 비밀번호가 올바르지 않아요.")
         if st.button("계정이 없으신가요? 회원가입", key="login_to_signup_link", use_container_width=True):
@@ -92,6 +108,10 @@ def screen_login() -> None:
 def screen_my_recipes() -> None:
     current_user = st.session_state.current_user
     if not current_user:
+        # 2026-08-25 — app.py 브랜드 버튼 클릭 경로와 같은 이유로, 여기서도 로그인 성공
+        # 후 다시 my_recipes로 돌아오게 남겨둔다(브랜드 버튼은 로그인 상태면 애초에
+        # my_recipes로 직행하므로 이 분기를 안 타지만, 다른 경로로 여기 왔을 때 대비).
+        st.session_state["_login_return_screen"] = "my_recipes"
         goto("login")
         return
     if render_back_link("첫화면으로 가기"):

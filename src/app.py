@@ -45,6 +45,7 @@ from ui.screens.cooking import (
 )
 from ui.screens.my_recipes import screen_edit_recipe, screen_login, screen_my_recipes
 from ui.screens.register import (
+    handle_no_match,
     handle_register_dish_name,
     handle_register_intro,
     screen_complete,
@@ -196,12 +197,32 @@ def main() -> None:
     restore_login_from_cookie()
     _start_model_warmup()
     inject_css()
-    # 로그인 아이콘은 start 화면에서만 "ChefEar" 제목과 나란히 보여준다(2026-08-21 요청).
-    # 로그인 상태면 아이콘 대신 아이디를 보여주고, 누르면 로그인 화면 대신 마이
-    # 레시피로 바로 간다(2026-08-22 요청).
+    # 2026-08-21 요청 당시엔 start 화면에서만 보여줬는데, 2026-08-25 재요청으로
+    # 모든 화면에서 같은 자리(우측 상단)에 항상 보이게 바꿨다 — no_match 화면에서
+    # "로그인해야 등록 가능"이라는 안내를 새로 넣으면서, 정작 그 화면에 로그인
+    # 버튼 자체가 없는 게 어색하다는 지적. 로그인 상태면 아이콘 대신 아이디를
+    # 보여주고, 누르면 로그인 화면 대신 마이 레시피로 바로 간다(2026-08-22 요청).
+    # 2026-08-26 재요청 — recipe_confirm에 이어 cooking_step도 예외로 로그인 버튼을
+    # 뺀다(레시피 확인/조리 진행 중엔 로그인 유도가 방해된다는 판단으로 추정 — 사유는
+    # 요청 당시 구체적으로 안 밝혀짐, 필요하면 다음에 물어볼 것). 화면이 더 늘어날
+    # 수 있어서 단일 비교 대신 집합으로 바꿨다.
+    _LOGIN_BUTTON_HIDDEN_SCREENS = ("recipe_confirm", "cooking_step")
     current_user = st.session_state.current_user
-    if render_brand(show_login=(st.session_state.screen == "start"), username=(current_user or {}).get("username")):
-        goto("my_recipes" if current_user else "login")
+    if render_brand(
+        show_login=(st.session_state.screen not in _LOGIN_BUTTON_HIDDEN_SCREENS),
+        username=(current_user or {}).get("username"),
+    ):
+        if current_user:
+            goto("my_recipes")
+        else:
+            # 2026-08-25 요청 — 로그인 전에 있던 화면을 기억해뒀다가 로그인 성공 후
+            # 그 화면으로 바로 돌아간다(원래는 항상 start로 보냈음). 실제 로그인
+            # 성공 처리는 my_recipes.py::screen_login()이 이 값을 pop해서 쓴다 —
+            # "login" 화면 자체가 여기 저장될 일은 구조상 없지만(로그인 안 된 상태에서만
+            # 이 분기를 타고, 로그인 화면 자체엔 이 브랜드 버튼과 별개로 이미 있는
+            # 뒤로가기 링크가 있음), 혹시 몰라 my_recipes.py 쪽에서 한 번 더 방어한다.
+            st.session_state["_login_return_screen"] = st.session_state.screen
+            goto("login")
 
     # 2026-08-24 — "화면 전체를 st.empty() 슬롯 하나로 감싸서 매번 통째로 교체" 시도는
     # 되돌림(실측: "된장찌개 레시피 알려줘" 인식 후 무반응/회색 화면으로 멈추는 새 증상
@@ -279,9 +300,13 @@ def main() -> None:
         if text:
             process_utterance(text)
     elif screen == "no_match":
-        text = _next_text("no_match", show_mic=False)
+        # 2026-08-25 요청 — 이 화면은 "초기"/"등록" 두 키워드만 반응하고 나머지는
+        # 다 무시하는 아주 좁은 화면(handle_no_match() 문서 참고)이라, 텍스트로 자유
+        # 문장을 입력받는 대체 입력칸 자체가 혼란만 준다는 지적 — 버튼(원래 레시피로
+        # 계속하기/새 레시피로 등록할래요)은 그대로 두고 텍스트 폴백 입력칸만 없앤다.
+        text = _next_text("no_match", show_mic=False, show_text_fallback=False)
         if text:
-            process_utterance(text)
+            handle_no_match(text)
     elif screen == "unclassified":
         text = _next_text("unclassified")
         if text:
@@ -295,13 +320,38 @@ def main() -> None:
         if text:
             handle_register_dish_name(text)
     elif screen == "register_ingredients":
-        listen_background_only("register_ingredients", cancel_target="register_intro")
+        # 2026-08-26 재요청 — login 화면과 같은 이유(민감/집중 입력 화면이라 음성
+        # 오인식으로 갑자기 화면이 바뀌는 걸 원치 않음)로 "처음"/"취소"까지 포함해서
+        # 음성에 완전히 반응 안 하게 바꿨다. listen()은 그대로 불러서 마이크 연결은
+        # 살려두고(안 그러면 orphan-reset, 위 login 분기 문서 참고) 반환값만 버린다.
+        listen("register_ingredients", show_text_fallback=False)
     elif screen == "register_steps":
         listen_background_only("register_steps", cancel_target="register_ingredients")
     elif screen == "complete":
         text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
+    elif screen == "login":
+        # 2026-08-26 재요청 — login 화면은 음성으로 아무것도 하면 안 된다("처음"/"취소"도
+        # 포함, 아이디/비밀번호를 입력하는 민감한 화면이라 음성 오인식으로 화면이 갑자기
+        # 바뀌는 것 자체를 원치 않음). 그렇다고 listen() 호출 자체를 아예 없애면 바로
+        # 아래 my_recipes/edit_recipe 문서에 적은 "orphan-reset"(마이크 강제 재연결)
+        # 문제가 되돌아온다 — 그래서 listen()은 그대로 매 rerun마다 불러서 마이크
+        # 연결은 살려두되, 돌아온 텍스트를 완전히 버린다(어떤 분기 처리도 안 함).
+        # listen_background_only()(아래 my_recipes/edit_recipe가 쓰는 것)는 "처음"/
+        # "취소"에는 반응하므로 이 화면엔 안 맞아서 직접 listen()을 부른다.
+        listen("login", show_text_fallback=False)
+    elif screen in ("my_recipes", "edit_recipe"):
+        # 2026-08-26 실측 확인 — 이 화면들은 원래 마이크를 아예 안 불렀는데("원래도
+        # 마이크를 안 썼던 화면"), 폼 입력처럼 상호작용마다 rerun이 여러 번 이어지는
+        # 화면에서 마이크 컴포넌트가 그 여러 rerun 동안 계속 안 그려지자 streamlit_webrtc
+        # 라이브러리 자신이 "고아 컴포넌트"로 보고 강제로 리셋하는 걸 로그로 직접
+        # 확인했다(WRTCDBG "orphan-reset" 줄, current_run과 last_rendered의 차이가
+        # 남). 화면 전환 1번당 재연결 1번(기존부터 있던, 아직 못 고친 문제)과는 별개로,
+        # 이 화면들에 "머무르는 동안" 추가로 더 끊기는 원인이었다. register_ingredients/
+        # register_steps가 이미 쓰는 것과 같은 패턴(listen_background_only()로 마이크는
+        # 계속 그려서 살려두되, "처음"/"취소" 두 안전한 단어에만 반응) 적용.
+        listen_background_only(screen, cancel_target="start")
 
 
 if __name__ == "__main__":
