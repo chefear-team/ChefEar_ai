@@ -33,6 +33,7 @@ from pathlib import Path
 # 우리 로직과는 무관한 순수 환경 설정이다.
 os.environ.setdefault("USE_TF", "0")
 
+import torch
 from sentence_transformers import SentenceTransformer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -156,6 +157,11 @@ def classify_intent(utterance: str, context_recipe_id: str | None = None) -> dic
 
     intents, examples, example_embeddings = _example_embeddings()
     query_embedding = _get_model().encode([utterance], normalize_embeddings=True)[0]
+    # 2026-08-25 — src/stt/infer.py::stt_transcribe()와 같은 이유(그쪽 주석 참고) — STT/
+    # LLM/TTS/임베딩(이 함수)이 12GB GPU를 같이 써서 유휴 상태에도 VRAM 여유가 500MB
+    # 미만이다. 가중치는 그대로 두고(재로딩 없음) 이번 encode()가 남긴 미사용 캐시만 반환한다.
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     # example_embeddings의 shape는 (예문 개수, 768), query_embedding은 (768,).
     # 행렬 @ 벡터 연산을 하면 예문 하나하나와 query 사이의 내적(=코사인 유사도,
     # 위 _example_embeddings() 설명 참고)이 한 번에 배열로 나온다. for문 없이

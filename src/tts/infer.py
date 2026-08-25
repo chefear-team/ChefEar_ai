@@ -293,4 +293,10 @@ def tts_synthesize(
             f"({MODEL_ID})"
         )
 
+    # 2026-08-25 — src/stt/infer.py::stt_transcribe()와 같은 이유(그쪽 주석 참고) — STT/
+    # LLM/TTS/임베딩이 12GB GPU를 같이 써서 유휴 상태에도 VRAM 여유가 500MB 미만이다.
+    # 가중치는 그대로 두고(재로딩 없음) 이번 합성이 남긴 미사용 캐시만 반환한다.
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return wavs[0], sample_rate

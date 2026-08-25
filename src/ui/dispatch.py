@@ -14,7 +14,7 @@ from orchestration.entity_extract_llm import extract_intent_llm
 from orchestration.pipeline import handle_utterance, manual_fallback
 from ui.recipe_view import refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, get_owner_id, goto
-from ui.voice_io import _drain_mic_while, speak
+from ui.voice_io import _drain_mic_while, _GPU_LOCK, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -113,19 +113,39 @@ def process_utterance(text: str) -> None:
 
     def _compute(job=job) -> None:
         try:
-            job["llm_result"] = extract_intent_llm(text)
+            try:
+                # 2026-08-24 — _GPU_LOCK(voice_io.py, 원래 _TTS_LOCK)으로 감쌈. extract_intent_llm()
+                # (로컬 LLM)과 handle_utterance() 안의 classify_intent()(임베딩 모델)가 STT/TTS와
+                # 같은 GPU를 쓰는데 서로 직렬화가 없었다 — 실사용 중 "STT는 됐는데 그 다음부터
+                # 터미널 로그까지 전부 멈춘다"는 리포트의 원인으로 지목됨(락 정의부 주석 참고).
+                with _GPU_LOCK:
+                    job["llm_result"] = extract_intent_llm(text)
+            except Exception as exc:  # noqa: BLE001 — 아래 이유로 여기서만 넓게 잡음
+                # llm/infer.py generate_json() 문서에 "모델 로드/추론 자체가 실패하면
+                # 예외를 그대로 올린다"고 명시돼 있다. 이 GPU 데스크탑은 STT(faster-whisper)
+                # /임베딩(sentence-transformers)/TTS/이 로컬 LLM(EXAONE)이 전부 같은 GPU를
+                # 공유해서 메모리 경합으로 가끔 실패할 수 있는데(2026-08-24 실사용 중
+                # 재현 — STT 인식은 됐는데 그 다음부터 화면이 조용히 멈춤), 여기서 안 잡으면
+                # job["llm_result"]가 None으로 남아 바로 아래 llm_result["dish_name"]에서
+                # TypeError로 메인 스레드가 죽는다(에러 박스가 떴다가 마이크 재연결 rerun에
+                # 덮여 "그냥 멈춘 것처럼" 보였을 가능성이 높음). extract_intent_llm()이 자신의
+                # 다른 실패 케이스(JSON 형식 오류 등)에 이미 쓰는 것과 같은 안전한 기본값으로
+                # 폴백한다 — 모르면 지어내지 않는다는 1.5 원칙과 같은 태도.
+                print(f"[dispatch] extract_intent_llm 실패, 안전한 기본값으로 폴백: {exc!r}")
+                job["llm_result"] = {"dish_name": None, "wants_register": False}
             job["requested"], job["excluded"] = extract_substitution_ingredients(text)
             if job["llm_result"]["wants_register"]:
                 return
             try:
-                job["result"] = handle_utterance(
-                    session,
-                    text,
-                    dish_name=job["llm_result"]["dish_name"],
-                    requested_ingredient=job["requested"],
-                    excluded_ingredient=job["excluded"],
-                    client=client,
-                )
+                with _GPU_LOCK:  # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀
+                    job["result"] = handle_utterance(
+                        session,
+                        text,
+                        dish_name=job["llm_result"]["dish_name"],
+                        requested_ingredient=job["requested"],
+                        excluded_ingredient=job["excluded"],
+                        client=client,
+                    )
             except ValueError:
                 job["value_error"] = True
         finally:

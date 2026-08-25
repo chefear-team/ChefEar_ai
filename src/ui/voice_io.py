@@ -76,7 +76,19 @@ _AUDIO_DIR = PROJECT_ROOT / "ui" / "assets" / "audio"
 # 발화 시점엔 이미 캐싱돼 있게 만든다(prefetch_remaining_steps_audio() 참고). 이 락은 백그라운드 프리페치와
 # speak()의 실시간 합성이 동시에 같은 GPU 모델 인스턴스를 호출하는 걸 막는다 — qwen_tts
 # 모델이 동시 호출에 안전한지 보장이 없어서, 항상 한 번에 하나씩만 GPU에 올리게 직렬화한다.
-_TTS_LOCK = threading.Lock()
+#
+# 2026-08-24 — 원래 이름은 _TTS_LOCK(TTS 호출끼리만 직렬화)이었는데, 실사용 중 "STT는
+# 됐는데 그 다음부터 터미널 로그(WRTCDBG 등 평소 계속 찍히는 것들)까지 전부 멈춘다"는
+# 리포트를 재현/분석한 결과 원인이 이 락의 범위 밖에 있었다 — STT(faster-whisper)·
+# 임베딩(sentence-transformers, classify_intent())·로컬 LLM(EXAONE, extract_intent_llm())
+# 이 셋 다 같은 GPU를 쓰는데 서로 간엔 아무 직렬화가 없었다. 평소엔 한 번에 하나씩만
+# 발화가 처리돼 우연히 안 겹쳤겠지만, 겹치는 순간(예: 이전 발화 처리가 아직 안 끝났는데
+# 새 발화의 STT/LLM 호출이 시작되는 경우) 같은 GPU에 동시에 여러 모델 추론이 들어가면서
+# 멈추는 것으로 보인다 — 프로세스 전체가 멈춘 것처럼 보이는 것도 이 GPU 호출이 자바스크립트
+# 스레드 GIL을 오래 붙들고 있어서일 가능성과 들어맞는다. TTS 전용이던 이 락을 GPU를
+# 쓰는 모든 추론 호출(STT/임베딩/LLM/TTS)로 넓혀서, 항상 한 번에 하나씩만 GPU에
+# 올라가게 한다.
+_GPU_LOCK = threading.Lock()
 
 def _common_audio_path(message: str) -> Path:
     """조리 단계처럼 recipe_id/step_number가 없는 1회성 문구(확인 질문·안내 등)의
@@ -238,13 +250,13 @@ def speak(
             # 2026-08-23 — GPU 합성(3~9초) 자체는 백그라운드 스레드로 돌리고, 메인
             # 스레드는 그동안 _drain_mic_while()로 마이크 큐를 계속 비운다(위 함수
             # 문서 참고 — 안 그러면 이 블로킹 구간 동안 상시 마이크 연결이 브라우저
-            # 쪽에서 스스로 끊긴다). 락(_TTS_LOCK)으로 prefetch_remaining_steps_audio()의
+            # 쪽에서 스스로 끊긴다). 락(_GPU_LOCK)으로 prefetch_remaining_steps_audio()의
             # 백그라운드 스레드와 동시에 GPU 모델을 호출하지 않게 직렬화하는 건 그대로.
             job: dict = {"done": False, "error": None}
 
             def _run_synthesis(job=job) -> None:
                 try:
-                    with _TTS_LOCK:
+                    with _GPU_LOCK:
                         if not audio_path.exists():
                             from tts.infer import tts_synthesize
 
@@ -279,7 +291,7 @@ def _synthesize_and_cache(text: str, audio_path: Path) -> None:
     if audio_path.exists():
         return
     try:
-        with _TTS_LOCK:
+        with _GPU_LOCK:
             if audio_path.exists():
                 return
             from tts.infer import tts_synthesize
@@ -301,7 +313,7 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
     "다음"이라고 말했을 때 기다리는 시간이 거의 사라지게 한다.
 
     한 번에 여러 스레드를 띄우는 대신 스레드 하나가 남은 단계를 순서대로 도는 구조다 —
-    _TTS_LOCK이 어차피 GPU 호출을 한 번에 하나씩만 허용하므로(speak()의 실시간 합성과
+    _GPU_LOCK이 어차피 GPU 호출을 한 번에 하나씩만 허용하므로(speak()의 실시간 합성과
     직렬화), 스레드를 단계 수만큼 따로 만들어봐야 서로 락을 기다리기만 할 뿐이다.
 
     레시피 하나당(recipe_id 기준) 세션에서 딱 한 번만 이 백그라운드 작업을 시작한다
@@ -628,7 +640,8 @@ def _run_mic_loop() -> str | None:
                             segmenter.last_raw_utterance,
                             segmenter.last_raw_sample_rate,
                         )
-                    job["text"] = stt_transcribe(audio, sample_rate=16000).strip()
+                    with _GPU_LOCK:
+                        job["text"] = stt_transcribe(audio, sample_rate=16000).strip()
                     print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — 실패해도 조용히 넘어감
                     print(f"[MIC_DEBUG] stt exception: {exc!r}", flush=True)
