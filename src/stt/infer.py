@@ -759,7 +759,15 @@ def load_ct2_model():
             raise RuntimeError(
                 "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
             )
-        _ct2_model = WhisperModel(model_path, device="cuda", compute_type="int8")
+        # 2026-08-25 추가 — model_path가 로컬 폴더가 아니라 HF_STT_CT2_REPO(HF repo id)로
+        # 폴백된 경우, 그 repo(kimseunguk/chefear-stt-ct2-int8)는 private라 인증 없이는
+        # 401로 못 받는다(실측 확인). WhisperModel이 내부적으로 huggingface_hub의 토큰
+        # 자동 탐지에 기대는 대신, tts/infer.py와 같은 패턴으로 .env의 HF_TOKEN을 명시적으로
+        # 넘긴다 — 로컬 경로일 땐 faster-whisper가 이 값을 그냥 무시하므로 조건 분기 없이
+        # 항상 넘겨도 안전하다.
+        _ct2_model = WhisperModel(
+            model_path, device="cuda", compute_type="int8", use_auth_token=os.environ.get("HF_TOKEN")
+        )
 
         print(f"✅ ChefEar STT(faster-whisper, int8) 로드 완료: {model_path} (device=cuda)")
 

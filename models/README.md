@@ -10,7 +10,7 @@ STT/TTS 파인튜닝 체크포인트를 로컬에 임시로 두는 곳. **git �
 
 | 폴더 | 상태 |
 |---|---|
-| `stt_finetuned/` | `.gitkeep`만 있음, 로컬 체크포인트 없음. 다만 HF Hub에 `leeony/chefear-stt-large-v3-turbo` 어댑터가 이미 올라가 있어서([src/stt/infer.py](../src/stt/README.md) 참고) 로컬 체크포인트가 없어도 그걸로 대체 가능 |
+| `stt_finetuned/` | `.gitkeep`만 있음, 로컬 체크포인트 없음. HF Hub에 두 repo가 역할을 나눠서 대신한다 — 어댑터 원본은 `leeony/chefear-stt-large-v3-turbo`(`HF_STT_MODEL_REPO`), 실제 배포(`load_ct2_model()`이 쓰는 실시간 경로)는 CTranslate2 int8로 변환된 `kimseunguk/chefear-stt-ct2-int8`(`HF_STT_CT2_REPO`, private — 로딩 시 `HF_TOKEN` 필요, 2026-08-25 추가)이 담당한다([src/stt/infer.py](../src/stt/README.md) 참고) |
 | `tts_finetuned/` | 로컬은 `.gitkeep`만 있어 비어있지만, **파인튜닝 자체는 완료**돼 HF Hub `kimseunguk/qwen3-tts-kss-finetuned`(private)에 업로드까지 끝남([src/tts/README.md](../src/tts/README.md) 참고) — `src/tts/infer.py`의 `tts_synthesize()`가 이 HF Hub repo를 직접 로드해서 쓰므로, 로컬 폴더가 비어있어도 서비스 코드는 정상 동작함 |
 
 `tests/tts_cpu_inference_test.py`는 `tts_finetuned/` 안에서 가장 최근 수정된 체크포인트 폴더를 자동으로
