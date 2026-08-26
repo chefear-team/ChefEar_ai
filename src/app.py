@@ -22,6 +22,7 @@ sys.path에 있어서 `ui.session`처럼 import됨)는 아래에서 `sys.path.in
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -34,7 +35,13 @@ import threading
 import streamlit as st
 
 from orchestration.db import load_env
-from theme import inject_css, render_brand, render_screen_cleanup
+from theme import (
+    inject_css,
+    render_access_blocked,
+    render_brand,
+    render_error_notice,
+    render_screen_cleanup,
+)
 from ui.dispatch import listen_background_only, process_utterance
 from ui.screens.cooking import (
     handle_recipe_confirm,
@@ -79,6 +86,24 @@ SCREENS = {
 }
 
 
+def _access_gate_ok() -> bool:
+    """랜딩페이지(https://chefear-landingpage.vercel.app) 버튼을 거쳐 ?key=<토큰>이
+    붙은 URL로 들어왔는지 확인한다(2026-08-26 요청 — Cloudflare Tunnel로 chefear.store를
+    공개해둔 상태에서, 랜딩페이지 버튼을 거치지 않은 직접 URL 접근을 "토큰 붙은 URL"
+    방식으로 약하게 막음. 완전한 보안 아님 — 대화 배경은 render_access_blocked() 문서
+    참고).
+
+    .env에 ACCESS_GATE_TOKEN이 비어 있으면 게이트 자체를 끈다(로컬 개발/토큰 미설정
+    배포가 이것 때문에 막히지 않게 fail-open — orchestration/db.py::get_client()가
+    Supabase 자격증명 미설정 시 mock으로 폴백하는 것과 같은 정신). 값이 설정된
+    배포에서만 실제로 검사한다.
+    """
+    expected = os.environ.get("ACCESS_GATE_TOKEN", "").strip()
+    if not expected:
+        return True
+    return st.query_params.get("key") == expected
+
+
 def _start_model_warmup() -> None:
     """STT/LLM/TTS 모델을 백그라운드 스레드에서 미리 로드해둔다.
 
@@ -107,12 +132,33 @@ def _start_model_warmup() -> None:
         return
     st.session_state["_warmup_thread_started"] = True
 
+    def _load_dish_names() -> None:
+        # 2026-08-26 추가 — "DB에 없는 메뉴를 말하면 로딩바가 엄청 오래 돈다" 리포트로
+        # orchestration/db.py::get_client()를 프로세스당 client 하나만 재사용하도록
+        # 고쳐서 recipe_search.py::_all_dish_names()/_decomposed_name_map()의
+        # @lru_cache가 실제로 히트하게 됐지만(그 전엔 client 객체가 매번 새로 만들어져
+        # 캐시가 항상 미스였음), 그래도 "이 프로세스에서 처음" 그 경로를 타는 발화는
+        # 여전히 60,282건 전체를 페이지네이션으로 끌어오는 15~25초를 그 자리에서
+        # 물고 있다(실측). 다른 모델들처럼 여기서 미리 한 번 데워두면, 실제 사용자가
+        # 처음 "없는 메뉴"를 물어봐도 이미 캐시가 채워져 있어 안 기다린다.
+        from orchestration.db import get_client
+        from orchestration.recipe_search import _all_dish_names, _decomposed_name_map
+
+        client = get_client()
+        _all_dish_names(client)
+        _decomposed_name_map(client)
+
     def _run() -> None:
         from llm.infer import load_llm
         from stt.infer import load_ct2_model
         from tts.infer import load_tts_model
 
-        for name, loader in (("STT", load_ct2_model), ("LLM", load_llm), ("TTS", load_tts_model)):
+        for name, loader in (
+            ("STT", load_ct2_model),
+            ("LLM", load_llm),
+            ("TTS", load_tts_model),
+            ("요리명 목록", _load_dish_names),
+        ):
             try:
                 loader()
             except Exception as exc:  # noqa: BLE001 — 위 문서 참고, 조용히 넘어감
@@ -123,6 +169,16 @@ def _start_model_warmup() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="ChefEar", page_icon="🍲", layout="centered", initial_sidebar_state="collapsed")
+
+    # 2026-08-26 요청 — 랜딩페이지 버튼을 거치지 않은 직접 URL 접근 차단(토큰 붙은 URL
+    # 방식, _access_gate_ok()/render_access_blocked() 문서 참고). init_state()보다
+    # 먼저 검사해서, 막힌 방문자는 세션 초기화/모델 워밍업/DB 연결을 전혀 안 타고
+    # 곧장 안내 화면만 보고 끝난다.
+    if not _access_gate_ok():
+        inject_css()
+        render_access_blocked()
+        st.stop()
+
     init_state()
 
     # 2026-08-25 임시 디버그 진입로 — 화면 전환 잔상을 음성 없이(버튼/URL만으로) 재현해
@@ -132,7 +188,15 @@ def main() -> None:
     # recipe_view/pipeline_session만 가짜로 채운다. 검증 끝나면 지울 것 — 실제 사용자는
     # 이 파라미터를 몰라도(안 붙이면) 평소와 완전히 동일하게 동작한다.
     _debug_screen = st.query_params.get("debug_screen")
-    if _debug_screen and not st.session_state.get("_debug_jumped"):
+    # 2026-08-26 — /code-review 발견: SCREENS에 없는 값(오타 등)을 검증 없이 그대로
+    # session_state.screen에 넣으면, 아래 SCREENS[screen]() 호출이 KeyError로 죽는다.
+    # 게다가 바로 다음 줄에서 _debug_jumped를 이미 True로 찍어놔서, 다음 rerun부터는
+    # 이 if 블록 자체를 다시 안 타 — 잘못된 screen 값이 세션에 영구히 박힌 채 매번
+    # KeyError로 죽는 상태에 갇힌다(브라우저 탭을 새로 열어야만 벗어날 수 있었음).
+    # SCREENS에 있는 값일 때만 점프하도록 막는다.
+    if _debug_screen and _debug_screen not in SCREENS and not st.session_state.get("_debug_jumped"):
+        print(f"[app] 잘못된 ?debug_screen={_debug_screen!r} 무시(SCREENS에 없음)", flush=True)
+    elif _debug_screen and not st.session_state.get("_debug_jumped"):
         st.session_state["_debug_jumped"] = True
         st.session_state.screen = _debug_screen
         # recipe_id는 실제 UUID 형식이어야 한다 — "debug-recipe" 같은 임의 문자열을
@@ -206,7 +270,8 @@ def main() -> None:
     # 뺀다(레시피 확인/조리 진행 중엔 로그인 유도가 방해된다는 판단으로 추정 — 사유는
     # 요청 당시 구체적으로 안 밝혀짐, 필요하면 다음에 물어볼 것). 화면이 더 늘어날
     # 수 있어서 단일 비교 대신 집합으로 바꿨다.
-    _LOGIN_BUTTON_HIDDEN_SCREENS = ("recipe_confirm", "cooking_step")
+    # 2026-08-26(같은 날, 또 재요청) — cooking_complete("요리가 완성됐어요!")도 추가.
+    _LOGIN_BUTTON_HIDDEN_SCREENS = ("recipe_confirm", "cooking_step", "cooking_complete")
     current_user = st.session_state.current_user
     if render_brand(
         show_login=(st.session_state.screen not in _LOGIN_BUTTON_HIDDEN_SCREENS),
@@ -355,4 +420,20 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # 2026-08-26 요청 — "예방 차원으로 다른 에러들에 대해서도 셋팅"(오늘 밤 RTCPeerConnection
+    # 브라우저 예외에 이어, 파이썬 쪽에서 예상 못한 예외가 나는 경우까지 포함). main() 안
+    # 곳곳의 개별 try/except(TTS 합성 실패, DB 조회 실패 등, speak() 등 각자 st.warning()
+    # 문구를 이미 갖고 있음)는 그대로 두고 건드리지 않는다 — 저것들은 그 자리에서 뭐가
+    # 실패했는지 알려주는 게 사용자에게 더 유용하다. 이건 그 어디서도 안 잡힌 완전히
+    # 예상 못한 예외(코드 버그, 새 화면 추가 시 놓친 분기 등)의 최후 방어선 — Streamlit
+    # 기본 동작(빨간 트레이스백을 화면에 그대로 노출)을 대신해서 render_error_notice()로
+    # 사용자에게는 "잠시 후 재시도 해주시길 바랍니다."만 보여주고, 실제 예외는 서버 콘솔에만
+    # 남긴다(EC-05와 같은 정신 — 화면은 안 죽되 원인 추적은 개발자만 할 수 있게).
+    try:
+        main()
+    except Exception as exc:  # noqa: BLE001 — 의도적으로 넓게 잡는 최후 방어선(위 문서 참고)
+        import traceback
+
+        print(f"[app] main() 예상 못한 예외: {exc!r}", flush=True)
+        traceback.print_exc()
+        render_error_notice()
