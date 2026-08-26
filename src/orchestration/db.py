@@ -65,6 +65,28 @@ def _mock_client_singleton():
     return build_mock_client()
 
 
+@lru_cache(maxsize=1)
+def _real_client_singleton(url: str, key: str):
+    """진짜 Supabase 클라이언트를 (url, key) 조합당 딱 한 번만 만들어서 재사용한다
+    (2026-08-26 수정 — _mock_client_singleton()과 똑같은 이유, 아래 get_client()의
+    예전 동작과 비교 참고).
+
+    예전엔 get_client()가 매번 create_client(url, key)를 새로 호출해서, 호출할 때마다
+    완전히 다른 client 객체를 돌려주고 있었다. 그런데 recipe_search.py::_all_dish_names()/
+    _decomposed_name_map()이 "같은 client 객체로 다시 부르면 캐시 히트"라는 전제로
+    @lru_cache(client를 캐시 키로 씀)를 걸어둔 상태라(그 문서의 "12~18초 걸려서" 설명
+    참고), client 객체가 매번 바뀌면 그 캐시가 매번 무조건 미스나서 사실상 아무 효과가
+    없었다 — 실측 리포트("DB에도 없는 메뉴를 말하면 로딩바가 엄청 오래 돈다", extract_dish_name()
+    이 dish_name 추출 실패 시 타는 편집거리 폴백 경로에서 매번 6만여 건 전체 페이지네이션
+    조회를 처음부터 다시 하고 있었던 것)로 확정됐다. 이 함수로 client 자체를 프로세스당
+    하나만 만들어 재사용하면, _all_dish_names()의 캐시가 실제로 히트하게 된다 — 최초
+    1회(여전히 12~18초)만 느리고 그 뒤로는 즉시 반환된다.
+    """
+    from supabase import create_client
+
+    return create_client(url, key)
+
+
 def get_client(allow_mock: bool = True):
     """.env에서 SUPABASE_URL/SUPABASE_KEY를 읽어 실제 Supabase 클라이언트를 만든다.
 
@@ -86,9 +108,7 @@ def get_client(allow_mock: bool = True):
     key = os.environ.get("SUPABASE_KEY")
 
     if url and key:
-        from supabase import create_client
-
-        return create_client(url, key)
+        return _real_client_singleton(url, key)
 
     if not allow_mock:
         raise RuntimeError("SUPABASE_URL / SUPABASE_KEY가 .env에 없음")
