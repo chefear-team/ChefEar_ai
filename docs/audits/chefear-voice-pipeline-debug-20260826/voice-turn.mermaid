@@ -1,0 +1,39 @@
+flowchart TD
+    subgraph CODE
+        T10(["1. GPU 직렬화 락"]):::entryPoint
+        T3["2. STT 추론&#40;백그라운드 스레드&#41;"]
+        T4["3. 임베딩 코사인 유사도 의도분류"]
+        T5["4. 로컬 LLM 발화 -&gt; dish_name 추출&#40;비검증&#41;"]
+        T6["5. 메인스레드 대기 중 마이크 큐 드레인"]
+        T11["6. 미분류/감탄사 처리 - 드레인 루프 유지"]
+        T2["12. VAD 세그멘테이션"]
+    end
+    subgraph NETWORK
+        T1["10. webrtc_streamer&#40;&#41; 프레임 수신"]
+        T12["11. TTS 합성 + 오디오 큐 오버플로우 지점&#40;과거&#41;"]
+    end
+    subgraph DATA
+        T7["7. 요리명 -&gt; DB exact match"]:::concern
+        T8["8. 요리명 자모분해 편집거리 보정&#40;우회당함&#41;"]:::concern
+        T9["9. 신규 레시피 저장 - dish_name 미정규화"]:::concern
+    end
+
+    T1 -->|"TRIGGERS"| T2
+    T2 -->|"TRIGGERS"| T3
+    T3 -->|"TRIGGERS"| T4
+    T3 -->|"TRIGGERS"| T5
+    T4 -.->|"READS"| T6
+    T4 -->|"BRANCHES<br/>intent=미분류 또는 감탄사"| T11
+    T5 -->|"BRANCHES<br/>intent=조회 AND llm dish_name is not None"| T7
+    T5 -->|"BRANCHES<br/>intent=조회 AND llm dish_name is None"| T8
+    T5 -->|"BRANCHES<br/>wants_register=True, 등록확정&#40;confirm&#41;"| T9
+    T7 -->|"MERGES"| T12
+    T8 -->|"MERGES"| T7
+    T10 -->|"VALIDATES"| T3
+    T10 -->|"VALIDATES"| T4
+    T10 -->|"VALIDATES"| T5
+    T11 -->|"TRIGGERS"| T1
+
+    classDef concern fill:#ff6b6b,stroke:#c92a2a
+    classDef entryPoint fill:#51cf66,stroke:#2b8a3e
+    classDef observation fill:#fff9db,stroke:#fab005,stroke-dasharray: 5 5
