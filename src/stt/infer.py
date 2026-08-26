@@ -779,6 +779,7 @@ def stt_transcribe(
     *,
     sample_rate: int | None = None,
     ingredient_context: Optional[Union[str, Sequence[str]]] = None,
+    vad_filter: bool = True,
 ) -> str:
     """오디오 하나 -> 인식된 텍스트. faster-whisper(int8) 기반, HF Spaces 배포용.
 
@@ -802,6 +803,10 @@ def stt_transcribe(
     ingredient_context
         현재 레시피 재료 정보(문자열 또는 리스트). 있으면 고위험 숫자 보정까지 적용, 없으면
         단위 표기 정규화만 적용(둘 다 순수 텍스트 후처리라 모델 로딩과 무관).
+    vad_filter
+        faster-whisper 내부 VAD로 한 번 더 무음을 거를지 여부(기본 True). 아래 model.transcribe()
+        호출부 주석 참고 — 상시 마이크 실시간 경로(voice_io.py)처럼 호출부가 이미 자체 VAD
+        (ui/mic_vad.py::MicVadSegmenter)로 발화 구간을 잘라서 넘기는 경우엔 False로 부른다.
 
     Returns
     -------
@@ -818,8 +823,21 @@ def stt_transcribe(
         if sample_rate != 16000:
             audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=16000)
 
-    # vad_filter=True: 무음 구간을 걸러내서, 순수 무음 입력에서 whisper 특유의 환각
-    # (silence hallucination) 없이 자연스럽게 빈 결과가 나오게 한다(EC-01).
+    # vad_filter=True(기본값): 무음 구간을 걸러내서, 순수 무음 입력에서 whisper 특유의
+    # 환각(silence hallucination) 없이 자연스럽게 빈 결과가 나오게 한다(EC-01) — 파일
+    # 업로드(stt_tts_test.py)처럼 앞뒤에 진짜 무음이 낄 수 있는 입력을 위한 것.
+    #
+    # 2026-08-26 리포트 — 상시 마이크 실시간 경로에서 "분명히 말했는데 stt_text=''만
+    # 반복된다"는 사용 중 확인. 원인: voice_io.py가 넘기는 오디오는 이미 ui/mic_vad.py의
+    # MicVadSegmenter(silero-vad, threshold=0.5)가 "발화 시작~600ms 무음"으로 한 번 잘라서
+    # 넘긴 구간이다 — 그 위에 faster-whisper의 내부 VAD가 *또* 한 번 판정을 거는 이중
+    # VAD 구조였다. 실측 로그(max_amp 비교)로 확인해보니 실패한 발화들이 성공한 발화들
+    # 보다 입력 레벨이 뚜렷이 낮았다(이 마이크/방 환경이 원래 입력이 작다는 기존 발견,
+    # 위 media_stream_constraints 주석 참고) — 조용하지만 실제 말소리인 짧은 발화가 우리
+    # 세그먼터는 통과했는데 faster-whisper의 더 엄격한 내부 VAD에서 다시 걸러진 것으로
+    # 보인다. 호출부(voice_io.py)가 이미 VAD로 구간을 확정해서 넘기는 경우엔 이 두 번째
+    # 필터가 중복이자 손해라 vad_filter=False로 끈다 — 파일 업로드 등 다른 호출부는 여전히
+    # 기본값(True)을 그대로 쓴다.
     #
     # beam_size=1(2026-08-24 수정) — "된장찌개"가 "된장찌"로, "소고기를 손질해주세요"가
     # "소고기 2."로 잘려나가는 문제 실측 확인(WEBRTC_DEBUG 로그 + 저장된 오디오로 재현).
@@ -831,9 +849,46 @@ def stt_transcribe(
     # 바꾸면 이 문제가 재현됐던 실제 녹음 파일들에서 전부 정상 문장으로 나온다(실측
     # 확인 — 여러 테스트 오디오로 회귀 없음도 같이 확인함, 사소한 단어 차이 한둘 정도만
     # 있고 그마저도 원래도 발음이 뭉개진 테스트 파일들이었음).
-    segments, _info = model.transcribe(audio, language="ko", vad_filter=True, beam_size=1)
+    # 2026-08-26 시도했다 되돌림 — repetition_penalty=1.2로 "된장찌장찌개"류 반복
+    # 아티팩트를 줄여보려 했으나, 실사용 로그 실측 결과 "된장찌개"가 "된장찌"로
+    # 조기종료(위 beam_size=5->1 전환 사유였던 바로 그 잘림 버그)되는 빈도가 훨씬
+    # 크게 늘었다(적용 전 1건 중 0건 절단 -> 적용 후 9건 중 6건 절단, 67%). 최근
+    # 생성 토큰에 페널티를 주는 방식이 "계속 생성" 대비 "종료" 토큰을 상대적으로
+    # 유리하게 만든 것으로 추정 — 드문 반복 버그보다 훨씬 잦은 절단 버그를 만드는
+    # 역효과라 되돌린다. repetition_penalty로 반복 아티팩트를 잡으려면 beam_size=1
+    # 자체의 조기종료 경향과 충돌하지 않는 다른 방식(예: no_repeat_ngram_size를
+    # 아주 좁게, 또는 후처리 단계에서만)을 실제 녹음으로 충분히 검증한 뒤 재시도할 것.
+    segments, _info = model.transcribe(audio, language="ko", vad_filter=vad_filter, beam_size=1)
+    segments = list(segments)
+
+    # 2026-08-26 임시 진단 — "여러 명이 마이크 주변에 있을 때 엉뚱한 텍스트(환각)가
+    # 실제 명령처럼 처리된다" 리포트 원인 파악용. no_speech_prob/avg_logprob 실측값을
+    # 먼저 보고 이 프로젝트 실제 마이크/모델 기준 임계값을 정하기 전까지는, 아직
+    # 아무것도 걸러내지 않고 값만 찍는다. 원인/임계값 확정되면 지울 것(또는 실제
+    # 필터 조건으로 교체).
+    if segments:
+        for seg in segments:
+            print(
+                f"[STT_CONF_DEBUG] text={seg.text.strip()!r} "
+                f"avg_logprob={seg.avg_logprob:.3f} no_speech_prob={seg.no_speech_prob:.3f}",
+                flush=True,
+            )
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
+
+    # 2026-08-26 임시 진단 — "오징어볶음 레시피"처럼 vad_filter=False에서도, 큰소리로
+    # 또박또박 말해도(max_amp 0.86까지) stt_text=''가 반복된다는 실측 리포트. vad_filter
+    # 이중 필터링(위 문서, 이미 수정)과는 다른 원인으로 보여서, whisper 자신의 세그먼트
+    # 판정 정보(no_speech_prob 등, vad_filter와 무관하게 모델 디코딩 자체가 "이 구간은
+    # 말이 아니다"로 보고 스킵할 수 있음)를 눈으로 확인하기 위함. 원인 확인되면 지울 것.
+    if not text:
+        print(
+            f"[STT_EMPTY_DEBUG] segments={len(segments)} "
+            f"language={_info.language} language_probability={_info.language_probability:.3f} "
+            f"duration={_info.duration:.2f}s duration_after_vad="
+            f"{getattr(_info, 'duration_after_vad', None)}",
+            flush=True,
+        )
 
     # 2026-08-25 추가 — STT/LLM/TTS/임베딩(classify_intent) 넷 다 같은 12GB GPU를
     # 공유하는데, 모델 가중치는 셋 다 상주(재로딩 비용 커서 언로드 안 함, docs 참고)라
