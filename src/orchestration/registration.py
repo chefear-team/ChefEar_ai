@@ -50,8 +50,14 @@ def register_recipe(session: dict, step: str, value=None, client=None) -> dict:
     if step == "dish_name":
         # 등록의 첫 턴. 이전에 진행 중이던 등록 정보가 있었더라도 새로 시작하면
         # 덮어쓴다(요리명, 재료, 순서를 담을 빈 상자를 새로 만드는 것).
-        session["registration"] = {"dish_name": value, "ingredients": [], "instructions": []}
-        return {"prompt": f"{value}에 들어가는 재료를 알려주세요."}
+        # 2026-08-26 수정 — save_recipe()가 dish_name을 정규화 없이 그대로 저장해서
+        # STT/텍스트 입력에 붙은 trailing 문장부호(?!.,~)까지 DB에 그대로 박히는 버그
+        # 실측 확인(예: dish_name="고등어 아이스크림." 마침표 포함 저장). intent_classifier.py/
+        # entity_extract_llm.py가 이미 쓰는 것과 같은 정규화(.rstrip("?!.,~ "))를 등록
+        # 입구에서도 적용해 저장 전에 한 번만 정리한다.
+        dish_name = value.strip().rstrip("?!.,~ ") if isinstance(value, str) else value
+        session["registration"] = {"dish_name": dish_name, "ingredients": [], "instructions": []}
+        return {"prompt": f"{dish_name}에 들어가는 재료를 알려주세요."}
 
     # dish_name 이후의 모든 step은 session["registration"]이 이미 있다는 걸 전제로 한다.
     reg = session.get("registration")

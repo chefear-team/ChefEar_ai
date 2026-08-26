@@ -43,6 +43,26 @@ def test_empty_utterance_short_circuits_without_calling_llm(monkeypatch):
     assert called == []
 
 
+def test_whitespace_and_trailing_punctuation_stripped_before_llm(monkeypatch):
+    """2026-08-26 추가 — LLM에 넘기는 사본은 띄어쓰기뿐 아니라 끝 문장부호도 제거돼야
+    한다(intent_classifier.py::classify_intent()의 `.rstrip("?!.,~ ")`와 같은 정규화).
+    실제로 프롬프트에 어떤 문자열이 박히는지 직접 확인한다."""
+    prompts = []
+    monkeypatch.setattr(
+        entity_extract_llm,
+        "generate_json",
+        lambda prompt: prompts.append(prompt) or {"dish_name": "된장찌개", "wants_register": False},
+    )
+
+    entity_extract_llm.extract_intent_llm("된장찌개 어떻게 만들어?  ")
+
+    assert len(prompts) == 1
+    # 프롬프트 템플릿 자체(규칙 설명)에 "된장찌개 어떻게 만들어?"라는 예시 문구가 이미
+    # 들어있어서(그건 원래 있어야 하는 정상 텍스트) 전체 프롬프트에 "만들어?"가 없다고
+    # 단정하면 안 된다 — 실제로 발화가 채워지는 맨 끝 "발화: ..." 줄만 정확히 확인한다.
+    assert prompts[0].endswith('발화: "된장찌개어떻게만들어"\n답:')
+
+
 # --- extract_intent_llm() — 2026-08-22 추가, "등록" 의도를 요리명과 같은 LLM 호출로 같이 뽑는다 ---
 
 

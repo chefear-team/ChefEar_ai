@@ -32,7 +32,7 @@ _PROMPT_TEMPLATE = """너는 한국어 요리 음성 비서의 일부다. 아래
 형식: {{"dish_name": "<요리명>" 또는 null, "wants_register": true 또는 false}}
 
 예시:
-발화: "된장찌개어떻게만들어?"
+발화: "된장찌개어떻게만들어"
 답: {{"dish_name": "된장찌개", "wants_register": false}}
 
 발화: "소고기미역국레시피궁금해"
@@ -78,12 +78,21 @@ def extract_intent_llm(utterance: str) -> dict:
     표시/로그용 원문(utterance)은 그대로 두고, LLM에 넣는 사본에만 적용한다
     (`tts/pronunciation.py`의 apply_pronunciation_fixes()와 같은 "원문은 안 건드리고
     모델에 넣는 사본만 가공" 패턴).
+
+    2026-08-26 추가 — 끝에 붙는 문장부호(?!.,~)도 같이 제거한다. intent_classifier.py::
+    classify_intent()가 임베딩 분류 직전에 이미 하는 정규화(`.rstrip("?!.,~ ")`, "그래?"
+    같은 발화가 문장부호 하나 때문에 다른 임베딩이 되던 문제 수정)와 똑같은 문자
+    집합을 그대로 맞췄다 — STT가 물음표/마침표를 붙여 돌려주는 경우가 흔한데, 이게
+    few-shot 예시(위 프롬프트)의 입력 형태와 안 맞으면 LLM 판단이 미묘하게 흔들릴
+    여지가 있다. 문장부호는 앞이 아니라 끝에만 붙으므로(자연스러운 한국어 발화 특성)
+    rstrip으로 충분 — 공백 제거보다 먼저 해야 원래 문장 끝에 있던 문장부호를
+    정확히 잘라낼 수 있다(공백을 먼저 없애면 문장 끝이 어디였는지 알 수 없음).
     """
     utterance = utterance.strip()
     if not utterance:
         return {"dish_name": None, "wants_register": False}
 
-    utterance_for_llm = re.sub(r"\s+", "", utterance)
+    utterance_for_llm = re.sub(r"\s+", "", utterance.rstrip("?!.,~ "))
     result = generate_json(_PROMPT_TEMPLATE.format(utterance=utterance_for_llm))
     if not result:
         return {"dish_name": None, "wants_register": False}
