@@ -131,7 +131,13 @@ def test_handle_utterance_previous_at_step_one_flags_no_previous():
     assert result["no_previous"] is True
 
 
-def test_handle_utterance_substitution_updates_session_and_can_be_cancelled():
+# 2026-08-26 요청 — 재료대체를 기준예문.csv에서 빼서 비활성화했다. handle_utterance()
+# 자체의 "재료대체" 분기(및 substitution.py의 search_variant_recipe()/apply_substitution())
+# 코드는 그대로 남아있지만, classify_intent()가 다시는 "재료대체"를 top_intent로 안
+# 돌려주므로(예문이 하나도 없음) 음성/텍스트를 통해서는 이제 이 분기에 도달할 방법이
+# 없다 — 아래 두 테스트는 예전엔 "재료대체" 관련 시나리오였는데, 지금은 같은 발화가
+# 그냥 미분류로 떨어진다는(=기능이 실제로 꺼져 있다는) 걸 확인한다.
+def test_handle_utterance_substitution_phrase_now_falls_to_unclassified():
     client = FakeSupabaseClient()
     base = _seed_recipe_with_steps(client)
     client.table("recipes").seed({"dish_name": "새우된장찌개", "ingredients": "새우", "source": "api_standard"})
@@ -139,24 +145,14 @@ def test_handle_utterance_substitution_updates_session_and_can_be_cancelled():
 
     result = handle_utterance(session, "새우도 넣어도 될까?", requested_ingredient=["새우"], client=client)
 
-    assert result["intent"] == "재료대체"
-    assert result["result_dish_name"] == "새우된장찌개"
-    assert session["current_recipe_id"] == result["result_recipe_id"]
-    assert session["previous_recipe_id"] == base["id"]
-    assert session["step_number"] == 2  # 7.1.1: 재료대체 후에도 step_number는 그대로 유지
-
-    cancel_result = handle_utterance(session, "취소해줘", client=client)
-
-    assert cancel_result["intent"] == "취소"
-    assert cancel_result["rolled_back"] is True
-    assert session["current_recipe_id"] == base["id"]
+    assert result["intent"] == "미분류"
+    assert session["current_recipe_id"] == base["id"]  # 세션도 안 바뀜(재료대체 자체가 발동 안 함)
 
 
-def test_handle_utterance_substitution_no_match_reports_match_type_none():
-    """이슈 #8(tests/integration_issues_2026-08-18.md): 매칭 완전 실패 시
-    match_type == "none"이 handle_utterance() 응답에서 조용히 빠질 수 있는데도
-    이를 지키는 pytest 회귀테스트가 없었다. tests/integration_test.md 시나리오 C를
-    그대로 옮겨 직접 assert한다."""
+def test_handle_utterance_substitution_no_match_phrase_now_falls_to_unclassified():
+    """예전엔 이슈 #8(tests/integration_issues_2026-08-18.md, match_type=="none")을
+    검증하던 테스트 — 재료대체 비활성화로 그 코드 경로 자체에 이제 안 닿아서, 같은
+    발화가 미분류로 떨어지는지만 확인하는 테스트로 바꿨다."""
     client = FakeSupabaseClient()
     base = _seed_recipe_with_steps(client)
     session = {"current_recipe_id": base["id"], "step_number": 2}
@@ -165,9 +161,7 @@ def test_handle_utterance_substitution_no_match_reports_match_type_none():
         session, "문어랑 성게 같이 넣어도 돼?", requested_ingredient=["문어", "성게"], client=client
     )
 
-    assert result["intent"] == "재료대체"
-    assert result["match_type"] == "none"
-    assert result["message"]  # 그럴싸하게 지어내지 않고 정직한 안내 문구가 있어야 함(1.5 원칙)
+    assert result["intent"] == "미분류"
     assert session["current_recipe_id"] == base["id"]  # 매칭 실패 시 세션은 그대로 유지
 
 

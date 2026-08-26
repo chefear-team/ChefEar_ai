@@ -53,7 +53,11 @@ MODEL_NAME = "jhgan/ko-sroberta-multitask"  # 한국어 문장 임베딩에 특�
 THRESHOLD = 0.5
 MARGIN = 0.05
 
-VALID_INTENTS = {"조회", "등록", "진행", "재청취", "이전", "재료대체", "취소"}
+VALID_INTENTS = {"조회", "등록", "진행", "재청취", "이전", "재료대체", "취소", "감탄사"}
+# 2026-08-26 추가 — "감탄사"(감사합니다/아멘/고마워요 등)만 새로 추가. "긍정"(응/네/좋아
+# 등, 기준예문.csv엔 있지만 여기 화이트리스트엔 의도적으로 빠져있음 — my_recipes.py
+# 관련 코드가 아니라 recipe_confirm 등 화면이 직접 문자열 비교로 처리하기로 이미
+# 결정된 사항, dispatch.py::process_utterance() 주석 참고)는 그대로 안 건드린다.
 
 FALLBACK_UNCLASSIFIED = "죄송해요, 잘 이해하지 못했어요. 다시 한번 말씀해주시겠어요?"
 FALLBACK_EMPTY = "다시 말씀해주세요."
@@ -147,6 +151,38 @@ def _pick_intent(ranked: list[tuple[str, tuple[float, str]]], context_recipe_id:
         # 되물어야 한다.
         return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_NEED_CONTEXT}
 
+    if top_intent == "등록" and context_recipe_id:
+        # 2026-08-26 요청 — "등록"은 아직 아무 레시피도 안 고른 첫 화면에서만 의미
+        # 있는 의도다("등록은 첫 페이지 아니면 의미없는 문구다"). 그런데 실측 로그로
+        # "다음 단계 알려줘"류 조리 중 발화가 "진행"과 근소한 차이로 "등록" 예문과도
+        # 계속 비슷하게 잡히는 게 확인됐다(예: 진행=0.435 vs 등록=0.404) — margin
+        # 미달로 대부분은 미분류로 걸러지지만, 운 좋게(?) margin을 넘기면 조리
+        # 흐름 중간에 뜬금없이 등록 화면으로 튕겨나간다. 위 재료대체(EC-05)와 같은
+        # 자리에서, 이미 레시피를 진행 중(context_recipe_id 있음)이면 "등록"으로
+        # 분류됐어도 미분류로 되돌려 무시한다. 사용자가 "등록"이라는 단어를 직접
+        # 말하는 경로(dispatch.py::_REGISTER_WORD)는 이 함수를 거치지 않는 별도
+        # 분기라 화면과 무관하게 여전히 동작한다 — 명시적 단어 vs 애매한 임베딩
+        # 매칭을 다르게 취급하는 것.
+        return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_UNCLASSIFIED}
+
+    if top_intent == "조회" and context_recipe_id:
+        # 2026-08-26 실측 리포트 — 조리 3단계("돼지고기와 새우젓을 손질해주세요") 중에
+        # "돼지고기과?"라고만 말했더니 "돼지고기"를 새 요리명으로 보고 완전히 새로운
+        # 조회를 시작해서 김치찌개 조리가 처음부터 다시 시작된 것처럼 리셋됐다. 처음엔
+        # "한 단어짜리 발화만" 막았는데("된장찌개로 바꿔줘"류 명시적 전환 요청은 허용),
+        # 재요청으로 원칙이 바뀌었다: "레시피 전환이 되면 안 된다, 절대로" — 조리 중엔
+        # 문장이 아무리 명확해도("된장찌개로 바꿔줘", "이제 된장찌개 만들래") 음성으로
+        # 다른 레시피로 넘어가는 길 자체를 완전히 막는다. 다른 레시피를 원하면 "처음"으로
+        # 돌아가서(reset_to_start(), is_home_word() 경로 — 이 함수를 안 거치는 별개 경로라
+        # 여전히 동작함) 초기 화면에서 다시 검색해야 한다 — 그게 유일한 전환 경로다.
+        # 이유: "조회" 분기(pipeline.py)가 조건 없이 session["current_recipe_id"]를
+        # 덮어써서(무슨 요리를 진행 중이었는지 확인/경고 절차가 전혀 없음), 확실한
+        # 전환 요청과 애매한 재료명 언급을 임베딩 유사도만으로 구분하는 건 근본적으로
+        # 신뢰할 수 없다고 판단 — "된장찌개"(요리명 단독) 0.915, "돼지고기"(재료명 단독)
+        # 0.619로 오히려 애매한 쪽이 더 낮게 나오는 경우까지 실측된 상태(intent_classifier.py
+        # 관련 대화 참고), 문장 길이/명확성으로 안전하게 가를 수 있는 문제가 아니다.
+        return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_UNCLASSIFIED}
+
     return {"intent": top_intent, "similarity_score": top_score, "matched_example": top_example}
 
 
@@ -196,34 +232,3 @@ def classify_intent(utterance: str, context_recipe_id: str | None = None) -> dic
     # 유사도 점수가 높은 의도부터 순서대로 정렬 -> ranked[0]이 1등, ranked[1]이 2등.
     ranked = sorted(best_per_intent.items(), key=lambda kv: kv[1][0], reverse=True)
     return _pick_intent(ranked, context_recipe_id)
-
-
-def is_lookup_like(utterance: str) -> bool:
-    """발화가 "조회"(예: "된장찌개 어떻게 만들어?", "이 요리 레시피 알려줘") 기준예문과
-    비슷한지만 확인한다 — classify_intent()와 달리 다른 의도(진행/재료대체/등록 등)와
-    경쟁시키지 않고 "조회" 예문 묶음 하나만 놓고 유사도를 잰다.
-
-    2026-08-25 추가 — no_match 화면("이 조합의 레시피는 없어요")에서 "다른 레시피
-    알려줘"류 표현을 넓게 인식(정확한 문구가 아니어도 "다른 거 뭐 있어" 같은 변형도
-    잡히게)해서 start 화면으로 돌려보내는 용도로만 쓴다. **이 함수 자체는 실제 DB
-    조회를 절대 트리거하지 않는다** — 호출부(register.py::handle_no_match())가 True를
-    받으면 goto("start")만 하고 끝낸다. no_match 화면은 요리명+재료 둘 다로 이미 못
-    찾은 상태라, 여기서 새 요리명을 또 검색 시도하는 대신 항상 start로 보내 사용자가
-    거기서 다시 말하게 한다("조회 자체를 하면 안 됨" 요청, 2026-08-25).
-    """
-    norm = utterance.strip().rstrip("?!.,~ ")
-    if not norm:
-        return False
-
-    intents, examples, example_embeddings = _example_embeddings()
-    lookup_indices = [i for i, intent in enumerate(intents) if intent == "조회"]
-    if not lookup_indices:
-        return False
-    lookup_embeddings = example_embeddings[lookup_indices]
-
-    query_embedding = _get_model().encode([norm], normalize_embeddings=True)[0]
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    scores = lookup_embeddings @ query_embedding
-    return bool(scores.max() >= THRESHOLD)
