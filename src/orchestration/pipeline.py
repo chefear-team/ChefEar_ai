@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from orchestration.db import get_client
 from orchestration.intent_classifier import FALLBACK_NEED_CONTEXT, classify_intent
-from orchestration.recipe_search import extract_dish_name, search_variant_recipe, select_standard_recipe
+from orchestration.recipe_search import (
+    extract_dish_name,
+    find_dish_name_ignoring_repetition,
+    find_dish_name_ignoring_spaces,
+    search_variant_recipe,
+    select_standard_recipe,
+)
 from orchestration.registration import register_recipe
 from orchestration.substitution import apply_substitution, cancel_substitution
 
@@ -183,6 +189,34 @@ def handle_utterance(
         if resolved_dish_name is None:
             return {"intent": intent, "message": DISH_NOT_FOUND_MESSAGE}
         found = select_standard_recipe(resolved_dish_name, owner_id=session.get("owner_id"), client=client)
+        # 2026-08-26 — dish_name(로컬 LLM 추측)이 완전일치 실패하면 extract_dish_name()으로
+        # 발화 원문을 한 번 더 보정 시도하는 안전망을 잠깐 넣었다가 되돌렸다. "우리엄마가
+        # 만든 된장찌개."처럼 DB 문자열과 토씨 하나 다른 진짜 매칭 실패는 구해줬지만,
+        # extract_dish_name()의 "후보 중 가장 긴 것을 채택"(길이만 보고 매칭 신뢰도는
+        # 안 봄) 결함이 이 경로로 새로 노출돼서, "초코민트 된장찌개"(존재하지 않는 요리)
+        # 같은 발화가 편집거리 0.7대의 약한 매칭으로 "토마토된장찌개"(엉뚱한 실제 요리)에
+        # 매칭되는 더 나쁜 문제가 실측 확인됐다 — 정직하게 "없다"고 답해야 할 발화가
+        # 그럴듯한 다른 요리로 둔갑하는 건 1.5 원칙 위반이라 더 심각하다고 판단해 되돌림.
+        #
+        # 2026-08-26 — 위와는 다른, 안전하게 확인된 안전망 하나만 별도로 추가한다.
+        # "실제 DB에 등록한 '고등어 라테'가 조회 안 됨" 재현/원인 확정: extract_intent_llm()
+        # 이 LLM에 넘기기 전 띄어쓰기를 전부 지우는 전처리 때문에(그쪽 문서 참고) dish_name이
+        # 종종 공백 없이("고등어라테") 온다 — DB엔 원문 그대로("고등어 라테") 저장돼 있어서
+        # 완전일치가 실패했다. find_dish_name_ignoring_spaces()는 편집거리 유사도가 아니라
+        # "공백만 빼면 내용이 정확히 같은가"만 보므로(recipe_search.py 문서 참고), 위에서
+        # 되돌린 것과 달리 다른 요리로 새는 오매칭 위험이 구조적으로 없다.
+        if found is None:
+            space_corrected = find_dish_name_ignoring_spaces(resolved_dish_name, client=client)
+            if space_corrected and space_corrected != resolved_dish_name:
+                found = select_standard_recipe(space_corrected, owner_id=session.get("owner_id"), client=client)
+        if found is None:
+            # 2026-08-26 추가 — 위 공백 안전망과 나란히, LLM이 준 dish_name이 STT
+            # 반복 아티팩트를 그대로 옮긴 경우(예: "된장찌장찌개") 대응. fuzzy 매칭이
+            # 아니라 "반복만 접으면 정확히 같은가"만 보므로 오매칭 위험 없음
+            # (find_dish_name_ignoring_repetition() 문서 참고).
+            repetition_corrected = find_dish_name_ignoring_repetition(resolved_dish_name, client=client)
+            if repetition_corrected and repetition_corrected != resolved_dish_name:
+                found = select_standard_recipe(repetition_corrected, owner_id=session.get("owner_id"), client=client)
         if found is None:
             return {"intent": intent, "message": DISH_NOT_FOUND_MESSAGE}
         session["current_recipe_id"] = found["recipe_id"]

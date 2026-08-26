@@ -213,6 +213,54 @@ def test_handle_utterance_search_dish_not_found_is_honest_about_it():
     assert "current_recipe_id" not in session
 
 
+def test_handle_utterance_search_llm_dish_name_mismatch_is_honest_not_recovered():
+    """2026-08-26 — dish_name(로컬 LLM 추측)이 DB의 정확한 문자열과 한 글자라도 다르면
+    (여기선 "된장찌개"의 흔한 오인식 "된장치개") 완전일치가 실패하고, 그대로 "표준
+    데이터 밖"으로 안내한다 — 발화 원문으로 extract_dish_name() 보정을 한 번 더
+    시도하는 안전망을 잠깐 넣었다가 되돌렸다(알고 있는 한계).
+
+    되돌린 이유: extract_dish_name()의 "후보 중 가장 긴 것을 채택"(길이만 보고
+    매칭 신뢰도는 안 봄) 결함이 이 안전망 경로로 새로 노출돼서, 존재하지 않는
+    요리("초코민트 된장찌개" 등)가 편집거리 약한 매칭(0.7대)으로 전혀 다른 실제
+    요리("토마토된장찌개")에 잘못 매칭되는 문제가 실측 확인됐다 — "모르면 모른다고
+    한다"는 1.5 원칙에 이게 더 크게 어긋난다고 판단해, "우리엄마가 만든 된장찌개."
+    같은 진짜 매칭 실패 케이스를 못 구하는 손해를 감수하기로 함(pipeline.py::
+    handle_utterance() "조회" 분기 주석 참고).
+    """
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부", "source": "api_standard"})
+    session: dict = {}
+
+    result = handle_utterance(session, "된장찌개 어떻게 만들어?", dish_name="된장치개", client=client)
+
+    assert result["intent"] == "조회"
+    assert result["message"] == DISH_NOT_FOUND_MESSAGE
+    assert "current_recipe_id" not in session
+
+
+def test_handle_utterance_search_recovers_when_llm_strips_dish_name_spacing():
+    """2026-08-26 실측 리포트 — "직접 등록한 '고등어 라테'가 조회 안 됨" 재현/수정.
+
+    entity_extract_llm.py::extract_intent_llm()이 LLM에 넘기기 전 띄어쓰기를 전부
+    지우는 전처리를 하기 때문에(2026-08-20 추가, "소고기 미역국"이 "미역국"만 잘리는
+    문제 방지용), LLM이 돌려주는 dish_name도 공백 없이("고등어라테") 오는 경우가
+    흔하다 — DB엔 원문 그대로("고등어 라테") 저장돼 있어 완전일치가 실패했다.
+    find_dish_name_ignoring_spaces()(공백만 무시하는 완전일치, 편집거리 유사도 아님)로
+    구해내야 한다.
+    """
+    client = FakeSupabaseClient()
+    recipe = client.table("recipes").seed(
+        {"dish_name": "고등어 라테", "ingredients": "고등어, 우유, 커피", "source": "api_standard"}
+    )
+    session: dict = {}
+
+    result = handle_utterance(session, "고등어라테 어떻게 만들어?", dish_name="고등어라테", client=client)
+
+    assert result["intent"] == "조회"
+    assert "message" not in result
+    assert session["current_recipe_id"] == recipe["id"]
+
+
 def test_handle_utterance_registration_routes_to_register_recipe():
     client = FakeSupabaseClient()
     session: dict = {}
