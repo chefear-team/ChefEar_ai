@@ -5,10 +5,16 @@
 # 어긋나거나(예: 다크 배경 위 다크 텍스트로 안 보임) 글씨가 흰색으로 보이는 문제가
 # 있었다(2026-08-22 리포트). base="light"로 강제해서 방문자 시스템 설정과 무관하게
 # 항상 ui/theme.py와 같은 라이트 톤으로 렌더링되게 한다.
+# 2026-08-26 — backgroundColor를 ui/theme.py의 --bg(카드 배경, #FFF3E6)와 맞춘다.
+# 이 값이 어긋나면 웹소켓으로 커스텀 컴포넌트(streamlit_webrtc 마이크 iframe 등)에
+# 전달돼 그 iframe 내부(MUI) 루트 배경으로도 쓰인다 - 우리 CSS(theme.py)는 우리 페이지
+# 안쪽만 닿고 그 iframe 내부까지는 못 닿아서, 카드 배경만 새로 바꾸고 이 값을 그대로
+# 두면 마이크 바 부분만 옛 배경색(#f7f1e6)이 남아 "회색"처럼 도드라져 보인다(실측
+# 확인 - 이전엔 두 값이 우연히 같아서 안 보이던 문제).
 [theme]
 base = "light"
 primaryColor = "#ee7b36"
-backgroundColor = "#f7f1e6"
+backgroundColor = "#FFF7ED"
 secondaryBackgroundColor = "#fbf6ec"
 textColor = "#241c15"
 

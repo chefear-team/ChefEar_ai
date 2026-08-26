@@ -17,7 +17,7 @@
 | `test_pipeline.py` | 완성 | AC-07~09, AC-12/13 |
 | `test_intent_classifier.py` | 완성 | AC-01/02/10, EC-01~05 |
 | `test_recipe_search.py` | 완성 | AC-03~05, EC-06~09, EC-18~20 |
-| `test_registration.py` | 완성 | AC-06, EC-14~17 |
+| `test_registration.py` | 완성 | AC-06, EC-15~17 (EC-14는 "정정" 의도 폐지로 2026-08-25 제거, PRD FR-07 참고) |
 | `test_substitution.py` | 완성 | EC-21/AC-11 |
 | `test_identity.py` | 완성 | 쿠키 UUID(작업3) |
 | `test_mock_client.py` | 완성 | `db.get_client()` mock 자동 폴백 확인 |

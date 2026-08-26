@@ -46,19 +46,47 @@ def _ice_servers() -> list[dict]:
     """
     servers: list[dict] = [{"urls": ["stun:stun.l.google.com:19302"]}]
 
-    turn_host = os.environ.get("TURN_HOST")
-    turn_username = os.environ.get("TURN_USERNAME")
-    turn_password = os.environ.get("TURN_PASSWORD")
-    if turn_host and turn_username and turn_password:
+    if _turn_configured():
+        turn_host = os.environ.get("TURN_HOST")
         turn_port = os.environ.get("TURN_PORT") or "3478"
         servers.append(
             {
                 "urls": [f"turn:{turn_host}:{turn_port}"],
-                "username": turn_username,
-                "credential": turn_password,
+                "username": os.environ.get("TURN_USERNAME"),
+                "credential": os.environ.get("TURN_PASSWORD"),
             }
         )
     return servers
+
+
+def _turn_configured() -> bool:
+    """.env에 TURN_HOST/TURN_USERNAME/TURN_PASSWORD가 다 채워져 있는지."""
+    return bool(
+        os.environ.get("TURN_HOST") and os.environ.get("TURN_USERNAME") and os.environ.get("TURN_PASSWORD")
+    )
+
+
+def _ice_transport_policy() -> str | None:
+    """2026-08-25 추가 — 다른 기기(노트북 등, Tailscale Funnel 경유)에서 접속할 때, 이
+    데스크탑의 여러 가상 네트워크 인터페이스(WSL 브릿지, Docker, link-local 등)가 전부
+    ICE host candidate로 잡혀서 STUN 연결성 검사가 수천 건까지 폭증하는 게 실측 확인됐다
+    (WEBRTC_DEBUG 로그로 확인 — 발화 하나 없이 순수 협상만으로 3500개 넘는 STUN
+    BINDING REQUEST). 이 정도 동시 요청량에서 aioice/aiortc의 알려진(2022년부터 미해결,
+    streamlit-webrtc#845/aiortc#85) asyncio 이벤트루프 정리 버그
+    ("AttributeError: 'NoneType' object has no attribute 'call_exception_handler'")가
+    거의 매번 재현돼서 연결이 영영 안 붙는다.
+
+    TURN이 설정돼 있으면(이 데스크탑엔 coturn이 이미 떠 있고 릴레이 자체는 로그로
+    성공 확인됨) `iceTransportPolicy: "relay"`로 direct/STUN host candidate 탐색 자체를
+    건너뛰고 TURN 릴레이만 쓰게 강제한다 — 후보 개수가 확 줄어서 저 버그를 유발하는
+    조건 자체를 피한다. 지연은 릴레이 경유로 아주 약간 늘 수 있지만 음성 발화 하나
+    처리하는 데는 무시할 수준. TURN이 없으면(로컬 개발 등) 이 정책 자체를 안 걸어서
+    기존처럼 STUN/host candidate까지 다 쓰게 둔다(같은 기기 테스트는 애초에 이 폭증이
+    안 일어나서 문제가 없었음, 위 _ice_servers() 문서 참고).
+
+    2026-08-25 — 아직 실측 검증 전(적용은 했지만 노트북으로 재현 재확인 안 됨).
+    """
+    return "relay" if _turn_configured() else None
 
 # 2026-08-21: st.audio()는 Streamlit이 rerun마다 <audio> 태그를 새로 만드는 방식이라
 # 자동재생은 물론 수동 재생 버튼도 안 먹히는 문제가 실측으로 확인됐다(브라우저에서 재생
@@ -176,16 +204,30 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
     st.empty()로 자리를 직접 잡아두고, 대기가 끝나는 즉시(다음 코드로 넘어가기 *전에*)
     명시적으로 비워서 — 다음 rerun의 DOM 정리에 기대지 않고 이 함수 안에서 스스로
     정리를 끝낸다.
+
+    2026-08-25 리포트 — "메롱"처럼 결국 미분류로 아무 일도 안 하는 발화에도 이 팝업이
+    똑같이 뜬다는 지적. process_utterance()는 결과(진행/미분류 등)를 미리 알 수
+    없어서 LLM/임베딩 호출을 항상 먼저 해야 하지만, 그 자체가 항상 몇 초씩 걸리는 건
+    아니다(GPU가 이미 데워져 있으면 미분류 판정까지 수백 ms 안에 끝나는 경우도 많음).
+    처리 시작하자마자 무조건 팝업부터 띄우는 대신, `_SHOW_DELAY_S`(0.4초)보다 오래
+    걸릴 때만 뒤늦게 띄운다 — 빨리 끝나는 처리(성공이든 미분류든)는 팝업이 아예 안
+    보이고, 진짜 오래 걸리는 처리만 "넘어가고 있어요" 안내를 받는다.
     """
     import queue
     import time
 
+    _SHOW_DELAY_S = 0.4
+
     overlay_slot = st.empty()
-    if loading_message:
-        with overlay_slot:
-            render_loading_overlay(loading_message)
+    overlay_shown = False
+    start = time.monotonic()
 
     while not job["done"]:
+        if loading_message and not overlay_shown and (time.monotonic() - start) >= _SHOW_DELAY_S:
+            with overlay_slot:
+                render_loading_overlay(loading_message)
+            overlay_shown = True
+
         context = st.session_state.get(_mic_component_key())
         receiver = getattr(context, "audio_receiver", None) if context is not None else None
         if receiver is None:
@@ -200,7 +242,16 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
             # audio_receiver가 None으로 바뀔 수 있다. 조용히 다음 루프에서 다시 확인.
             pass
 
-    overlay_slot.empty()
+    if overlay_shown:
+        overlay_slot.empty()
+        # 2026-08-25 리포트 — 이 함수를 부른 쪽(process_utterance()의 미분류 분기 등)이
+        # 바로 다음 줄에서 st.rerun()을 부르는 경우, "지워라"(위 empty())와 "전체를 새로
+        # 그려라"(뒤이은 rerun) 두 신호가 브라우저에 너무 붙어서 도착하면 첫 신호가 다
+        # 반영되기 전에 두 번째가 덮쳐서 팝업이 지워지다 만 채로 남는 잔상이 실측
+        # 확인됐다. 정확한 프론트엔드 내부 메커니즘은 확정 못 했지만(화면 전환 잔상
+        # 전반과 같은 부류의 문제로 추정), 아주 짧은 간격을 둬서 "지워라" 델타가 먼저
+        # 반영될 시간을 벌어주는 임시 완화책 — 근본 fix는 아니다.
+        time.sleep(0.05)
 
 
 def speak(
@@ -475,7 +526,11 @@ def _recover_dead_mic() -> None:
     if st.session_state.get("_mic_ever_connected") and not signalling:
         st.session_state["_mic_gen"] = st.session_state.get("_mic_gen", 0) + 1
         st.session_state["_mic_ever_connected"] = False
-        st.warning("마이크 연결이 끊어져서 다시 연결하고 있어요...")
+        # 2026-08-25 요청 — 재연결 자체(WebRTC 재협상)는 몇 초~수십 초 걸리는 걸
+        # 못 없애지만, "끊어져서 다시 연결 중"이라고 대놓고 알리는 경고 배너가
+        # 오히려 더 느리고 눈에 띄게 느껴지게 만든다는 지적으로 조용히 지운다 —
+        # 화면 자체의 "마이크 연결 중..." 표시(render_mic_bar 등)가 이미 그
+        # 역할을 하고 있어서 중복이기도 하다.
 
 
 def _mic_muted() -> bool:
@@ -520,6 +575,17 @@ def _run_mic_loop() -> str | None:
     except Exception:
         return None
 
+    # 2026-08-25 추가 — "마이크 연결이 왜 이렇게 느리냐"는 지적에 실측 데이터로 답하기
+    # 위한 임시 타이밍 로그(원인 확인되면 지울 것). 세대(_mic_gen)가 바뀔 때마다(=새
+    # 컴포넌트가 처음부터 다시 연결을 시도할 때마다) 시작 시각을 한 번만 기록해두고,
+    # 그 세대가 처음으로 playing=True에 도달하는 순간까지 걸린 시간을 정확히 잰다 —
+    # 그동안은 로그에 타임스탬프가 없는 줄들뿐이라 "몇 초 걸렸다"를 추측만 하고 있었다.
+    import time as _time
+
+    _gen = st.session_state.get("_mic_gen", 0)
+    _start_key = f"_mic_connect_start_{_gen}"
+    st.session_state.setdefault(_start_key, _time.monotonic())
+
     # 화면 전환 중 끊긴 채 저절로 안 돌아오는 문제의 안전장치 — _recover_dead_mic() 문서 참고.
     _recover_dead_mic()
 
@@ -547,6 +613,13 @@ def _run_mic_loop() -> str | None:
             # 단독으로 껐을 때 도움이 되는지는 아직 따로 검증 안 됐음 — 다음에 바꿀 땐 한
             # 번에 하나씩만 바꿔서 확인할 것.
             media_stream_constraints={"video": False, "audio": True},
+            # 2026-08-25 — iceTransportPolicy="relay" 강제를 시도했다가 되돌림. 실측
+            # 확인: 강제하자 TURN 관련 로그(allocation/channel bound)가 아예 한 줄도
+            # 안 찍혔다 — TURN 서버(100.108.102.44, Tailscale 전용 IP)가 이 노트북에서
+            # 애초에 안 닿는 상황일 가능성이 높다(같은 tailnet 멤버가 아니면 이 IP 자체가
+            # 라우팅이 안 됨). 원인 확인 전까지는 기존처럼 STUN/host candidate까지 다
+            # 열어둔다 — _ice_transport_policy()/_turn_configured() 정의는 원인 확인
+            # 후 다시 쓸 수 있게 남겨둔다.
             rtc_configuration={"iceServers": _ice_servers()},
             # 2026-08-23 추가 — "페이지 로드하면 바로 준비 상태여야 한다"는 요청. 이 값이
             # 없으면 streamlit-webrtc가 자기 기본 UI("SELECT DEVICE"/Start 버튼)를 그려서
@@ -576,6 +649,15 @@ def _run_mic_loop() -> str | None:
     # _recover_dead_mic()가 "이 세대가 한 번은 연결에 성공했었는지"를 다음 호출에서
     # 바로 알 수 있게, 성공 확인 즉시 표시해둔다(다음 호출까지 기다릴 필요 없음).
     st.session_state["_mic_ever_connected"] = True
+
+    # 위 타이밍 로그 마무리 — 이 세대가 처음으로 여기 도달한 순간(=진짜 playing=True를
+    # 확인한 순간)까지 걸린 시간을 한 번만 찍는다(_mic_connect_logged_* 플래그로 이후
+    # 호출에선 중복 출력 안 함).
+    _logged_key = f"_mic_connect_logged_{_gen}"
+    if not st.session_state.get(_logged_key):
+        st.session_state[_logged_key] = True
+        _elapsed = _time.monotonic() - st.session_state.get(_start_key, _time.monotonic())
+        print(f"[MIC_TIMING] gen={_gen} 연결 성공까지 {_elapsed:.2f}초", flush=True)
 
     import queue
 
@@ -659,25 +741,12 @@ def _run_mic_loop() -> str | None:
                         f"rms={float(__import__('numpy').sqrt((audio ** 2).mean())):.4f}",
                         flush=True,
                     )
-                    # 2026-08-23 추가 — 사용자가 매번 다시 말해보고 결과를 알려주는 왕복이
-                    # 너무 느리다(피드백 한 번에 최소 수십 초). 실제로 STT에 들어가는 오디오
-                    # 자체를 파일로 남겨서, 재현 요청 없이 바로 들어보고 분석할 수 있게 한다.
-                    import time as _time
-
-                    _dump_dir = PROJECT_ROOT / "ui" / "assets" / "_mic_debug_dumps"
-                    _dump_dir.mkdir(parents=True, exist_ok=True)
-                    _ts = f"{_time.time():.3f}"
-                    sf.write(_dump_dir / f"{_ts}.wav", audio, 16000)
-                    # 2026-08-23 추가 — "녹음된 게 내 목소리가 아니다" 리포트 원인 파악용.
-                    # mic_vad.py가 리샘플링 등 가공을 하기 전 원본(raw, 원본 샘플레이트) 오디오도
-                    # 같이 남겨서, 문제가 캡처 단계(브라우저/webrtc)인지 가공 단계(이 저장소
-                    # 코드)인지 구분한다. 원인 확인되면 지울 것.
-                    if segmenter.last_raw_utterance is not None:
-                        sf.write(
-                            _dump_dir / f"{_ts}_raw.wav",
-                            segmenter.last_raw_utterance,
-                            segmenter.last_raw_sample_rate,
-                        )
+                    # 2026-08-23 추가, 2026-08-25 제거 — 매 발화마다 STT 입력 오디오를
+                    # ui/assets/_mic_debug_dumps/에 파일로 남기던 임시 진단 코드였다("녹음된
+                    # 게 내 목소리가 아니다" 리포트 원인 파악용). 그 원인은 바로 위 채널
+                    # 인터리브 처리 수정으로 이미 확정/해결됐고(2026-08-23), 이후로도 계속
+                    # 남아있어서 하룻밤 새 550개/82MB까지 쌓인 게 실측 확인됨(2026-08-25) —
+                    # 목적을 다했으니 코드와 쌓인 파일 둘 다 정리한다.
                     with _GPU_LOCK:
                         job["text"] = stt_transcribe(audio, sample_rate=16000).strip()
                     print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)

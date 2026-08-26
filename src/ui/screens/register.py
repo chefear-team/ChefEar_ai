@@ -26,6 +26,7 @@ from theme import (
     ICON_SPARKLE,
     ICON_X_CIRCLE,
     render_back_link,
+    render_badge,
     render_chat,
     render_chips,
     render_dots,
@@ -66,11 +67,58 @@ def screen_no_match() -> None:
         ):
             goto("cooking_step")
     with c2:
-        if st.button("새 레시피로 등록할래요", use_container_width=True):
+        # 2026-08-25 요청 — 등록은 owner_id가 있어야 "내가 등록한 레시피"로 걸러지는
+        # 로그인 계정 기준 기능이라(get_owner_id() 문서 참고), 로그인 안 한 상태에서
+        # 버튼을 눌러 register_intro까지 갔다가 결국 등록 자체가 익명으로만 처리되는
+        # 혼란을 막기 위해 로그인 여부로 버튼을 활성/비활성화한다.
+        is_logged_in = st.session_state.current_user is not None
+        if st.button("새 레시피로 등록할래요", use_container_width=True, disabled=not is_logged_in):
             goto("register_intro")
+    if not is_logged_in:
+        # 2026-08-25 요청 — st.caption()은 회색 잔글씨라 눈에 잘 안 띈다는 지적으로,
+        # "조회수 1위 표준 레시피 자동 선택" 등에 이미 쓰는 강조 배지(.ce-badge, 은은한
+        # 강조색 알약 모양)로 바꿔서 눈에 띄게 한다.
+        render_badge("로그인을 하시면 레시피를 등록할 수 있어요.")
 
-    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 process_utterance()에 그대로
-    # 넘긴다 — 이 화면은 별도 핸들러가 없다(위 파일 docstring 참고).
+    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 아래 handle_no_match()에 넘긴다.
+
+
+def handle_no_match(text: str) -> None:
+    """screen_no_match()가 그려진 뒤 app.py가 잡아온 발화를 처리한다.
+
+    2026-08-25 추가 — 원래는 다른 화면들처럼 process_utterance()(classify_intent()
+    전체 파이프라인)를 그대로 써서, 이 화면에서 아무 말이나 해도 배경 스레드(LLM/DB
+    조회)가 돌면서 로딩 팝업("다음으로 넘어가고 있어요...")이 뜨고, 심지어 "다른
+    레시피 알려줘"처럼 재조회 시도로 이어질 수도 있었다. 이 화면은 요리명+재료 둘
+    다로 이미 못 찾은 상태라 여기서 또 조회를 시도할 필요가 없다는 요청(2026-08-25)으로,
+    아주 좁은 키워드 몇 개만 문자열로 직접 비교하는 구조로 바꿨다 — recipe_confirm/
+    register_intro와 같은 패턴. 아래 네 가지 외의 모든 발화는 배경 작업을 전혀 안
+    띄우므로(=process_utterance() 자체를 안 부름) 로딩 팝업도 안 뜨고, DB 조회도
+    전혀 안 일어난다.
+    """
+    norm = text.strip().rstrip("?!.,~ ")
+    # 2026-08-25 재요청 — "다른 레시피 알려줘"류(is_lookup_like()) 인식 분기를 없애고
+    # "초기"/"등록" 두 키워드만 반응하도록 더 좁혔다(다른 발화는 전부 무시). "등록"은
+    # 로그인 계정이 있을 때만 실제로 이동시킨다 — "새 레시피로 등록할래요" 버튼이
+    # 로그인 여부로 활성/비활성화되는 것과 음성 경로를 똑같이 맞춘다(screen_no_match()
+    # 참고, 안 그러면 버튼은 막혀있는데 음성으로는 뚫리는 불일치가 생김).
+    if is_home_word(norm) or "처음" in norm:
+        # is_home_word()의 _HOME_WORDS(dispatch.py)에 "초기"/"초기화면"/"초기 화면"/
+        # "초기화"가 이미 다 들어있어서(2026-08-25 이전에 추가됨) "초기"는 이 한 줄로
+        # 이미 잡힌다 — 별도 분기 불필요.
+        reset_to_start()
+    elif "등록" in norm:
+        if st.session_state.current_user is not None:
+            goto("register_intro")
+        else:
+            # 로그인 안 한 상태의 "등록" 발화는 무시(로그인하라고 화면에 이미 캡션으로
+            # 안내돼 있음, screen_no_match() 참고) — 아래 else와 같은 이유로 rerun만.
+            st.rerun()
+    else:
+        # dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고) — 화면은 그대로 두고
+        # rerun만 걸어서 마이크 드레인 루프가 끊기지 않게 한다. 이 분기는 애초에
+        # process_utterance()를 부른 적이 없어서 로딩 팝업이 뜬 적도 없다.
+        st.rerun()
 
 
 def screen_unclassified() -> None:

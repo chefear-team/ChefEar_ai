@@ -220,11 +220,35 @@ def load_tts_model():
 #
 # 2026-08-25 재조정 — 320에서도 재료 나열이 많은 긴 문장(예: "당근 약간, 파프리카 약간,
 # 목이버섯, 부추 약간, 잡채용 돼지고기를 먹기 좋은 크기로 썰어주세요")의 끝 음절("요")이
-# 살짝 잘린다는 청취 보고로 360으로 재조정. 이번에도 또 잘린다는 보고가 나오면 값을 더
-# 올리는 대신(위 경고와 같은 이유) 실제 토큰 사용량 로그부터 남길 것 — do_sample=True라
-# 매 합성마다 실제 생성 토큰 수가 달라질 수 있어서(DEFAULT_SEED로 고정은 해뒀지만) 이
-# 잠정 조정만으로는 근본 해결이 아닐 수 있다.
-DEFAULT_MAX_NEW_TOKENS = 360
+# 살짝 잘린다는 청취 보고로 360으로 재조정.
+#
+# 2026-08-26 재요청 — 360도 여전히 잘리는 문장이 있다는 보고에, "고정 상수를 계속
+# 찔끔찔끔 올리는" 방식 자체가 근본적으로 안 맞다는 정확한 지적을 받았다: 조리 안내
+# 문장은 짧은 것("소금을 뿌려주세요")부터 긴 것(재료 나열)까지 길이가 제각각이라, 어떤
+# 고정값을 골라도 "긴 문장엔 부족, 짧은 문장엔 과함"(과하면 시작이 늦게 들리는 인상만
+# 커진다는 2026-08-24 기존 지적)이 항상 같이 온다. 그래서 고정 상수 대신 **문장 길이에
+# 비례하는 동적 계산**으로 바꾼다 — DEFAULT_MAX_NEW_TOKENS는 이제 "문장이 아주 짧을 때의
+# 최소 하한"으로만 쓰이고, 실제 상한은 매 호출마다 텍스트 길이 기준으로 계산된다.
+# 글자당 배수(_TOKENS_PER_CHAR)는 정식 토크나이저 기반 실측이 아니라(그런 실측 도구가
+# 아직 없음, 1.5 원칙 — 지어내지 않되 정직하게 잠정치임을 밝힘) 마지막으로 잘렸던
+# 문장(위 재료 나열 예문, 약 45자)이 360 토큰으로도 부족했던 사례를 기준으로 여유
+# 있게(그 사례의 실측 부족분보다 확실히 크게) 잡은 값 — 다음에 또 잘리는 보고가 나오면
+# 이 배수 자체를 올릴 것.
+DEFAULT_MAX_NEW_TOKENS = 200  # 아주 짧은 문장(예: "다음 단계로 가주세요")의 최소 하한
+# 2026-08-26 — 배수를 9에서 10으로. 마지막으로 잘렸던 재료 나열 예문(약 48자)을 이
+# 배수로 계산하면 480 안팎 — "450까지 올리자"는 별도 판단과도 거의 일치해서(우연이
+# 아니라 같은 사례를 기준으로 잡았기 때문), 그 수치를 고정값으로 박는 대신 이 배수로
+# 흡수했다 — 더 짧은/긴 문장엔 자동으로 덜/더 나온다.
+_TOKENS_PER_CHAR = 10  # 글자당 예상 생성 토큰 수(잠정치, 위 문서 참고)
+_MAX_NEW_TOKENS_CEILING = 1200  # do_sample=True에서 운 나쁘게 못 멈추는 경우의 상한선
+# (2026-08-19 실측: 2048 하드 디폴트에서 20배 이상 느려지는 사례가 있었음 — 상한 없이
+# 문장 길이만 따라가게 두면 같은 위험이 재현될 수 있어 안전장치로 둔다.)
+
+
+def _dynamic_max_new_tokens(text: str) -> int:
+    """문장 길이에 비례해서 생성 예산을 계산한다 — 위 DEFAULT_MAX_NEW_TOKENS 문서 참고."""
+    estimated = len(text) * _TOKENS_PER_CHAR
+    return min(_MAX_NEW_TOKENS_CEILING, max(DEFAULT_MAX_NEW_TOKENS, estimated))
 
 # do_sample=True(확률적 샘플링)라 시드 고정 없이는 같은 문장도 호출마다 결과가 달라진다
 # (2026-08-19 확인: 그동안 시드 고정이 전혀 없었음). 재현 가능한 테스트/비교를 위해 매
@@ -237,10 +261,15 @@ def tts_synthesize(
     *,
     language: str = "Korean",
     instruct: str = "",
-    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    max_new_tokens: int | None = None,
     seed: int = DEFAULT_SEED,
 ) -> tuple[np.ndarray, int]:
     """조리 안내 문장 하나 -> (waveform, sample_rate).
+
+    max_new_tokens를 안 넘기면(기본값 None) _dynamic_max_new_tokens(text)로 문장 길이에
+    비례해서 자동 계산한다(위 DEFAULT_MAX_NEW_TOKENS 문서의 2026-08-26 재조정 참고) —
+    호출부가 특정 값을 강제하고 싶을 때만 명시적으로 넘기면 된다(현재 이 저장소 안에서는
+    그런 호출부가 없음, 전부 자동 계산에 맡김).
 
     호출부(app.py/pipeline.py)가 반환값을 st.audio(waveform, sample_rate=sample_rate)에
     그대로 넘기면 재생된다. 파일로 저장해야 하면 soundfile.write(path, waveform, sample_rate)를
@@ -248,6 +277,9 @@ def tts_synthesize(
     """
 
     global _voice_clone_prompt
+
+    if max_new_tokens is None:
+        max_new_tokens = _dynamic_max_new_tokens(text)
 
     torch.manual_seed(seed)
 

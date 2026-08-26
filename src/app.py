@@ -29,10 +29,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "ui"))
 
+import threading
+
 import streamlit as st
 
 from orchestration.db import load_env
-from theme import inject_css, render_brand
+from theme import inject_css, render_brand, render_screen_cleanup
 from ui.dispatch import listen_background_only, process_utterance
 from ui.screens.cooking import (
     handle_recipe_confirm,
@@ -43,6 +45,7 @@ from ui.screens.cooking import (
 )
 from ui.screens.my_recipes import screen_edit_recipe, screen_login, screen_my_recipes
 from ui.screens.register import (
+    handle_no_match,
     handle_register_dish_name,
     handle_register_intro,
     screen_complete,
@@ -76,85 +79,112 @@ SCREENS = {
 }
 
 
-def _warm_up_models() -> None:
-    """STT/LLM/TTS 모델을 화면이 뜨는 시점에 미리 로드해둔다(`tests/test_ui.py`와 동일 패턴).
+def _start_model_warmup() -> None:
+    """STT/LLM/TTS 모델을 백그라운드 스레드에서 미리 로드해둔다.
 
-    셋 다 첫 로딩 비용이 있어서(원인은 서로 다름, 아래 참고) 미리 안 해두면 사용자가
-    실제로 말을 걸거나("start" 화면 listen()) 첫 응답을 들을 때(speak()) 그 비용을
-    그대로 보게 된다 — speak()/listen()/process_utterance()가 stt.infer.stt_transcribe,
-    tts.infer.tts_synthesize, orchestration.entity_extract_llm.extract_dish_name_llm을
-    그 자리에서 lazy import해서 쓰기 때문이다. load_ct2_model()/load_llm()/
-    load_tts_model() 셋 다 전역 캐시라서(stt/infer.py의 _ct2_model, llm/infer.py의
-    _model, tts/infer.py의 전역 캐시) 이미 로드됐으면 즉시 반환 — 매 rerun(사용자
-    조작)마다 이 함수를 다시 호출해도 안전하고 빠르다.
+    2026-08-25 재작성(원래는 `_warm_up_models()`라는 이름으로 main() 안에서 동기/블로킹으로
+    세 모델을 다 로드한 뒤에야 화면(마이크 포함)을 그렸다 — "마이크 붙는 속도가 느리다"는
+    지적으로 재구성). 상시 마이크(webrtc_streamer())도 이 함수 *뒤에* 있는 화면 렌더링
+    단계에서만 처음 호출되므로, 예전 구조에서는 마이크의 WebRTC 협상(SDP offer/answer,
+    ICE)이 모델 로딩(콜드 스타트 시 최대 30초+, LLM 최초 다운로드 시엔 수 분)이 다 끝날
+    때까지 아예 시작도 못 했다 — 첫 페이지 로드에서 마이크가 늦게 붙는 것처럼 보인
+    실제 원인. load_ct2_model()/load_llm()/load_tts_model() 셋 다 이미 자기 안에 이중
+    확인 잠금(`_LOAD_LOCK`)을 갖고 있어서(여러 스레드가 동시에 로딩을 시작해도 안전 —
+    각 infer.py 파일의 `_LOAD_LOCK` 정의부 주석 참고) 백그라운드에서 미리 불러도, 나중에
+    실제 발화 처리 스레드가 같은 함수를 또 불러도 안전하게 합쳐진다(먼저 끝난 쪽이 이김,
+    뒤에 온 호출은 곧장 캐시를 돌려받음). 세션당 한 번만 스레드를 띄운다
+    (`_warmup_thread_started` 플래그로 중복 시작 방지).
 
-    STT: 처음엔 "CUDA 초기화가 느리다"고 짐작했으나(2026-08-20), 실측해보니 GPU/CPU
-    사용률이 로딩 내내 0%였다 — 프로젝트 폴더가 네트워크 공유 드라이브(CIFS, ~9MB/s)에
-    있어서 model.bin(778MB) 읽기 자체가 87초 걸렸던 것. .env의 STT_LOCAL_CACHE_DIR로
-    로컬 디스크 사본을 우선 읽게 고쳐서 1.2초로 줄었다(`src/stt/infer.py` 참고).
-    LLM: EXAONE 가중치는 원래 ~/.cache/huggingface(로컬 디스크)에 캐시되므로 이 문제가
-    없다 — 최초 1회 인터넷에서 받는 것만 느리고(수 분), 그다음부턴 13초 정도로 빠르다.
-    TTS: LLM과 마찬가지로 ~/.cache/huggingface에서 읽어서 네트워크 드라이브 문제는
-    없다 — 7.9GB 모델이라 로딩 자체에 17초 정도 걸리는 게 정상(실측).
-
-    test_ui.py는 파일 하나짜리 수동 테스트 화면이라 로딩 실패 시 그냥 죽어도 되지만,
-    이 파일(app.py)은 실제 서비스 화면 전체를 띄우는 진입점이다 — 세 모델 중 하나라도
-    준비가 안 돼 있으면(예: 아직 `src/stt/export_ct2.py`로 변환 전이라 CT2 모델이 없는
-    개발 환경) 여기서 예외가 그대로 올라가 화면 자체가 뜨지도 못하고 죽는다. speak()가
-    이미 따르는 EC-05 원칙(화면 텍스트는 항상 남고, 음성 관련 실패만 사용자에게 알림)과
-    똑같이 각 모델 로딩을 개별로 감싸서, 준비 안 된 모델이 있어도 앱은 계속 뜨고 나머지
-    기능(텍스트 입력 흐름 등)은 그대로 쓸 수 있게 한다.
+    st.spinner()/st.warning() 같은 st.* API는 ScriptRunContext가 있는 메인 스레드에서만
+    안전해서(voice_io.py의 `_synthesize_and_cache()` 등 다른 백그라운드 스레드들과 같은
+    이유) 이 함수는 그런 호출을 전혀 안 한다 — 로딩 실패는 print()로만 남기고 조용히
+    넘어간다(EC-05 원칙과 같은 정신 — 실패해도 서비스는 계속 뜨고, 실제 그 모델이 필요한
+    시점에 각 호출부(speak()/stt_transcribe() 등)가 이미 자기 실패 처리를 하고 있다).
+    트레이드오프: 로딩 중이라는 "STT/LLM/TTS 모델 준비 중..." 스피너 문구가 이제 화면에
+    안 뜬다 — 대신 화면들이 이미 갖고 있는 "마이크 연결 중..." 표시가 그 자리를 대신한다.
     """
-    from llm.infer import load_llm
-    from stt.infer import load_ct2_model
-    from tts.infer import load_tts_model
+    if st.session_state.get("_warmup_thread_started"):
+        return
+    st.session_state["_warmup_thread_started"] = True
 
-    # 2026-08-25 — GitHub streamlit/streamlit#14404("BUG: Stale widgets from previous
-    # page runs are not removed when a spinner is later invoked", 1.55.0 기준 아직 미해결)
-    # 조사 결과 추가 — 이 함수는 매 rerun(사용자 조작마다)마다 호출되는데, 안의
-    # load_*_model() 세 개가 이미 로드된 뒤엔 즉시 반환하더라도 st.spinner() 자체는
-    # 매번 새로 mount/unmount됐다. 이 이슈가 정확히 "스피너가 열렸다 닫히는 것" 자체가
-    # 같은 위치의 다른 엘리먼트를 정리 못 하게 만드는 패턴이라(재현 조건: 위젯 변경 후
-    # 스피너가 있는 화면으로 복귀), 화면 전환마다 반복되는 "화면 전환 잔상" 리포트와
-    # 메커니즘이 겹칠 가능성이 있다. 최초 1회(진짜 로딩이 필요할 때)만 스피너를 열고,
-    # 이미 로드된 뒤의 재실행에서는 스피너 컨텍스트 자체를 아예 안 만든다 — 함수 호출은
-    # 그대로 해서(즉시 반환) 캐시 재사용 안전성은 안 건드린다.
-    already_warmed = st.session_state.get("_models_warmed", False)
+    def _run() -> None:
+        from llm.infer import load_llm
+        from stt.infer import load_ct2_model
+        from tts.infer import load_tts_model
 
-    def _load_with_optional_spinner(label: str, loader, warn_prefix: str) -> None:
-        if already_warmed:
+        for name, loader in (("STT", load_ct2_model), ("LLM", load_llm), ("TTS", load_tts_model)):
             try:
                 loader()
-            except Exception as exc:  # noqa: BLE001 — EC-05, 화면은 계속 뜨게 함
-                st.warning(f"{warn_prefix}: {exc}")
-            return
-        with st.spinner(label):
-            try:
-                loader()
-            except Exception as exc:  # noqa: BLE001
-                st.warning(f"{warn_prefix}: {exc}")
+            except Exception as exc:  # noqa: BLE001 — 위 문서 참고, 조용히 넘어감
+                print(f"[app] {name} 모델 백그라운드 워밍업 실패: {exc!r}", flush=True)
 
-    _load_with_optional_spinner(
-        "STT 모델 준비 중... (최초 1회만, 몇 초 걸릴 수 있음)",
-        load_ct2_model,
-        "STT 모델을 준비하지 못했어요(음성 인식이 안 될 수 있어요, 텍스트 입력은 계속 됩니다)",
-    )
-    _load_with_optional_spinner(
-        "LLM(EXAONE) 모델 준비 중... (최초 1회는 다운로드로 몇 분 걸릴 수 있음)",
-        load_llm,
-        "LLM 모델을 준비하지 못했어요(요리명 추출이 안 될 수 있어요)",
-    )
-    _load_with_optional_spinner(
-        "TTS(Qwen3-TTS) 모델 준비 중... (약 17초, 최초 1회만)",
-        load_tts_model,
-        "TTS 모델을 준비하지 못했어요(음성 응답이 안 나올 수 있어요, 텍스트는 계속 표시돼요)",
-    )
-    st.session_state["_models_warmed"] = True
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def main() -> None:
     st.set_page_config(page_title="ChefEar", page_icon="🍲", layout="centered", initial_sidebar_state="collapsed")
     init_state()
+
+    # 2026-08-25 임시 디버그 진입로 — 화면 전환 잔상을 음성 없이(버튼/URL만으로) 재현해
+    # 보기 위해 넣음. URL에 ?debug_screen=cooking_complete 같은 쿼리 파라미터를 붙이면
+    # start/recipe_confirm(음성 전용, 버튼도 텍스트 입력도 없어서 우회 불가)을 건너뛰고
+    # 바로 그 화면으로 점프한다 — cooking_complete로 렌더링되는 데 필요한 최소한의
+    # recipe_view/pipeline_session만 가짜로 채운다. 검증 끝나면 지울 것 — 실제 사용자는
+    # 이 파라미터를 몰라도(안 붙이면) 평소와 완전히 동일하게 동작한다.
+    _debug_screen = st.query_params.get("debug_screen")
+    if _debug_screen and not st.session_state.get("_debug_jumped"):
+        st.session_state["_debug_jumped"] = True
+        st.session_state.screen = _debug_screen
+        # recipe_id는 실제 UUID 형식이어야 한다 — "debug-recipe" 같은 임의 문자열을
+        # 쓰면 manual_fallback()/advance_step()이 부르는 Supabase 쿼리가
+        # "invalid input syntax for type uuid"로 그대로 크래시한다(2026-08-25 실측,
+        # cooking_step에서 "다음" 버튼 클릭 시 재현). 존재하지 않는 UUID는 쿼리 자체는
+        # 통과하고 결과만 없는(None) 정상 흐름으로 처리된다.
+        st.session_state.recipe_view = {
+            "recipe_id": "00000000-0000-0000-0000-000000000001",
+            "dish_name": "디버그용 테스트 요리",
+            "ingredients_raw": "테스트 재료 1개",
+            "steps": [{"step_number": 1, "text": "테스트 1단계"}],
+        }
+        st.session_state.pipeline_session["current_recipe_id"] = "00000000-0000-0000-0000-000000000001"
+        st.session_state.pipeline_session["step_number"] = 1
+        # register_ingredients/register_steps는 pipeline_session["registration"]이 없으면
+        # 곧장 register_intro로 튕겨나간다(screen_register_ingredients() 상단 가드) — 그
+        # 화면으로 바로 점프해서 잔상을 테스트하려면 이것도 최소한으로 채워둬야 한다
+        # (registration.py::register_recipe()가 만드는 것과 같은 구조).
+        if _debug_screen in ("register_ingredients", "register_steps"):
+            st.session_state.pipeline_session["registration"] = {
+                "dish_name": "디버그용 테스트 요리",
+                "ingredients": ["테스트 재료 1개"],
+                "instructions": ["테스트 1단계"],
+            }
+        st.session_state.pending_dish_name = "디버그용 테스트 요리"
+
+    # 2026-08-25 임시 디버그 음성 패널 — 처음엔 ?debug_voice=<파일명>을 URL에 붙이는
+    # 방식으로 만들었는데, 페이지를 새로고침(URL 이동)할 때마다 마이크(WebRTC) 협상
+    # 초기 몇 초 구간과 겹쳐서 웹소켓이 끊기는 문제가 실측 확인됐다(연결 이미 안정된
+    # 뒤에도 화면이 브랜드 로고만 뜨고 빈 채로 멈춤, 콘솔에 "Cannot send rerun
+    # backMessage when disconnected from server" 반복) — 새로고침 자체가 원인이라
+    # ?debug_panel=1로 페이지 안에 버튼만 한 번 띄우고, 이후 주입은 그 버튼 클릭(=
+    # 새로고침 없는 일반 rerun)으로만 하도록 바꿨다. ui/assets/_mic_debug_dumps/에
+    # 발화 내용 그대로 이름 붙인 녹음 파일을 두면 그 파일명이 버튼 라벨이 된다 —
+    # 실제 stt_transcribe()에 태워서 나온 텍스트를 이번 턴의 발화로 취급한다(마이크만
+    # 안 쓸 뿐 STT/의도분류/화면전환까지 실제 파이프라인 그대로 탄다). 검증 끝나면
+    # _debug_screen과 함께 지울 것.
+    if st.query_params.get("debug_panel") == "1":
+        _dump_dir = Path(__file__).resolve().parent.parent / "ui" / "assets" / "_mic_debug_dumps"
+        _files = sorted(_dump_dir.glob("*.m4a")) if _dump_dir.exists() else []
+        with st.expander(f"🎙️ 디버그 음성 주입 ({len(_files)}개)", expanded=True):
+            _cols = st.columns(3)
+            for _i, _f in enumerate(_files):
+                with _cols[_i % 3]:
+                    if st.button(_f.stem, key=f"debug_voice_btn_{_f.stem}", use_container_width=True):
+                        from stt.infer import stt_transcribe
+
+                        _text = stt_transcribe(str(_f))
+                        st.session_state["_debug_voice_pending_text"] = _text
+                        print(f"[DEBUG_VOICE] button {_f.stem!r} -> STT: {_text!r}", flush=True)
+
     # voice_io.prefetch_remaining_steps_audio()의 백그라운드 스레드가 참조하는
     # "지금 활성 레시피" 표시를 매 rerun마다 최신 상태로 맞춘다(2026-08-22 요청) — 사용자가
     # 다른 레시피로 넘어가거나(재료대체 포함) 처음 화면으로 돌아가 pipeline_session이
@@ -162,17 +192,37 @@ def main() -> None:
     # 진입 전에 스스로 멈춘다.
     st.session_state._active_recipe_box["recipe_id"] = st.session_state.pipeline_session.get("current_recipe_id")
     # 새로고침해도 로그인이 풀리지 않게, 저장해둔 로그인 쿠키로 세션을 복원한다
-    # (2026-08-22 요청) - _warm_up_models()보다 먼저 해야 화면이 뜨자마자 바로
+    # (2026-08-22 요청) - _start_model_warmup()보다 먼저 해야 화면이 뜨자마자 바로
     # 로그인 상태로 보인다.
     restore_login_from_cookie()
-    _warm_up_models()
+    _start_model_warmup()
     inject_css()
-    # 로그인 아이콘은 start 화면에서만 "ChefEar" 제목과 나란히 보여준다(2026-08-21 요청).
-    # 로그인 상태면 아이콘 대신 아이디를 보여주고, 누르면 로그인 화면 대신 마이
-    # 레시피로 바로 간다(2026-08-22 요청).
+    # 2026-08-21 요청 당시엔 start 화면에서만 보여줬는데, 2026-08-25 재요청으로
+    # 모든 화면에서 같은 자리(우측 상단)에 항상 보이게 바꿨다 — no_match 화면에서
+    # "로그인해야 등록 가능"이라는 안내를 새로 넣으면서, 정작 그 화면에 로그인
+    # 버튼 자체가 없는 게 어색하다는 지적. 로그인 상태면 아이콘 대신 아이디를
+    # 보여주고, 누르면 로그인 화면 대신 마이 레시피로 바로 간다(2026-08-22 요청).
+    # 2026-08-26 재요청 — recipe_confirm에 이어 cooking_step도 예외로 로그인 버튼을
+    # 뺀다(레시피 확인/조리 진행 중엔 로그인 유도가 방해된다는 판단으로 추정 — 사유는
+    # 요청 당시 구체적으로 안 밝혀짐, 필요하면 다음에 물어볼 것). 화면이 더 늘어날
+    # 수 있어서 단일 비교 대신 집합으로 바꿨다.
+    _LOGIN_BUTTON_HIDDEN_SCREENS = ("recipe_confirm", "cooking_step")
     current_user = st.session_state.current_user
-    if render_brand(show_login=(st.session_state.screen == "start"), username=(current_user or {}).get("username")):
-        goto("my_recipes" if current_user else "login")
+    if render_brand(
+        show_login=(st.session_state.screen not in _LOGIN_BUTTON_HIDDEN_SCREENS),
+        username=(current_user or {}).get("username"),
+    ):
+        if current_user:
+            goto("my_recipes")
+        else:
+            # 2026-08-25 요청 — 로그인 전에 있던 화면을 기억해뒀다가 로그인 성공 후
+            # 그 화면으로 바로 돌아간다(원래는 항상 start로 보냈음). 실제 로그인
+            # 성공 처리는 my_recipes.py::screen_login()이 이 값을 pop해서 쓴다 —
+            # "login" 화면 자체가 여기 저장될 일은 구조상 없지만(로그인 안 된 상태에서만
+            # 이 분기를 타고, 로그인 화면 자체엔 이 브랜드 버튼과 별개로 이미 있는
+            # 뒤로가기 링크가 있음), 혹시 몰라 my_recipes.py 쪽에서 한 번 더 방어한다.
+            st.session_state["_login_return_screen"] = st.session_state.screen
+            goto("login")
 
     # 2026-08-24 — "화면 전체를 st.empty() 슬롯 하나로 감싸서 매번 통째로 교체" 시도는
     # 되돌림(실측: "된장찌개 레시피 알려줘" 인식 후 무반응/회색 화면으로 멈추는 새 증상
@@ -215,51 +265,93 @@ def main() -> None:
     with st.container(key=f"screen_{screen}"):
         SCREENS[screen]()
 
+    # 2026-08-25 — 위 컨테이너 key 픽스로도 못 잡는 잔상(버튼/텍스트 잔상, 심지어
+    # cooking_complete의 완료 멘트가 start로 넘어간 뒤에도 다시 재생되는 경우까지 실측
+    # 확인)에 대한 최후 수단 — 브라우저에서 직접 이전 화면의 컨테이너를 찾아 지운다.
+    # theme.py::render_screen_cleanup() 문서 참고. 마이크(webrtc_streamer)는 완전히
+    # 격리된 별도 iframe에 살아서 이 스크립트가 절대 못 건드린다.
+    render_screen_cleanup(screen)
+
+    def _next_text(*args, **kwargs) -> str | None:
+        pending = st.session_state.pop("_debug_voice_pending_text", None)
+        if pending is not None:
+            return pending
+        return listen(*args, **kwargs)
+
     # 화면별로 원래 각 screen_*() 함수 안에서 하던 listen()/listen_background_only()
     # 호출과 그 결과 처리를 그대로 여기로 옮겼다 — 파라미터(show_mic/show_text_fallback/
     # key_prefix)와 처리 로직은 원래 화면 파일에 있던 것과 동일하다. login/my_recipes/
     # edit_recipe는 원래도 마이크를 안 썼던 화면이라 여기서도 아무것도 안 부른다(다른
     # 화면으로 넘어가면 다음 실행에서 다시 마이크가 붙는다).
     if screen == "start":
-        text = listen("start", show_mic=False, show_text_fallback=False)
+        text = _next_text("start", show_mic=False, show_text_fallback=False)
         if text:
             process_utterance(text)
     elif screen == "recipe_confirm":
-        text = listen("recipe_confirm", show_mic=False, show_text_fallback=False)
+        text = _next_text("recipe_confirm", show_mic=False, show_text_fallback=False)
         if text:
             handle_recipe_confirm(text)
     elif screen == "cooking_step":
-        text = listen("cooking_step", show_mic=False)
+        text = _next_text("cooking_step", show_mic=False)
         if text:
             process_utterance(text)
     elif screen == "cooking_complete":
-        text = listen("cooking_complete", show_mic=False)
+        text = _next_text("cooking_complete", show_mic=False)
         if text:
             process_utterance(text)
     elif screen == "no_match":
-        text = listen("no_match", show_mic=False)
+        # 2026-08-25 요청 — 이 화면은 "초기"/"등록" 두 키워드만 반응하고 나머지는
+        # 다 무시하는 아주 좁은 화면(handle_no_match() 문서 참고)이라, 텍스트로 자유
+        # 문장을 입력받는 대체 입력칸 자체가 혼란만 준다는 지적 — 버튼(원래 레시피로
+        # 계속하기/새 레시피로 등록할래요)은 그대로 두고 텍스트 폴백 입력칸만 없앤다.
+        text = _next_text("no_match", show_mic=False, show_text_fallback=False)
         if text:
-            process_utterance(text)
+            handle_no_match(text)
     elif screen == "unclassified":
-        text = listen("unclassified")
+        text = _next_text("unclassified")
         if text:
             process_utterance(text)
     elif screen == "register_intro":
-        text = listen("register_intro", show_mic=False)
+        text = _next_text("register_intro", show_mic=False)
         if text:
             handle_register_intro(text)
     elif screen == "register_dish_name":
-        text = listen("register_dish_name", show_mic=False)
+        text = _next_text("register_dish_name", show_mic=False)
         if text:
             handle_register_dish_name(text)
     elif screen == "register_ingredients":
-        listen_background_only("register_ingredients", cancel_target="register_intro")
+        # 2026-08-26 재요청 — login 화면과 같은 이유(민감/집중 입력 화면이라 음성
+        # 오인식으로 갑자기 화면이 바뀌는 걸 원치 않음)로 "처음"/"취소"까지 포함해서
+        # 음성에 완전히 반응 안 하게 바꿨다. listen()은 그대로 불러서 마이크 연결은
+        # 살려두고(안 그러면 orphan-reset, 위 login 분기 문서 참고) 반환값만 버린다.
+        listen("register_ingredients", show_text_fallback=False)
     elif screen == "register_steps":
         listen_background_only("register_steps", cancel_target="register_ingredients")
     elif screen == "complete":
-        text = listen("complete", show_mic=False)
+        text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
+    elif screen == "login":
+        # 2026-08-26 재요청 — login 화면은 음성으로 아무것도 하면 안 된다("처음"/"취소"도
+        # 포함, 아이디/비밀번호를 입력하는 민감한 화면이라 음성 오인식으로 화면이 갑자기
+        # 바뀌는 것 자체를 원치 않음). 그렇다고 listen() 호출 자체를 아예 없애면 바로
+        # 아래 my_recipes/edit_recipe 문서에 적은 "orphan-reset"(마이크 강제 재연결)
+        # 문제가 되돌아온다 — 그래서 listen()은 그대로 매 rerun마다 불러서 마이크
+        # 연결은 살려두되, 돌아온 텍스트를 완전히 버린다(어떤 분기 처리도 안 함).
+        # listen_background_only()(아래 my_recipes/edit_recipe가 쓰는 것)는 "처음"/
+        # "취소"에는 반응하므로 이 화면엔 안 맞아서 직접 listen()을 부른다.
+        listen("login", show_text_fallback=False)
+    elif screen in ("my_recipes", "edit_recipe"):
+        # 2026-08-26 실측 확인 — 이 화면들은 원래 마이크를 아예 안 불렀는데("원래도
+        # 마이크를 안 썼던 화면"), 폼 입력처럼 상호작용마다 rerun이 여러 번 이어지는
+        # 화면에서 마이크 컴포넌트가 그 여러 rerun 동안 계속 안 그려지자 streamlit_webrtc
+        # 라이브러리 자신이 "고아 컴포넌트"로 보고 강제로 리셋하는 걸 로그로 직접
+        # 확인했다(WRTCDBG "orphan-reset" 줄, current_run과 last_rendered의 차이가
+        # 남). 화면 전환 1번당 재연결 1번(기존부터 있던, 아직 못 고친 문제)과는 별개로,
+        # 이 화면들에 "머무르는 동안" 추가로 더 끊기는 원인이었다. register_ingredients/
+        # register_steps가 이미 쓰는 것과 같은 패턴(listen_background_only()로 마이크는
+        # 계속 그려서 살려두되, "처음"/"취소" 두 안전한 단어에만 반응) 적용.
+        listen_background_only(screen, cancel_target="start")
 
 
 if __name__ == "__main__":
