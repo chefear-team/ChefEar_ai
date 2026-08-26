@@ -31,7 +31,12 @@ class MicVadSegmenter:
     # 실제 발화 시작 지점을 보존한다.
     PRE_ROLL_CHUNKS = 10
 
-    def __init__(self, min_silence_duration_ms: int = 600, threshold: float = 0.5):
+    def __init__(
+        self,
+        min_silence_duration_ms: int = 600,
+        threshold: float = 0.5,
+        max_speech_duration_s: float = 10.0,
+    ):
         from silero_vad import VADIterator, load_silero_vad
 
         self._iterator = VADIterator(
@@ -45,6 +50,19 @@ class MicVadSegmenter:
             # 같은 성격).
             min_silence_duration_ms=min_silence_duration_ms,
         )
+
+        # 2026-08-26 요청 — "사람이 말할 때 최대 길어도 7초 이상은 넘기지 않는다"는
+        # 기준으로 강제 컷오프를 추가. 이 min_silence_duration_ms(600ms) 침묵 신호가
+        # 한 번도 안 뜨면(배경 소음/음악이 계속 이어지거나, silero-vad가 뭔가를 계속
+        # "말하는 중"으로 오판하는 등) _speech_chunks_raw가 아무 상한 없이 무한정
+        # 쌓일 수 있었다 — 실제 사람 발화라면 절대 안 벌어질 일이지만, 벌어지면 그
+        # 오디오가 계속 자라기만 하다 STT에 한 번에 통째로 들어가서(비정상적으로 긴
+        # 오디오라 인식 품질도, 지연 시간도 나빠짐) 오늘 다룬 Queue overflow류 문제와
+        # 같은 성격의 버퍼 무한 성장 위험이 된다. 7초 기준에 여유를 조금 얹어 10초로
+        # 잡아서, 정상적인 조금 긴 문장까지 실수로 잘리지 않게 한다 — feed()의 "end"
+        # 강제 처리 분기 참고. 초 단위로만 들고 있는다 — 원본 샘플레이트(_raw_sample_rate)는
+        # 첫 feed() 호출 전까지 모르므로 여기서 샘플 수로 미리 못 바꾼다.
+        self._max_speech_duration_s = max_speech_duration_s
 
         # 2026-08-23 추가 — "테스트용 wav 파일로는 STT가 멀쩡한데 실시간 마이크만 넣으면
         # (매번 다른 음절이) 이상하게 들린다"는 리포트로 실측 확인한 원인 수정.
@@ -132,7 +150,21 @@ class MicVadSegmenter:
                 # 최근 청크만 계속 굴려서 들고 있는다.
                 self._pre_roll_raw.append(raw_chunk)
 
-            if event is not None and "end" in event:
+            # 2026-08-26 요청 — 자연스러운 "end" 신호를 기다리지 않고, 이미 max_speech_duration_s
+            # (기본 10초)를 넘겨 계속 쌓이고 있으면 여기서 강제로 "끝"으로 취급한다. 진짜
+            # end 이벤트가 아니라서 self._iterator(내부 RNN 상태)는 "아직 말하는 중"이라고
+            # 알고 있을 수 있는데, reset_states()로 같이 정리해줘야 다음 판정이 이 중간에
+            # 끊긴 상태에 영향받지 않는다(마이크 재연결 시 reset()을 부르는 것과 같은 이유,
+            # voice_io.py::_recover_dead_mic() 참고).
+            forced_cutoff = False
+            if self._in_speech and self._raw_sample_rate:
+                elapsed_s = sum(len(c) for c in self._speech_chunks_raw) / self._raw_sample_rate
+                if elapsed_s >= self._max_speech_duration_s:
+                    forced_cutoff = True
+                    self._in_speech = False
+                    self._iterator.reset_states()
+
+            if (event is not None and "end" in event) or forced_cutoff:
                 self._in_speech = False
                 if self._speech_chunks_raw:
                     # 여기서 딱 한 번만 리샘플링한다 — 발화 전체를 이어붙인 원본
