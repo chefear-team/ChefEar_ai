@@ -234,13 +234,18 @@ def load_tts_model():
 # 문장(위 재료 나열 예문, 약 45자)이 360 토큰으로도 부족했던 사례를 기준으로 여유
 # 있게(그 사례의 실측 부족분보다 확실히 크게) 잡은 값 — 다음에 또 잘리는 보고가 나오면
 # 이 배수 자체를 올릴 것.
-DEFAULT_MAX_NEW_TOKENS = 200  # 아주 짧은 문장(예: "다음 단계로 가주세요")의 최소 하한
-# 2026-08-26 — 배수를 9에서 10으로. 마지막으로 잘렸던 재료 나열 예문(약 48자)을 이
-# 배수로 계산하면 480 안팎 — "450까지 올리자"는 별도 판단과도 거의 일치해서(우연이
-# 아니라 같은 사례를 기준으로 잡았기 때문), 그 수치를 고정값으로 박는 대신 이 배수로
-# 흡수했다 — 더 짧은/긴 문장엔 자동으로 덜/더 나온다.
-_TOKENS_PER_CHAR = 10  # 글자당 예상 생성 토큰 수(잠정치, 위 문서 참고)
-_MAX_NEW_TOKENS_CEILING = 1200  # do_sample=True에서 운 나쁘게 못 멈추는 경우의 상한선
+DEFAULT_MAX_NEW_TOKENS = 400  # 아주 짧은 문장(예: "다음 단계로 가주세요")의 최소 하한
+# 2026-08-26 재조정(300->400, 배수 15->20, 상한 1200->1500) — 실사용 TTS_DEBUG 로그
+# 29건 전수 확인 결과, implied_tokens_per_s(초당 생성 토큰 추정)로 역산한 실제
+# 소비량이 29건 *전부* 그때 상한(배수 10 기준)의 90% 이상이었다 — "여유 있게
+# 잡았다"던 배수 10이 실측으론 거의 여유가 없었다는 뜻. "한 글자씩 잘려 들린다"는
+# 반복 리포트와 정확히 들어맞는다. 15로 한 번 올렸는데도 계속 잘린다는 재확인으로
+# 20으로 재조정 — 절대 상한도 같이 1500으로 올려서 긴 문장이 새 배수로 계산해도
+# 천장에 눌리지 않게 함께 맞췄다. 정식 토크나이저 기반 실측은 아직 없음(1.5 원칙 —
+# 지어내지 않되 잠정치임을 밝힘) — 이번에도 청취/로그 기반 잠정 조정이라, 다음에도
+# 잘린다는 보고가 나오면 이 배수를 더 올리기보다 정식 토큰 카운트 로깅으로 전환할 것.
+_TOKENS_PER_CHAR = 20  # 글자당 예상 생성 토큰 수(잠정치, 위 문서 참고)
+_MAX_NEW_TOKENS_CEILING = 1500  # do_sample=True에서 운 나쁘게 못 멈추는 경우의 상한선
 # (2026-08-19 실측: 2048 하드 디폴트에서 20배 이상 느려지는 사례가 있었음 — 상한 없이
 # 문장 길이만 따라가게 두면 같은 위험이 재현될 수 있어 안전장치로 둔다.)
 
@@ -249,6 +254,30 @@ def _dynamic_max_new_tokens(text: str) -> int:
     """문장 길이에 비례해서 생성 예산을 계산한다 — 위 DEFAULT_MAX_NEW_TOKENS 문서 참고."""
     estimated = len(text) * _TOKENS_PER_CHAR
     return min(_MAX_NEW_TOKENS_CEILING, max(DEFAULT_MAX_NEW_TOKENS, estimated))
+
+
+# 2026-08-27 추가 — "요"처럼 끝음절이 잘려 들린다는 반복 리포트를 TTS_DEBUG 로그로
+# 재분석한 결과, max_new_tokens(예산)는 원인이 아니었다(실사용 17건 전부 예산의
+# 20~35%만 쓰고 스스로 멈춤 — duration_s를 qwen_tts 25Hz 코덱 기준으로 역산하면
+# 실제 소비량은 글자당 약 4.2토큰뿐, _TOKENS_PER_CHAR=20의 1/5도 안 됨). "끊기는
+# 지점이 항상 끝"이라는 패턴(리포트로 재확인)은 화면 rerun이 재생을 끊는 것과도 안
+# 맞다(TTS_DEBUG 직후 재연결/rerun 신호를 찾아봤지만 17건 중 0건) — 자동회귀 TTS가
+# EOS를 텍스트 끝 도달 기준으로 살짝 이르게 판단해, 마지막 음소의 코덱 프레임이
+# 완전히 디코드되기 전에 멈추는 흔한 현상으로 추정된다. HF generate() 표준 파라미터인
+# min_new_tokens(적어도 이만큼은 강제로 더 생성)로 EOS를 조금 늦게 허용해서 완화를
+# 시도한다 — 실측 평균(4.2/char)보다 약간 높게 잡아, 이미 멈추던 지점보다는 몇 스텝
+# 더 나가되 필요 이상으로 강제하진 않는다(너무 높이면 문장이 끝난 뒤 불필요한
+# 잡음/침묵이 붙을 위험). **실제 청취 검증 없이 넣은 값이다** — 이 프로젝트 특성상
+# 텍스트/로그만으로는 "끝 음절이 살아났는지"를 확인할 수 없으므로, 사람이 직접 듣고
+# 확인 전까지는 잠정치로 취급할 것. 오히려 어색해지면 이 하한부터 낮출 것.
+_MIN_TOKENS_PER_CHAR = 5
+
+
+def _dynamic_min_new_tokens(text: str, max_new_tokens: int) -> int:
+    """실측 평균(글자당 ~4.2토큰)보다 살짝 높은 하한을 계산한다 — 위 문서 참고.
+    max_new_tokens(예산)를 절대 넘지 않도록 방어적으로 clamp한다."""
+    estimated = len(text) * _MIN_TOKENS_PER_CHAR
+    return min(max_new_tokens, estimated)
 
 # do_sample=True(확률적 샘플링)라 시드 고정 없이는 같은 문장도 호출마다 결과가 달라진다
 # (2026-08-19 확인: 그동안 시드 고정이 전혀 없었음). 재현 가능한 테스트/비교를 위해 매
@@ -294,6 +323,9 @@ def tts_synthesize(
     # 화면 표시/로그/DB용 원문(text)은 그대로 두고, TTS에 넘길 사본에만 발음 보정을 적용.
     tts_text = apply_pronunciation_fixes(text)
 
+    # 2026-08-27 추가 — 끝음절 조기종료(EOS) 완화 시도, _dynamic_min_new_tokens() 문서 참고.
+    min_new_tokens = _dynamic_min_new_tokens(tts_text, max_new_tokens)
+
     if model_type == "base":
 
         # custom_voice 화자 임베딩이 없는 체크포인트 — 레퍼런스 음성으로 목소리를 복제해서 생성.
@@ -313,6 +345,8 @@ def tts_synthesize(
             voice_clone_prompt=_voice_clone_prompt,
 
             max_new_tokens=max_new_tokens,
+
+            min_new_tokens=min_new_tokens,
         )
 
     elif model_type == "custom_voice":
@@ -328,6 +362,8 @@ def tts_synthesize(
             instruct=instruct,
 
             max_new_tokens=max_new_tokens,
+
+            min_new_tokens=min_new_tokens,
         )
 
     else:
@@ -342,5 +378,21 @@ def tts_synthesize(
     # 가중치는 그대로 두고(재로딩 없음) 이번 합성이 남긴 미사용 캐시만 반환한다.
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+    # 2026-08-26 임시 진단 — "끝 음절이 계속 잘린다"는 보고가 위 max_new_tokens를
+    # 170부터 여러 번 올려도(지금은 문장 길이 비례 동적 계산으로 바꿨는데도) 계속
+    # 재현된다. 고정/동적 상수를 또 찔끔 올리는 대신(같은 문서의 "다음엔 상수를
+    # 더 올리기보다 실제 토큰 사용량을 재는 쪽으로 전환할 것" 참고), 매 합성마다
+    # 실제 출력 길이와 예산(max_new_tokens)을 로그로 남긴다. duration_s가 budget에서
+    # 계산되는 이론적 상한(qwen_tts의 25hz 코덱 기준 max_new_tokens/25초)에 바짝
+    # 붙어있으면 진짜로 토큰 예산을 다 써서 잘린 것 — 이 로그로 다음에 잘리는
+    # 문장이 나오면 추측 없이 바로 확정할 수 있다. 원인 확인되면 지울 것.
+    duration_s = len(wavs[0]) / sample_rate
+    print(
+        f"[TTS_DEBUG] text_len={len(text)} max_new_tokens={max_new_tokens} "
+        f"duration_s={duration_s:.2f} implied_tokens_per_s={max_new_tokens / duration_s:.1f} "
+        f"text={text[-15:]!r}(끝부분)",
+        flush=True,
+    )
 
     return wavs[0], sample_rate
