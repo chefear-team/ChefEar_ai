@@ -115,18 +115,49 @@ def test_ec19_all_zero_view_count_uses_latest_created_at():
     assert result["recipe_id"] == newest["id"]
 
 
-def test_ec20_user_custom_preferred_over_api_standard():
+def test_ec20_own_user_custom_preferred_over_api_standard():
+    """EC-20/FR-08: "사용자가" user_custom을 갖고 있으면 표준보다 우선 — 본인 소유일 때만."""
     client = FakeSupabaseClient()
     client.table("recipes").seed(
         {"dish_name": "된장찌개", "ingredients": "표준 재료", "source": "api_standard", "view_count": 1403370}
     )
     mine = client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "내 맘대로 재료", "source": "user_custom", "view_count": 0}
+        {
+            "dish_name": "된장찌개",
+            "ingredients": "내 맘대로 재료",
+            "source": "user_custom",
+            "view_count": 0,
+            "owner_id": "user-A",
+        }
+    )
+
+    result = select_standard_recipe("된장찌개", owner_id="user-A", client=client)
+
+    assert result["recipe_id"] == mine["id"]
+
+
+def test_no_owner_id_returns_api_standard_even_if_someone_elses_custom_exists():
+    """비로그인(owner_id 없음)일 때는 표준 레시피가 나와야 한다 — 남의 user_custom을 대신
+    보여주면 안 됨(2026-08-24 수정 — 이전엔 "아무 user_custom이나 우선"하는 로그인 붙기 전
+    하위호환 코드가 남아 있어서, 비로그인 사용자에게 남이 등록한 개인 레시피가 표준보다
+    먼저 노출되는 문제가 있었다)."""
+    client = FakeSupabaseClient()
+    standard = client.table("recipes").seed(
+        {"dish_name": "된장찌개", "ingredients": "표준 재료", "source": "api_standard", "view_count": 1403370}
+    )
+    client.table("recipes").seed(
+        {
+            "dish_name": "된장찌개",
+            "ingredients": "남의 맘대로 재료",
+            "source": "user_custom",
+            "view_count": 0,
+            "owner_id": "user-B",
+        }
     )
 
     result = select_standard_recipe("된장찌개", client=client)
 
-    assert result["recipe_id"] == mine["id"]
+    assert result["recipe_id"] == standard["id"]
 
 
 def test_not_found_dish_name_returns_none():
