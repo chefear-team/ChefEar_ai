@@ -14,7 +14,7 @@ from orchestration.entity_extract_llm import extract_intent_llm
 from orchestration.pipeline import handle_utterance, manual_fallback
 from ui.recipe_view import refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, get_owner_id, goto
-from ui.voice_io import _drain_mic_while, _GPU_LOCK, speak
+from ui.voice_io import _drain_mic_while, _EMBED_LOCK, _LLM_LOCK, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -48,6 +48,41 @@ _HOME_WORDS = {
 # 판단을 거치지 않고도 이 단어 하나만으로 확정할 수 있는 가장 명확한 신호라 is_home_word()와
 # 같은 자리(파이프라인 진입 전)에서 먼저 잡는다.
 _REGISTER_WORD = "등록"
+
+# 2026-08-26 요청 — 대화 기록(render_chat())의 "나: ..." 줄에 STT가 인식한 문장을
+# 그대로 보여주면, 같은 의도라도 사람마다 표현이 제각각이라("다음으로 넘어가주세요"/
+# "음 다음으로 좀"/"다음 단계는?") 화면이 장황해진다는 지적 — 순수 명령형 의도(진행/
+# 재청취/이전/취소/등록)는 실제로 뭘 말했든 그 의도에 대응하는 단어 하나로만 표시한다.
+# 새 단어를 지어내지 않고, fallback_buttons()의 버튼 이름("이전"/"다시"/"다음")과
+# orchestration/pipeline.py::_DIRECTION_BY_INTENT가 이미 쓰는 값을 그대로 재사용한다.
+# "조회"/"재료대체"는 요리명·재료명처럼 발화마다 실제 내용이 달라 정보 손실이 생기므로
+# 이 축약 대상에서 뺀다(process_utterance() 아래 각 분기 참고) — 원문(정제된 텍스트)을
+# 그대로 보여준다.
+_INTENT_DISPLAY_LABEL = {"진행": "다음", "재청취": "다시", "이전": "이전", "취소": "취소", "등록": "등록"}
+
+
+def _block_register_if_not_logged_in() -> None:
+    """등록 화면 진입 직전에 공통으로 거는 로그인 게이트.
+
+    2026-08-26 실측 리포트 — "응답 기다리지 않고 계속 레시피 이름을 외치면 로그인
+    안 한 상태에서도 새 레시피 등록 화면으로 넘어간다"로 발견된 버그 수정. process_utterance()
+    안에 등록 화면(register_dish_name/register_intro)으로 가는 진입점이 4곳 있는데
+    (_REGISTER_WORD 문자열 매칭 / LLM의 wants_register / handle_utterance()의 ValueError /
+    classify_intent()의 "등록" 의도), 로그인 체크는 원래 _REGISTER_WORD 분기 하나에만
+    있었다 — 나머지 세 곳은 아예 로그인 여부를 안 봤다. 특히 wants_register(로컬 LLM
+    판단)는 오인식되기 쉬운 경로라(짧게 여러 번 반복 발화하면 더 그렇다), 로그인 안
+    한 사용자가 이 세 경로 중 하나로 걸리면 게이트 없이 그대로 등록 화면에 들어갔다.
+    네 곳 모두 이 함수 하나로 통일한다 — "등록은 로그인 계정 기준 기능"이라는 규칙은
+    어느 경로로 들어오든 똑같이 적용돼야 하므로(no_match 화면의 "새 레시피로 등록할래요"
+    버튼 게이팅과 같은 이유).
+
+    로그인 안 됐으면 안내 음성만 들려주고 st.rerun()으로 스크립트 실행을 그 자리에서
+    멈춘다(반환하지 않음 — st.rerun()이 내부적으로 예외를 던져서 이 함수를 부른 코드의
+    나머지 줄은 실행되지 않는다, 원래 _REGISTER_WORD 분기와 동일한 패턴).
+    """
+    if st.session_state.current_user is None:
+        speak("로그인 후 이용해 주세요.", hidden=True)
+        st.rerun()
 
 
 def is_home_word(text: str) -> bool:
@@ -108,9 +143,16 @@ def process_utterance(text: str) -> None:
         reset_to_start()
         return
 
-    st.session_state.chat_log.append(("user", text))
+    # 2026-08-26 재요청 — "모든 채팅을 다 넣지 말고, 임베딩 유사도에 맞는 대화가
+    # 나왔을 때[만] 텍스트 등록되게" — 예전엔 여기서 무조건 기록해서, classify_intent()가
+    # 결국 "미분류"로 끝나는 잡담/잡음(마이크 오인식 등)까지 대화 기록(render_chat())에
+    # "나: ...." 로 그대로 남아 지저분했다. 이제 chat_log.append()는 실제로 뭔가
+    # 처리(등록 확정 또는 classify_intent()의 embedding 유사도가 실제 의도와 매칭)된
+    # 경우에만 각 분기 안에서 개별적으로 호출한다 — 아래 _REGISTER_WORD 분기 시작
+    # 부분과, "미분류" 분기 *다음*(= 실제 의도로 확정된 지점) 두 곳.
 
     if _REGISTER_WORD in text:
+        st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL["등록"]))
         # 2026-08-25 재요청 — 등록은 로그인 계정 기준 기능이라(no_match 화면의 "새
         # 레시피로 등록할래요" 버튼/음성 게이팅과 같은 이유, register.py::screen_no_match()/
         # handle_no_match() 참고), 로그인 안 한 상태에서 "등록"이라고 말하면 화면 전환
@@ -129,9 +171,7 @@ def process_utterance(text: str) -> None:
         # 없는 대신 screen_start() 자신이 다음 rerun에서 chat_log의 마지막 ai 메시지를
         # _render_cached_speech()로 다시 찾아 들려준다(no_match/recipe_confirm과 같은
         # 패턴, screen_start() 참고) — 그래서 여기는 hidden=True로 캐싱만 해둔다.
-        if st.session_state.current_user is None:
-            speak("로그인 후 이용해 주세요.", hidden=True)
-            st.rerun()
+        _block_register_if_not_logged_in()
         # is_home_word()와 같은 자리 — classify_intent()/LLM까지 갈 것도 없이 "등록"
         # 단어 하나로 확정되는 명령이라 바로 처리한다. wants_register 분기(아래)와
         # 같은 이유로 register_intro(확인 화면)는 건너뛰고 register_dish_name으로
@@ -143,6 +183,21 @@ def process_utterance(text: str) -> None:
 
     session = st.session_state.pipeline_session
     client = get_client()
+
+    # 2026-08-26 실측 리포트 — "등록한 레시피가 나만의 레시피에 안 나오고, 오히려
+    # 아무나 조회할 수 있게 된다" 재현/원인 확정. get_owner_id()는 등록 관련 분기
+    # (_REGISTER_WORD/wants_register/value_error, 위아래 참고)에서만 불렸다 — "조회"
+    # (pipeline.py::handle_utterance())는 session.get("owner_id")를 그냥 읽기만 해서,
+    # 로그인은 했지만 이번 세션에서 등록을 아직 한 번도 안 거쳤으면 owner_id가 여전히
+    # None이었다. select_standard_recipe()는 owner_id=None이면 "누구 것이든" user_custom
+    # 레시피를 후보로 쓰므로(개인 레시피 개념 자체가 없던 시절과의 하위 호환), 내가
+    # 등록한 레시피가 아무나 조회 가능해지고(실제로는 owner_id 불일치를 못 걸러낸 것)
+    # 정작 "나만의 레시피" 화면(현재 로그인 계정 owner_id로 정확히 .eq() 필터링)에는
+    # (등록 당시에도 owner_id가 안 채워져 있었다면) 안 걸려 나왔다. 백그라운드 스레드가
+    # 시작되기 전, 이 함수 맨 앞에서 항상 한 번 호출해 로그인 상태를 매번 최신으로
+    # 반영한다 — get_owner_id()가 st.session_state/쿠키를 쓰므로 메인 스레드에서 해야
+    # 한다(배경 스레드에서 st.* API를 못 쓰는 것과 같은 이유, 아래 _compute() 참고).
+    get_owner_id()
 
     # 2026-08-23 — extract_intent_llm()/handle_utterance()를 배경 스레드로 돌리고, 메인
     # 스레드는 그동안 voice_io._drain_mic_while()로 마이크 큐를 계속 비운다. speak()의
@@ -161,35 +216,66 @@ def process_utterance(text: str) -> None:
         "excluded": None,
         "result": None,
         "value_error": False,
+        "network_error": False,
     }
 
     def _compute(job=job) -> None:
         try:
-            try:
-                # 2026-08-24 — _GPU_LOCK(voice_io.py, 원래 _TTS_LOCK)으로 감쌈. extract_intent_llm()
-                # (로컬 LLM)과 handle_utterance() 안의 classify_intent()(임베딩 모델)가 STT/TTS와
-                # 같은 GPU를 쓰는데 서로 직렬화가 없었다 — 실사용 중 "STT는 됐는데 그 다음부터
-                # 터미널 로그까지 전부 멈춘다"는 리포트의 원인으로 지목됨(락 정의부 주석 참고).
-                with _GPU_LOCK:
-                    job["llm_result"] = extract_intent_llm(text)
-            except Exception as exc:  # noqa: BLE001 — 아래 이유로 여기서만 넓게 잡음
-                # llm/infer.py generate_json() 문서에 "모델 로드/추론 자체가 실패하면
-                # 예외를 그대로 올린다"고 명시돼 있다. 이 GPU 데스크탑은 STT(faster-whisper)
-                # /임베딩(sentence-transformers)/TTS/이 로컬 LLM(EXAONE)이 전부 같은 GPU를
-                # 공유해서 메모리 경합으로 가끔 실패할 수 있는데(2026-08-24 실사용 중
-                # 재현 — STT 인식은 됐는데 그 다음부터 화면이 조용히 멈춤), 여기서 안 잡으면
-                # job["llm_result"]가 None으로 남아 바로 아래 llm_result["dish_name"]에서
-                # TypeError로 메인 스레드가 죽는다(에러 박스가 떴다가 마이크 재연결 rerun에
-                # 덮여 "그냥 멈춘 것처럼" 보였을 가능성이 높음). extract_intent_llm()이 자신의
-                # 다른 실패 케이스(JSON 형식 오류 등)에 이미 쓰는 것과 같은 안전한 기본값으로
-                # 폴백한다 — 모르면 지어내지 않는다는 1.5 원칙과 같은 태도.
-                print(f"[dispatch] extract_intent_llm 실패, 안전한 기본값으로 폴백: {exc!r}")
+            # 2026-08-26 요청 — "왜 로컬 LLM에 가는거지? 이상한 것들은 로딩이 안 떠야
+            # 정상 아닌가?" 실측 확인: extract_intent_llm()의 두 출력(dish_name/
+            # wants_register) 다 이미 조리 중(session["current_recipe_id"] 있음)이면
+            # 아무데도 안 쓰인다 — dish_name은 "조회" intent가 이제 조리 중엔 절대
+            # 안 뜨게 막아놔서(intent_classifier.py::_pick_intent()) 쓰일 데가 없고,
+            # wants_register는 True가 나와도 바로 아래 elif 분기가 조리 중이면 무조건
+            # 무시한다. 그런데도 "돼지고기"/"참치찌"처럼 아무 명령도 아닌 발화까지 매번
+            # 이 로컬 LLM(GPU, 보통 1~3초+)을 불러서 결과를 그냥 버리고 있었다 — 그
+            # 사이 로딩 팝업만 뜨고 아무 일도 안 일어나는 게 정확히 이 낭비였다. 조리
+            # 중이면 이 호출 자체를 건너뛰고 바로 안전한 기본값으로 채운다 — start
+            # 화면(아직 아무 레시피도 안 고른 상태)에서는 여전히 필요해서(요리명 추출/
+            # 등록 의도 판단 둘 다 거기선 실제로 쓰임) 그대로 부른다.
+            if session.get("current_recipe_id"):
+                # 조리 중이면 이 결과가 뭐가 나오든 안 쓰이니(위 문서 참고) 호출 자체를
+                # 건너뛴다 — 아래 나머지 로직(재료대체 추출, handle_utterance() 호출과
+                # 그 예외 처리)은 그대로 다 거친다, 이 값만 안전한 기본값으로 채운다.
                 job["llm_result"] = {"dish_name": None, "wants_register": False}
-            job["requested"], job["excluded"] = extract_substitution_ingredients(text)
+            else:
+                try:
+                    # 2026-08-24 — _GPU_LOCK(voice_io.py, 원래 _TTS_LOCK)으로 감쌈. extract_intent_llm()
+                    # (로컬 LLM)과 handle_utterance() 안의 classify_intent()(임베딩 모델)가 STT/TTS와
+                    # 같은 GPU를 쓰는데 서로 직렬화가 없었다 — 실사용 중 "STT는 됐는데 그 다음부터
+                    # 터미널 로그까지 전부 멈춘다"는 리포트의 원인으로 지목됨(락 정의부 주석 참고).
+                    with _LLM_LOCK:
+                        job["llm_result"] = extract_intent_llm(text)
+                except Exception as exc:  # noqa: BLE001 — 아래 이유로 여기서만 넓게 잡음
+                    # llm/infer.py generate_json() 문서에 "모델 로드/추론 자체가 실패하면
+                    # 예외를 그대로 올린다"고 명시돼 있다. 이 GPU 데스크탑은 STT(faster-whisper)
+                    # /임베딩(sentence-transformers)/TTS/이 로컬 LLM(EXAONE)이 전부 같은 GPU를
+                    # 공유해서 메모리 경합으로 가끔 실패할 수 있는데(2026-08-24 실사용 중
+                    # 재현 — STT 인식은 됐는데 그 다음부터 화면이 조용히 멈춤), 여기서 안 잡으면
+                    # job["llm_result"]가 None으로 남아 바로 아래 llm_result["dish_name"]에서
+                    # TypeError로 메인 스레드가 죽는다(에러 박스가 떴다가 마이크 재연결 rerun에
+                    # 덮여 "그냥 멈춘 것처럼" 보였을 가능성이 높음). extract_intent_llm()이 자신의
+                    # 다른 실패 케이스(JSON 형식 오류 등)에 이미 쓰는 것과 같은 안전한 기본값으로
+                    # 폴백한다 — 모르면 지어내지 않는다는 1.5 원칙과 같은 태도.
+                    print(f"[dispatch] extract_intent_llm 실패, 안전한 기본값으로 폴백: {exc!r}")
+                    job["llm_result"] = {"dish_name": None, "wants_register": False}
+            # 2026-08-26 추가 — /code-review 발견: 바로 위/아래 두 호출(extract_intent_llm,
+            # handle_utterance)엔 이미 넓은 except+안전한 기본값 폴백이 있는데, 이 순수
+            # 함수(정규식 기반, entity_extract.py) 호출만 무방비였다. 여기서 예외가 나면
+            # job["result"]가 채워지기 전에 함수가 죽어서(바로 아래 wants_register 분기도
+            # 못 타고), finally의 job["done"]=True만 실행된 채 메인 스레드가 잠시 뒤
+            # result.get("intent")를 None에 호출해 AttributeError로 죽는다 — 위 handle_utterance
+            # except가 막으려던 것과 정확히 같은 종류의 크래시. 같은 패턴(넓게 잡고 빈
+            # 결과로 폴백)으로 통일한다.
+            try:
+                job["requested"], job["excluded"] = extract_substitution_ingredients(text)
+            except Exception as exc:  # noqa: BLE001 — 위 문서 참고, 이웃 두 호출과 같은 패턴
+                print(f"[dispatch] extract_substitution_ingredients 실패, 빈 값으로 폴백: {exc!r}")
+                job["requested"], job["excluded"] = [], None
             if job["llm_result"]["wants_register"]:
                 return
             try:
-                with _GPU_LOCK:  # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀
+                with _EMBED_LOCK:  # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀
                     job["result"] = handle_utterance(
                         session,
                         text,
@@ -200,6 +286,18 @@ def process_utterance(text: str) -> None:
                     )
             except ValueError:
                 job["value_error"] = True
+            except Exception as exc:  # noqa: BLE001 — 2026-08-26 추가, 아래 문서 참고
+                # handle_utterance() 내부의 Supabase 조회(client.table(...).execute())가
+                # 던지는 네트워크/HTTP 오류(APIError, 타임아웃, 연결 끊김 등, 4xx/5xx 포함)
+                # 는 ValueError가 아니라서 위 except가 못 잡았다 — 그러면 이 background
+                # 스레드가 여기서 조용히 죽고(daemon 스레드라 프로세스는 안 죽지만 이
+                # job["result"]는 None으로 남는다), 메인 스레드가 잠시 뒤 result.get(...)
+                # 에서 AttributeError로 크래시한 뒤에야 app.py의 최상위 catch-all이 겨우
+                # 받아내는 지저분한 경로였다(실측 확인 — "40x/50x 에러 다 잡고 있나?"
+                # 질문 계기). extract_intent_llm()과 같은 패턴(넓게 잡고 안전한 값으로
+                # 폴백)으로 여기도 명시적으로 처리한다 — 무슨 예외인지도 콘솔에 남긴다.
+                print(f"[dispatch] handle_utterance 실패(네트워크/서버 오류 추정): {exc!r}")
+                job["network_error"] = True
         finally:
             job["done"] = True
 
@@ -209,7 +307,7 @@ def process_utterance(text: str) -> None:
     llm_result = job["llm_result"]
     dish_name_guess = llm_result["dish_name"]
 
-    if llm_result["wants_register"]:
+    if llm_result["wants_register"] and not session.get("current_recipe_id"):
         # 2026-08-22 추가 — classify_intent()(임베딩 유사도)가 "등록" 같은 짧은 단일
         # 발화를 "진행"/"이전"과 헷갈려 margin 미충족으로 미분류 처리하는 사례가 실측
         # 확인됐다(기준예문.csv 보강으로 그 구체 사례는 고쳤지만, 임베딩 분류기가 커버
@@ -222,9 +320,37 @@ def process_utterance(text: str) -> None:
         # (새 레시피 등록 1/3 요리명)으로 바로 보낸다. register_intro의 버튼들이 하던
         # get_owner_id() 호출도 여기서 대신 해줘야 한다(registration.py::register_recipe()가
         # session["owner_id"]를 참조하므로 register_dish_name 진입 전에 채워둬야 함).
+        # 2026-08-26 추가 — _block_register_if_not_logged_in() 문서 참고: 이 경로(LLM
+        # wants_register)는 원래 로그인 체크가 아예 없어서, 로그인 안 한 상태에서도
+        # 등록 화면으로 바로 들어가는 버그가 있었다.
+        _block_register_if_not_logged_in()
         st.session_state.pending_dish_name = dish_name_guess
         get_owner_id()
         goto("register_dish_name")
+        return
+    # 2026-08-26 실측 리포트 — "레시피 알려주는 도중에 로그인 해달라는 음성메시지가
+    # 나온다." intent_classifier.py의 "등록"(임베딩 매칭)은 context_recipe_id가 있으면
+    # (=이미 조리 중) 무시하도록 이미 고쳤는데, 이 LLM 경로(wants_register)는 완전히
+    # 별개 판정이라 그 보호를 못 받고 있었다 — 조리 중에 LLM이 엉뚱한 발화를 등록
+    # 의도로 오판하면 곧장 _block_register_if_not_logged_in()의 "로그인 후 이용해
+    # 주세요" 음성이 튀어나왔다. 위 if 조건에 `and not session.get("current_recipe_id")`를
+    # 추가해서 조리 중엔 이 경로 자체를 안 타게 막았다 — 여기로 떨어지면(조리 중에
+    # wants_register가 True) 그냥 무시하고 원래 화면에 머무른다("등록은 첫 페이지 아니면
+    # 의미없는 문구다" 원칙, classify_intent() 쪽과 동일).
+    elif llm_result["wants_register"]:
+        st.rerun()
+        return
+
+    if job["network_error"]:
+        # 2026-08-26 추가 — "40x/50x 에러 다 잡고 있나?" 재요청으로 발견/수정. Supabase
+        # 조회(4xx/5xx, 타임아웃, 연결 끊김 등)가 실패한 경우 서비스가 죽는 대신 "알 수
+        # 없는 intent" 분기와 같은 안전한 경로(speak+unclassified)로 보낸다 — 그 화면이
+        # chat_log의 마지막 ai 메시지를 다시 찾아 들려주므로 hidden=True. unclassified
+        # 화면 자체의 고정 문구("잘 이해하지 못했어요")는 이 케이스(실제로는 인식은
+        # 됐지만 서버 오류)엔 살짝 안 맞지만, 음성 응답은 정확한 이유를 말해주고 화면
+        # 기능(재시도 버튼 등)은 그대로 동작해서 이번엔 이 경로를 재사용한다.
+        speak("일시적인 오류가 발생했어요. 잠시 후 다시 이용해 주세요.", hidden=True)
+        goto("unclassified")
         return
 
     if job["value_error"]:
@@ -233,6 +359,9 @@ def process_utterance(text: str) -> None:
         # 죽이는 대신 신규 등록으로 안전하게 보낸다. classify_intent()가 이미 "등록"으로
         # 확정 분류한 경우라 위 wants_register 분기와 같은 이유로 register_intro(확인
         # 화면)는 안 거치고 바로 register_dish_name으로 보낸다.
+        # 2026-08-26 추가 — 이 경로도 원래 로그인 체크가 없었다(_block_register_if_not_logged_in()
+        # 문서 참고).
+        _block_register_if_not_logged_in()
         st.session_state.pending_dish_name = dish_name_guess
         get_owner_id()
         goto("register_dish_name")
@@ -241,7 +370,16 @@ def process_utterance(text: str) -> None:
     result = job["result"]
     intent = result.get("intent")
 
-    if intent == "미분류":
+    if intent == "미분류" or intent == "감탄사":
+        # 2026-08-26 추가 — "감탄사"(감사합니다/아멘/고마워요 등, 기준예문.csv 참고):
+        # classify_intent()가 이 실제 매칭시킨 진짜 의도라 "미분류"는 아니지만, 이
+        # 발화들은 애초에 아무 명령도 아니라서 처리할 게 없다 — 실측: "감사합니다"가
+        # "재청취"(다시 한번요)와 0.65로 헷갈려 다시듣기가 잘못 트리거되는 문제가
+        # 있었다(임베딩이 짧고 단순한 문장 구조만 보고 헷갈림, 의미와 무관). THRESHOLD를
+        # 올려서 막으려 하면 "좋아"(0.71) 같은 진짜 확정 발화까지 같이 막혀서, 대신
+        # 이 표현들을 자기 카테고리로 분리해 자기 자신과 거의 1.0으로 매칭시켜 이기게
+        # 하고, 여기서 "미분류"와 완전히 동일하게(화면 전환도 응답도 없이 무시) 처리한다.
+        #
         # 문장 패턴 분류(classify_intent)가 기준예문.csv의 어떤 의도와도 못 매칭한
         # 경우 전부 여기로 온다. 2026-08-24 재요청 — 기준예문에 없는 발화는 화면 전환도,
         # 음성 응답도 없이 그냥 무시한다(예전엔 register_intro로 등록을 유도하거나
@@ -262,8 +400,19 @@ def process_utterance(text: str) -> None:
         st.rerun()
         return
 
+    # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제 의도와
+    # 매칭시켜서 뭔가 처리됐으면) 대화 기록에 남겨야 한다." (중간에 "다음 페이지로
+    # 안 넘어가면 기록 안 함"으로 더 좁혔다가, 사용자가 "내 기록은 아예 기록 안
+    # 한다고?"로 되물어서 원래 기준으로 되돌림 — 아래 각 분기의 "2026-08-26 재요청"
+    # 주석 참고.) 여기 도달한 시점(미분류/감탄사를 이미 걸러낸 뒤)은 전부 성공
+    # 케이스라, 화면이 실제로 바뀌든(조회/등록 등) 같은 화면에 머물든(다시/이전
+    # 단계 없음 등) 상관없이 각 분기 안에서 기록한다 — speak()의 AI 응답 기록은
+    # 이 규칙과 별개로 원래부터 항상 그대로 남는다.
+
     if intent == "조회":
         if "message" in result:  # DISH_NOT_FOUND_MESSAGE — 표준 데이터 밖(시나리오 D)
+            # 매칭 실패라 "보정된 이름"이 아예 없다 — 인식된 원문(text) 그대로 보여준다.
+            st.session_state.chat_log.append(("user", text))
             st.session_state.pending_dish_name = dish_name_guess
             # 2026-08-22 리포트 — 여기서 그리는 재생바가 goto()의 rerun에 곧장 지워져
             # "이전 화면 하단에 떴다 사라짐" 깜빡임만 남긴다(recipe_confirm과 같은 문제).
@@ -272,6 +421,12 @@ def process_utterance(text: str) -> None:
             speak(result["message"], hidden=True)
             goto("no_match")
             return
+        # 2026-08-26 요청 — "제육복근"이라고 잘못 들려도 recipe_search.py::extract_dish_name()
+        # 3단계(편집거리, 자모 분해 difflib)가 "제육볶음"으로 보정해서 정상 매칭시키는데,
+        # 정작 채팅창엔 보정 전 원문(text)이 그대로 남아서 "AI는 제육볶음이라 답하는데
+        # 내 말풍선은 제육복근"이라는 불일치가 생겼다. AI 응답(바로 아래 speak())과
+        # 같은 값(result["dish_name"], 실제로 DB에서 찾은 표준 요리명)을 써서 맞춘다.
+        st.session_state.chat_log.append(("user", result["dish_name"]))
         refresh_recipe_view(force=True)
         # 위와 같은 이유 — 도착 화면(recipe_confirm)이 chat_log의 마지막 ai 메시지를
         # _render_cached_speech()로 다시 들려준다.
@@ -282,9 +437,19 @@ def process_utterance(text: str) -> None:
     if intent in ("진행", "재청취", "이전"):
         step = result.get("step")
         if result.get("no_previous"):
+            # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제
+            # 의도와 매칭시켰으면) 기록에 남겨야 한다"로 다시 확정. "다음 페이지로
+            # 안 넘어가면 기록 안 함"으로 한 번 더 좁혔다가(이전 커밋), 사용자가
+            # "내 기록은 아예 기록 안 한다고?"로 되물어서 원래 기준(성공 매칭 여부)
+            # 으로 되돌린다 — 여기(이전 단계 없음)도 "이전"이 정상적으로 인식·처리된
+            # 결과라 기록한다.
+            # 2026-08-26 요청 — 표시는 원문 대신 _INTENT_DISPLAY_LABEL(위 정의 참고)의
+            # 짧은 단어로. 아래 두 곳(elif/else)도 동일.
+            st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
             speak("1단계예요, 이전 단계가 없어요.")
             goto("cooking_step")
         elif step is None:
+            st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
             # 마지막 단계에서 "다음" -> advance_step()이 더 이상 존재하지 않는 단계를
             # 찾다 step=None을 돌려준 경우(2026-08-22 요청) — 안내만 하고 cooking_step에
             # 머무르는 대신 완료 화면으로 보낸다. screen_cooking_complete()가 이 문구를
@@ -298,6 +463,10 @@ def process_utterance(text: str) -> None:
             speak(COOKING_COMPLETE_MESSAGE, hidden=True)
             goto("cooking_complete")
         else:
+            # 2026-08-26 재요청 — 위 no_previous 분기와 같은 이유로 되돌림: "재청취"
+            # (다시)도 classify_intent()가 정상적으로 매칭시킨 성공 케이스라 기록한다
+            # (한때 "다음 페이지로 안 넘어가면 제외"로 뺐다가 사용자 재확인으로 복구).
+            st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
             # "다시"는 같은 파일을 다시 재생하는 거라 오디오 콘텐츠 자체가 안 바뀌어서
             # nonce 없이는 iframe이 안 바뀐 걸로 보고 autoplay가 재실행되지 않는다. "다음"/
             # "이전"도 이전에 방문했던 단계로 돌아갈 때(예: 2단계->1단계->2단계) 같은 문제가
@@ -326,6 +495,7 @@ def process_utterance(text: str) -> None:
         return
 
     if intent == "재료대체":
+        st.session_state.chat_log.append(("user", text))
         if result.get("match_type") == "none":
             # 위 조회/DISH_NOT_FOUND 분기와 같은 이유(2026-08-22) — no_match가 chat_log의
             # 마지막 ai 메시지를 다시 들려주므로 hidden=True.
@@ -338,6 +508,7 @@ def process_utterance(text: str) -> None:
         return
 
     if intent == "취소":
+        st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
         if result.get("rolled_back"):
             refresh_recipe_view(force=True)
             speak(f'네, {result["dish_name"]}로 되돌렸어요.')
@@ -347,6 +518,13 @@ def process_utterance(text: str) -> None:
         return
 
     if intent == "등록":
+        st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
+        # 2026-08-26 추가 — 이 경로(classify_intent()의 "등록" 의도)도 원래 로그인 체크가
+        # 없었다(_block_register_if_not_logged_in() 문서 참고) — register_intro 화면
+        # 자체는 로그인 여부를 안 보므로(register.py::screen_register_intro()), 여기서
+        # 막지 않으면 register.py::handle_no_match()가 이미 하고 있는 것과 다르게 이
+        # 경로만 로그인 없이도 등록 화면까지 들어갔다.
+        _block_register_if_not_logged_in()
         prompt = result.get("prompt") or result.get("summary") or result.get("message")
         if prompt:
             speak(prompt)
@@ -354,6 +532,7 @@ def process_utterance(text: str) -> None:
         return
 
     # 알 수 없는 intent(방어적 처리) — 서비스가 죽는 대신 fallback으로.
+    st.session_state.chat_log.append(("user", text))
     # 위와 같은 이유(2026-08-22) — unclassified가 chat_log의 마지막 ai 메시지를 다시
     # 들려주므로 hidden=True.
     speak("죄송해요, 잘 처리하지 못했어요. 다시 한 번 말씀해주시겠어요?", hidden=True)

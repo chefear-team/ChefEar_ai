@@ -30,3 +30,12 @@ textColor = "#241c15"
 # 이 파일 감시 오작동이 더 근본적인 원인일 가능성이 있어 테스트 중.
 [server]
 fileWatcherType = "none"
+
+# 2026-08-26 요청 — "예방 차원으로 다른 에러들에 대해서도 셋팅"의 2차 방어선. app.py의
+# 최상위 try/except(render_error_notice())가 main() 안에서 나는 예외는 이미 다 잡지만,
+# 그 바깥(Streamlit 자신이 스크립트를 실행하는 시점 전후)에서 나는 예외는 우리 코드가
+# 손댈 수 없는 영역이다 — 기본값(showErrorDetails 미설정 시 "full")대로 두면 그런
+# 경우엔 사용자에게 원본 스택트레이스가 그대로 노출된다. "none"으로 낮춰서 그런
+# 예외에서도 기술적 세부사항이 새지 않게 한다(대신 콘솔 로그로는 여전히 확인 가능).
+[client]
+showErrorDetails = "none"

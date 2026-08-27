@@ -49,7 +49,7 @@ def render() -> None:
         recipe_key = st.session_state.get("pending_recipe_key") or "doenjang"
         recipe = fresh_recipe(recipe_key)
 
-    render_badge("조회수 1위 표준 레시피 자동 선택 · 되묻지 않음 (FR-05)")
+    render_badge("조회수 1위 표준 레시피")
 
     # 2026-08-20: "나: ~ 어떻게 만들어? / ChefEar: ~ 레시피를 찾았어요. 이걸로
     # 시작할까요?" 대화 말풍선 구역을 없애고, 그 자리를 대신하던 "재료 미리보기" 위

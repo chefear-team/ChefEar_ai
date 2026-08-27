@@ -43,6 +43,11 @@ _REGISTER_SAVED_MESSAGE = "저장이 완료됐어요!"
 
 
 def screen_no_match() -> None:
+    # 2026-08-26 요청 — 로고 밑에 다른 화면들(register_dish_name 등, 이 파일 아래
+    # 참고)과 똑같은 "처음 화면으로" 뒤로가기 링크가 이 화면엔 빠져 있었다 — 같은
+    # 패턴(render_back_link() 호출 결과가 True면 start로) 그대로 맞춘다.
+    if render_back_link("처음 화면으로"):
+        goto("start")
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon warn">{ICON_X_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
@@ -56,7 +61,8 @@ def screen_no_match() -> None:
         # 해둔 문구를 여기서 다시 찾아 들려준다(2026-08-22 리포트 — 화면 전환 중 재생바가
         # "떴다 사라짐" 깜빡이는 문제, recipe_confirm과 같은 패턴).
         _render_cached_speech(chat_log[-1][1])
-    render_chat(st.session_state.chat_log[-2:])
+    # 2026-08-26 재요청(cooking_step과 같은 이유) — 최근 2개만 보여주던 창을 없애고 전체를 보여준다.
+    render_chat(st.session_state.chat_log)
     st.caption("실데이터 검색만으로 판단해요 — 없는 레시피를 지어내지 않아요 (1.5 원칙).")
     render_spacer()
 

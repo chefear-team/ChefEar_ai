@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from pathlib import Path
@@ -12,7 +13,7 @@ import soundfile as sf
 import streamlit as st
 
 from orchestration.db import load_env
-from theme import render_audio_autoplay, render_audio_player, render_loading_overlay
+from theme import render_audio_autoplay, render_audio_player, render_loading_overlay, render_processing_chime
 
 # stt/infer.py·tts/infer.py·llm/infer.py와 같은 이유(각 모듈이 독립적으로 .env를 읽어야
 # app.py 없이도, 또는 import 순서와 무관하게 TURN_HOST 등 환경변수를 쓸 수 있음) —
@@ -24,8 +25,6 @@ load_env()
 # check)가 왜 실패하는지 콘솔에 찍는다. 원인 확인되면 지울 것(상시로 켜두면 로그가
 # 너무 많아짐).
 if os.environ.get("WEBRTC_DEBUG"):
-    import logging
-
     logging.basicConfig(level=logging.DEBUG)
     logging.getLogger("aioice").setLevel(logging.DEBUG)
     logging.getLogger("aiortc").setLevel(logging.DEBUG)
@@ -33,17 +32,125 @@ if os.environ.get("WEBRTC_DEBUG"):
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _ice_servers() -> list[dict]:
-    """WebRTC(상시 마이크)의 ICE 서버 목록 — 구글 공개 STUN은 항상 넣고, .env에
-    TURN_HOST/TURN_USERNAME/TURN_PASSWORD가 있으면 TURN도 같이 넣는다(2026-08-23).
+# 2026-08-26 요청 — 서버 콘솔에 "Task was destroyed but it is pending!"이 마이크가
+# 재연결될 때마다 반복 실측 확인. 원인: aioice(site-packages/aioice/turn.py의
+# TurnTransport.sendto())가 매 전송마다 asyncio.create_task()로 send_data()를 던져놓고
+# 아무도 참조를 안 든다 — 그 코루틴이 channel_bind()를 기다리는 도중(아래
+# _cloudflare_turn_ice_servers() 문서의 "CHANNEL_BIND 400 Bad Request" 실측과 같은
+# 원인으로 추정, 아직 미확정) RTCPeerConnection이 닫히면 참조를 잃은 채로 GC돼서
+# asyncio가 이 경고를 찍는다. 실제 오디오는 이 TURN 채널을 안 타고 STUN/host 후보로
+# 흐르고 있어서(_ice_transport_policy()가 항상 None을 돌려줘 relay를 강제 안 함)
+# 기능상 영향이 없다고 이미 확인된 상태다 — asyncio 표준 로거("asyncio", asyncio 내부가
+# 이 경고를 찍을 때 쓰는 로거 이름)에 이 문구 하나만 걸러내는 필터를 달아 콘솔 스팸만
+# 없앤다. 근본 원인(aioice ↔ Cloudflare TURN 서버 사이의 channel_bind 호환성 문제로
+# 추정)은 그대로 열려 있고 고친 게 아니다 — 무해하다고 확인된 경고를 안 보이게 할 뿐,
+# 다른 asyncio 에러/경고는 그대로 다 찍힌다.
+class _SuppressBenignTurnTaskDestroyedWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Task was destroyed but it is pending" not in record.getMessage()
 
-    STUN만으로는 이 데스크탑처럼 WSL2가 Windows 뒤에 NAT로 숨어있는 환경에서, Tailscale
-    등으로 접속하는 다른 기기가 오디오용 WebRTC(UDP) 연결을 못 뚫는 게 실측으로 확인됐다
-    ("Connection is taking longer than expected" 에러). TURN은 양쪽이 TURN 서버로
-    나가기만 하면 되므로 이런 이중 NAT에서도 거의 항상 통한다 — 이 데스크탑에 coturn을
-    직접 띄우고 그 값을 .env에 채워두면 자동으로 쓰인다. 값이 없으면 조용히 STUN만
-    쓰는 것으로 폴백한다(같은 기기 브라우저에서 테스트할 땐 STUN만으로도 충분함).
+
+logging.getLogger("asyncio").addFilter(_SuppressBenignTurnTaskDestroyedWarning())
+
+
+# 2026-08-26 — Cloudflare Realtime TURN 자격증명 캐시. generate-ice-servers 호출마다
+# 새 자격증명이 발급되는데(TTL 있음), _ice_servers()가 webrtc_streamer()를 부르는
+# 거의 매 rerun마다 불려서 그때마다 새로 발급받으면 API 호출이 낭비되고, rtc_configuration
+# 값이 rerun마다 바뀌면 이미 연결된 컴포넌트가 불필요하게 재협상할 위험도 있다(1번 섹션
+# "checking 중 rerun이 끼면 연결이 죽는다" 문제와 같은 종류). TTL 안에서는 같은 값을
+# 계속 재사용한다.
+_CF_TURN_CACHE: dict = {}
+
+
+def _cloudflare_turn_ice_servers() -> list[dict] | None:
+    """Cloudflare Realtime TURN에서 짧게 유효한 iceServers를 발급받는다(2026-08-26 추가).
+
+    배경 — 기존 TURN_HOST(아래 _ice_servers() 참고)는 이 데스크탑에 직접 띄운 coturn을
+    Tailscale 전용 IP(100.108.102.44)로만 리슨하게 한 것이라, chefear.store(Cloudflare
+    Tunnel)로 공개 인터넷에서 들어오는 방문자는 애초에 그 IP에 닿을 수가 없다(Tailscale
+    tailnet 멤버만 라우팅됨). 집 라우터에 포트포워딩을 여는 대신, 공인 IP를 이미 갖고
+    있는 Cloudflare 쪽 TURN 서비스를 쓴다 — 집 네트워크는 전혀 안 건드린다.
+
+    .env의 CF_TURN_KEY_ID/CF_TURN_KEY_API_TOKEN이 둘 다 있을 때만 시도한다(없으면
+    조용히 None — 호출부가 기존 TURN_HOST 경로로 폴백). 발급 실패(네트워크 문제, 키
+    만료 등)도 예외를 삼키고 None만 돌려준다(EC-05와 같은 정신 — 마이크 연결 자체가
+    STUN만으로도 되는 경우가 많아서, TURN 발급 실패로 마이크 기능 전체가 죽으면 안 됨).
     """
+    key_id = os.environ.get("CF_TURN_KEY_ID")
+    api_token = os.environ.get("CF_TURN_KEY_API_TOKEN")
+    if not key_id or not api_token:
+        return None
+
+    import time
+
+    now = time.monotonic()
+    if _CF_TURN_CACHE.get("servers") and now < _CF_TURN_CACHE.get("expires_at", 0.0):
+        return _CF_TURN_CACHE["servers"]
+
+    import json
+    import urllib.error
+    import urllib.request
+
+    ttl_seconds = 24 * 3600  # 넉넉히 하루 — 발급 API 호출 자체를 자주 안 하려는 목적
+    url = f"https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate-ice-servers"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"ttl": ttl_seconds}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # 2026-08-26 실측 확인 — urllib 기본 User-Agent("Python-urllib/3.x")로 호출하면
+            # Cloudflare 엣지 WAF가 "error code: 1010"(브라우저 시그니처 기반 차단)으로
+            # 요청 자체를 거부한다(자격증명 문제가 아니었음 — 같은 키로 브라우저 UA를
+            # 달아 보내니 201로 정상 발급됨). 일반 브라우저처럼 보이는 UA를 명시해서 우회.
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            ),
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — EC-05, 실패해도 기존 STUN/TURN_HOST로 폴백
+        print(f"[voice_io] Cloudflare TURN 자격증명 발급 실패(폴백): {exc!r}", flush=True)
+        return None
+
+    ice_servers = payload.get("iceServers")
+    if not ice_servers:
+        print(f"[voice_io] Cloudflare TURN 응답에 iceServers 없음(폴백): {payload!r}", flush=True)
+        return None
+
+    # 실제 만료 시점보다 60초 일찍 캐시를 비운다 — 자격증명이 딱 만료되는 순간에 걸쳐
+    # 새 연결 협상이 시작되는 레이스를 피하기 위한 여유.
+    _CF_TURN_CACHE["servers"] = ice_servers
+    _CF_TURN_CACHE["expires_at"] = now + ttl_seconds - 60
+    return ice_servers
+
+
+def _ice_servers() -> list[dict]:
+    """WebRTC(상시 마이크)의 ICE 서버 목록.
+
+    2026-08-26 — Cloudflare Realtime TURN이 설정돼 있으면(.env의 CF_TURN_KEY_ID/
+    CF_TURN_KEY_API_TOKEN, _cloudflare_turn_ice_servers() 참고) 그걸 우선 쓴다 — 공인
+    인터넷 어디서든 닿는 TURN이라 Cloudflare Tunnel로 들어오는 방문자도 문제없다.
+    구글 공개 STUN도 항상 같이 넣어둔다(무료라 손해볼 게 없고, STUN만으로 뚫리는
+    네트워크는 TURN 릴레이 비용 자체가 안 든다).
+
+    Cloudflare 쪽이 설정 안 됐거나 발급 실패면, 기존 방식(2026-08-23 추가)으로
+    폴백한다 — .env에 TURN_HOST/TURN_USERNAME/TURN_PASSWORD가 있으면 그 TURN(이
+    데스크탑에 직접 띄운 coturn, 기본은 Tailscale 전용 IP)을 추가로 넣는다. STUN만으로는
+    이 데스크탑처럼 WSL2가 Windows 뒤에 NAT로 숨어있는 환경에서, 이중 NAT를 못 뚫는
+    방문자의 WebRTC(UDP) 연결이 실측으로 확인된 적 있다("Connection is taking longer
+    than expected" 에러) — 아무 TURN도 안 잡히면 조용히 STUN만 쓰는 것으로 폴백한다
+    (같은 기기 브라우저에서 테스트할 땐 STUN만으로도 충분함).
+    """
+    cf_servers = _cloudflare_turn_ice_servers()
+    if cf_servers:
+        return cf_servers + [{"urls": ["stun:stun.l.google.com:19302"]}]
+
     servers: list[dict] = [{"urls": ["stun:stun.l.google.com:19302"]}]
 
     if _turn_configured():
@@ -67,26 +174,52 @@ def _turn_configured() -> bool:
 
 
 def _ice_transport_policy() -> str | None:
-    """2026-08-25 추가 — 다른 기기(노트북 등, Tailscale Funnel 경유)에서 접속할 때, 이
-    데스크탑의 여러 가상 네트워크 인터페이스(WSL 브릿지, Docker, link-local 등)가 전부
-    ICE host candidate로 잡혀서 STUN 연결성 검사가 수천 건까지 폭증하는 게 실측 확인됐다
-    (WEBRTC_DEBUG 로그로 확인 — 발화 하나 없이 순수 협상만으로 3500개 넘는 STUN
-    BINDING REQUEST). 이 정도 동시 요청량에서 aioice/aiortc의 알려진(2022년부터 미해결,
-    streamlit-webrtc#845/aiortc#85) asyncio 이벤트루프 정리 버그
-    ("AttributeError: 'NoneType' object has no attribute 'call_exception_handler'")가
-    거의 매번 재현돼서 연결이 영영 안 붙는다.
+    """2026-08-25 추가, 2026-08-26 두 번 되돌림 — 이 데스크탑의 여러 가상 네트워크
+    인터페이스(WSL 브릿지, Docker, link-local 등)가 전부 ICE host candidate로 잡혀서
+    STUN 연결성 검사가 수천 건까지 폭증하는 게 실측 확인됐다(WEBRTC_DEBUG 로그로 확인 —
+    발화 하나 없이 순수 협상만으로 3500개 넘는 STUN BINDING REQUEST). 이 정도 동시
+    요청량에서 aioice/aiortc의 알려진(2022년부터 미해결, streamlit-webrtc#845/aiortc#85)
+    asyncio 이벤트루프 정리 버그가 거의 매번 재현돼서 연결이 느려지거나 최악엔 영영
+    안 붙는다 — `iceTransportPolicy: "relay"`로 STUN/host candidate 탐색 자체를 건너뛰고
+    TURN 릴레이만 쓰게 강제하면 후보 개수가 줄어서 이 버그를 피할 수 있을 것으로
+    기대했었다.
 
-    TURN이 설정돼 있으면(이 데스크탑엔 coturn이 이미 떠 있고 릴레이 자체는 로그로
-    성공 확인됨) `iceTransportPolicy: "relay"`로 direct/STUN host candidate 탐색 자체를
-    건너뛰고 TURN 릴레이만 쓰게 강제한다 — 후보 개수가 확 줄어서 저 버그를 유발하는
-    조건 자체를 피한다. 지연은 릴레이 경유로 아주 약간 늘 수 있지만 음성 발화 하나
-    처리하는 데는 무시할 수준. TURN이 없으면(로컬 개발 등) 이 정책 자체를 안 걸어서
-    기존처럼 STUN/host candidate까지 다 쓰게 둔다(같은 기기 테스트는 애초에 이 폭증이
-    안 일어나서 문제가 없었음, 위 _ice_servers() 문서 참고).
+    **두 번 시도했고 두 번 다 되돌렸다** — 이 정책은 지금까지 실전에서 안전했던 적이
+    없다:
+    1. 2026-08-25 — TURN_HOST(이 데스크탑 coturn, Tailscale 전용 IP)를 조건으로 걸었다가
+       되돌림. Tailscale 밖 방문자에겐 그 TURN 자체가 안 닿아서, relay 전용 강제 시
+       후보가 하나도 안 남아 연결이 완전히 막혔다.
+    2. 2026-08-26 — Cloudflare Realtime TURN(_cloudflare_turn_ice_servers())으로 바꾸면
+       1번 문제는 해소된다고 판단해 다시 켰다가, **곧바로 실사용 재현으로 되돌림**:
+       TURN 자격증명 발급 자체는 성공했지만(API 실측 확인), 실제 릴레이 채널을 여는
+       단계(`CHANNEL_BIND`)가 Cloudflare TURN 서버에서 `400 Bad Request`로 거부되는
+       게 재현됐다(`aioice.stun.TransactionFailed: STUN transaction failed (400 - )`,
+       `aioice/turn.py::channel_bind()`). 자격증명 발급과 실제 릴레이 채널 개통은
+       완전히 다른 단계라, API 테스트 성공이 이 단계까지 보장하지 못했다 — aioice의
+       TURN 클라이언트 구현과 Cloudflare TURN 서버 사이의 구체적인 호환성 문제로
+       추정(원인 미확정). relay 전용 강제는 TURN이 유일한 경로가 되므로, 이 버그가
+       있는 한 강제할수록 오히려 연결이 더 잘 막힌다.
 
-    2026-08-25 — 아직 실측 검증 전(적용은 했지만 노트북으로 재현 재확인 안 됨).
+    결론 — **이 함수는 당분간 항상 None을 반환한다.** STUN/host candidate까지 다 열어둬서
+    (기존 동작) TURN 채널 문제를 웬만하면 안 거치고 넘어가게 한다. Cloudflare TURN
+    자체(비강제, iceServers 목록에 넣어두는 것)는 계속 쓴다 — 자격증명 발급은 정상이라
+    STUN이 막힌 네트워크에서 폴백으로 시도라도 해볼 여지는 남겨둔다. CHANNEL_BIND
+    400 원인을 밝히기 전까지는 relay 강제를 다시 켜지 말 것.
     """
-    return "relay" if _turn_configured() else None
+    return None
+
+
+def _rtc_configuration() -> dict:
+    """webrtc_streamer()에 넘길 RTCConfiguration을 조립한다(2026-08-26 추가) — _ice_servers()
+    와 _ice_transport_policy() 둘을 한 곳에서 합쳐서, 정책이 None일 때 그 키 자체를 아예
+    안 넣게 한다(WebRTC 표준상 iceTransportPolicy의 기본값이 "all"이라, 명시적으로 None을
+    넣는 것보다 키 자체를 생략하는 쪽이 더 안전 — 브라우저/streamlit-webrtc가 None을
+    "all"로 정확히 해석해준다는 보장이 없어서다)."""
+    config: dict = {"iceServers": _ice_servers()}
+    policy = _ice_transport_policy()
+    if policy:
+        config["iceTransportPolicy"] = policy
+    return config
 
 # 2026-08-21: st.audio()는 Streamlit이 rerun마다 <audio> 태그를 새로 만드는 방식이라
 # 자동재생은 물론 수동 재생 버튼도 안 먹히는 문제가 실측으로 확인됐다(브라우저에서 재생
@@ -115,8 +248,20 @@ _AUDIO_DIR = PROJECT_ROOT / "ui" / "assets" / "audio"
 # 멈추는 것으로 보인다 — 프로세스 전체가 멈춘 것처럼 보이는 것도 이 GPU 호출이 자바스크립트
 # 스레드 GIL을 오래 붙들고 있어서일 가능성과 들어맞는다. TTS 전용이던 이 락을 GPU를
 # 쓰는 모든 추론 호출(STT/임베딩/LLM/TTS)로 넓혀서, 항상 한 번에 하나씩만 GPU에
-# 올라가게 한다.
-_GPU_LOCK = threading.Lock()
+# 올라가게 했었다(_GPU_LOCK 단일 락, 2026-08-24~2026-08-26).
+#
+# 2026-08-26 실험적 완화 — 동시 여러 사용자 접속 시 전부 한 줄로 순서 대기하는 게
+# 너무 느리다는 요청으로, 모델 종류별로 락을 4개로 쪼갠다("같은 모델끼리만 순서대로,
+# 다른 모델끼리는 동시에"). 예: STT 처리 중에도 다른 사용자의 TTS 합성이 동시에
+# 시작될 수 있음 — 이게 바로 위 문서의 원래 장애("STT 되고 나서 화면이 조용히
+# 멈춘다")를 유발했던 정확히 그 조합이라, VRAM 여유가 실측상 500~800MB 수준으로
+# 빠듯한 이 GPU(12GB)에서 재현 위험이 있다는 걸 알고 하는 실험적 변경이다 — 실사용
+# 중 OOM/멈춤이 다시 나타나면 단일 _GPU_LOCK으로 즉시 되돌릴 것(git으로 이 커밋
+# 이전 상태 확인 가능).
+_STT_LOCK = threading.Lock()
+_TTS_LOCK = threading.Lock()
+_LLM_LOCK = threading.Lock()
+_EMBED_LOCK = threading.Lock()
 
 def _common_audio_path(message: str) -> Path:
     """조리 단계처럼 recipe_id/step_number가 없는 1회성 문구(확인 질문·안내 등)의
@@ -175,7 +320,13 @@ def _render_cached_speech(message: str, *, nonce: int | str = 0) -> None:
         render_audio_autoplay(path, nonce=nonce)
 
 
-def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 넘어가고 있어요...") -> None:
+# 2026-08-26 요청 — 기본 문구를 "다음으로 넘어가고 있어요..."(진행 케이스 전용) →
+# "처리하고 있어요..."(render_loading_overlay() 자신의 기본값, 그런데 시스템 관점 문구라
+# "사용자 입장에서 봐야지"라는 재지적) → 최종적으로 이걸로 확정했다. 이 함수는 조회/
+# 진행/재청취/이전/취소/등록 등 결과가 뭐가 될지 모르는 모든 처리 대기 구간에 공통으로
+# 쓰여서 특정 동작을 전제로 한 문구는 안 맞고, "내 말을 들었다"는 확인 + "기다려달라"는
+# 요청, 이 두 가지가 사용자가 실제로 궁금해하는 것이라는 판단으로 골랐다.
+def _drain_mic_while(job: dict, *, loading_message: str | None = "말씀 잘 들었어요, 잠시만요...") -> None:
     """job["done"]가 True가 될 때까지 상시 마이크(webrtc)의 오디오 큐를 계속 비워준다.
 
     2026-08-23 리포트 실측 확인 — "된장찌개 레시피 알려줘"로 recipe_confirm까지는
@@ -212,21 +363,38 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
     처리 시작하자마자 무조건 팝업부터 띄우는 대신, `_SHOW_DELAY_S`(0.4초)보다 오래
     걸릴 때만 뒤늦게 띄운다 — 빨리 끝나는 처리(성공이든 미분류든)는 팝업이 아예 안
     보이고, 진짜 오래 걸리는 처리만 "넘어가고 있어요" 안내를 받는다.
+
+    2026-08-26 재요청 — "자꾸 깜박깜박거려서 불편하다": LLM 추출(extract_intent_llm())은
+    결과가 뭐든(미분류 포함) 항상 먼저 거쳐야 하고 그 자체가 이미 _SHOW_DELAY_S를 자주
+    넘겨서, 처리가 딱 0.4초를 살짝 넘긴 시점에 job이 끝나버리면 팝업이 몇십~몇백 ms만
+    떴다 사라지는 "반짝임"이 됐다. render_loading_overlay()에 페이드인을 추가해 나타날
+    때는 부드럽게 만들었고, 여기서는 한번 뜬 이상 최소 `_MIN_VISIBLE_S`만큼은 붙어있게
+    보장한다 — 뜨자마자 바로 지워지는 경우가 없어져서 눈에 실제로 "안내가 있었다"고
+    인지할 시간을 준다. 표시 여부(뜨는 시점)는 안 건드린다 — 처리 시간 자체를 더
+    기다리게 만드는 게 아니라, 이미 뜨기로 결정된 뒤의 "얼마나 오래 보이는가"만 바꾼다.
     """
     import queue
     import time
 
     _SHOW_DELAY_S = 0.4
+    _MIN_VISIBLE_S = 0.3
 
     overlay_slot = st.empty()
     overlay_shown = False
+    shown_at = 0.0
     start = time.monotonic()
 
     while not job["done"]:
         if loading_message and not overlay_shown and (time.monotonic() - start) >= _SHOW_DELAY_S:
             with overlay_slot:
                 render_loading_overlay(loading_message)
+            # 2026-08-26 요청 — 화면을 안 보고 있어도(핵심 컨셉이 "화면 안 보고 음성만으로")
+            # 처리 중이라는 걸 알 수 있게, 같은 지점에서 짧은 효과음도 한 번 같이 울린다
+            # (render_processing_chime() 문서 참고). start(이 드레인 호출의 시작 시각)를
+            # nonce로 그대로 넘기면 호출마다 자연히 값이 달라져 autoplay가 매번 재실행된다.
+            render_processing_chime(nonce=start)
             overlay_shown = True
+            shown_at = time.monotonic()
 
         context = st.session_state.get(_mic_component_key())
         receiver = getattr(context, "audio_receiver", None) if context is not None else None
@@ -243,6 +411,9 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "다음으로 �
             pass
 
     if overlay_shown:
+        remaining = _MIN_VISIBLE_S - (time.monotonic() - shown_at)
+        if remaining > 0:
+            time.sleep(remaining)
         overlay_slot.empty()
         # 2026-08-25 리포트 — 이 함수를 부른 쪽(process_utterance()의 미분류 분기 등)이
         # 바로 다음 줄에서 st.rerun()을 부르는 경우, "지워라"(위 empty())와 "전체를 새로
@@ -307,7 +478,7 @@ def speak(
 
             def _run_synthesis(job=job) -> None:
                 try:
-                    with _GPU_LOCK:
+                    with _TTS_LOCK:
                         if not audio_path.exists():
                             from tts.infer import tts_synthesize
 
@@ -354,7 +525,7 @@ def _synthesize_and_cache(text: str, audio_path: Path) -> None:
     if audio_path.exists():
         return
     try:
-        with _GPU_LOCK:
+        with _TTS_LOCK:
             if audio_path.exists():
                 return
             from tts.infer import tts_synthesize
@@ -526,6 +697,17 @@ def _recover_dead_mic() -> None:
     if st.session_state.get("_mic_ever_connected") and not signalling:
         st.session_state["_mic_gen"] = st.session_state.get("_mic_gen", 0) + 1
         st.session_state["_mic_ever_connected"] = False
+        # 2026-08-26 실측 리포트 — "된장찌개"라고 한 번만 말했는데 STT가 두 번(예: '단지게'
+        # + '된장찌개') 잡히는 문제. _get_segmenter()의 MicVadSegmenter는 세션 전체에서
+        # 하나만 재사용하는데(위 문서 — 화면 전환마다 새로 안 만드는 게 원래 목적), 마이크
+        # 재연결(세대 교체)은 이 세그먼터를 안 건드리고 지나갔다. 그래서 연결이 끊기기
+        # 직전까지 쌓여있던 "말하는 중" 상태(_in_speech/_speech_chunks_raw 등, silero-vad
+        # VADIterator 자체의 내부 hidden state 포함)가 새 연결의 첫 프레임들과 그대로
+        # 이어붙어서, 몇 초짜리 프레임 공백(재협상 시간) 뒤에 도착한 진짜 새 발화를 VAD가
+        # "이미 말하던 중이던 게 계속됨" 또는 "중간에 끊긴 것처럼" 오판해 하나의 발화를
+        # 둘로 쪼개는 것으로 보인다. 마이크가 완전히 새로 연결되는 시점이니 이전 연결의
+        # VAD 상태도 같이 버리는 게 맞다 — reset()으로 처음부터 다시 시작하게 한다.
+        _get_segmenter().reset()
         # 2026-08-25 요청 — 재연결 자체(WebRTC 재협상)는 몇 초~수십 초 걸리는 걸
         # 못 없애지만, "끊어져서 다시 연결 중"이라고 대놓고 알리는 경고 배너가
         # 오히려 더 느리고 눈에 띄게 느껴지게 만든다는 지적으로 조용히 지운다 —
@@ -613,14 +795,12 @@ def _run_mic_loop() -> str | None:
             # 단독으로 껐을 때 도움이 되는지는 아직 따로 검증 안 됐음 — 다음에 바꿀 땐 한
             # 번에 하나씩만 바꿔서 확인할 것.
             media_stream_constraints={"video": False, "audio": True},
-            # 2026-08-25 — iceTransportPolicy="relay" 강제를 시도했다가 되돌림. 실측
-            # 확인: 강제하자 TURN 관련 로그(allocation/channel bound)가 아예 한 줄도
-            # 안 찍혔다 — TURN 서버(100.108.102.44, Tailscale 전용 IP)가 이 노트북에서
-            # 애초에 안 닿는 상황일 가능성이 높다(같은 tailnet 멤버가 아니면 이 IP 자체가
-            # 라우팅이 안 됨). 원인 확인 전까지는 기존처럼 STUN/host candidate까지 다
-            # 열어둔다 — _ice_transport_policy()/_turn_configured() 정의는 원인 확인
-            # 후 다시 쓸 수 있게 남겨둔다.
-            rtc_configuration={"iceServers": _ice_servers()},
+            # 2026-08-25 — iceTransportPolicy="relay" 강제를 시도했다가 되돌렸었다(그때
+            # TURN이 Tailscale 전용 IP라 안 닿는 방문자에겐 후보가 하나도 안 남았음).
+            # 2026-08-26 — Cloudflare Realtime TURN으로 바꾸면서 그 이유가 해소돼 다시
+            # 켰다 — _ice_transport_policy() 문서 참고, Cloudflare TURN이 실제로 발급된
+            # 경우에만 "relay"를 반환하고 그 외엔 None이라 아래서 키 자체를 뺀다.
+            rtc_configuration=_rtc_configuration(),
             # 2026-08-23 추가 — "페이지 로드하면 바로 준비 상태여야 한다"는 요청. 이 값이
             # 없으면 streamlit-webrtc가 자기 기본 UI("SELECT DEVICE"/Start 버튼)를 그려서
             # 사용자가 매번 눌러야 연결이 시작된다. desired_playing_state=True를 주면
@@ -747,8 +927,12 @@ def _run_mic_loop() -> str | None:
                     # 인터리브 처리 수정으로 이미 확정/해결됐고(2026-08-23), 이후로도 계속
                     # 남아있어서 하룻밤 새 550개/82MB까지 쌓인 게 실측 확인됨(2026-08-25) —
                     # 목적을 다했으니 코드와 쌓인 파일 둘 다 정리한다.
-                    with _GPU_LOCK:
-                        job["text"] = stt_transcribe(audio, sample_rate=16000).strip()
+                    # 2026-08-26 재요청 — vad_filter=True로 되돌림. 원래 False로 바꾼 이유는
+                    # 위 stt_transcribe() 문서 참고("이중 VAD로 조용한 실제 발화가 stt_text=''로
+                    # 사라짐") — 이 되돌림은 그 문제를 다시 불러올 수 있다는 걸 알고 하는
+                    # 요청이라 그대로 반영한다.
+                    with _STT_LOCK:
+                        job["text"] = stt_transcribe(audio, sample_rate=16000, vad_filter=True).strip()
                     print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — 실패해도 조용히 넘어감
                     print(f"[MIC_DEBUG] stt exception: {exc!r}", flush=True)

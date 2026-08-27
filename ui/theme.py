@@ -7,6 +7,7 @@ Streamlit 기본 컴포넌트로 표현하기 어려운 조각만 st.markdown(un
 import base64
 import io
 import json
+import re
 from pathlib import Path
 from string import Template
 
@@ -554,17 +555,44 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
    ChefEar 사이만 더 붙이고 싶어서 이 항목에만 음수 margin-bottom을 줘서 gap을 상쇄한다.
    flex 아이템 자체(stLayoutWrapper)에 준 margin이라 콘텐츠 내부 margin 미반영 버그와는
    무관하게 정상적으로 다음 형제와의 간격을 줄인다. */
-/* 2026-08-25 버그 수정 — app.py::main()이 화면 전환 잔상 방지를 위해 각 화면을
-   st.container(key=f"screen_{screen}")로 한 겹 더 감싸면서(23b25d1), :has()가 자손을
-   깊이 상관없이 찾다 보니 back_link를 담은 "화면 전체 wrapper"까지 이 규칙에 걸려서
-   order:-1을 받아버렸다 — 로그인/회원가입 등 모든 화면에서 ChefEar 브랜드보다 화면
-   전체(뒤로가기+본문 전부)가 먼저 그려지고, 브랜드가 화면 맨 아래로 밀려나는 회귀가
-   실측 확인됨(Playwright로 DOM 순서 직접 확인). 진짜 대상(ce_back_link 자신의 바깥쪽
-   stLayoutWrapper)은 직계 자식이 st-key-ce_back_link인 반면, 잘못 걸리는 screen_*
-   wrapper는 직계 자식이 st-key-screen_*라는 차이가 있어 그걸로 구분해 제외한다. */
-[data-testid="stLayoutWrapper"]:has([class*="st-key-ce_back_link"]):not(:has(> [class*="st-key-screen_"])) {
-  order: -1; margin-bottom: -14px;
-}
+
+[data-testid="stLayoutWrapper"]:has([class*="st-key-ce_back_link"]) { order: -1; margin-bottom: -14px; }
+/* 2026-08-26 — 실제 DOM/computed style로 확인해보니 위 규칙의 :has()가 back-link의
+   바로 안쪽 wrapper뿐 아니라, back-link를 자손으로 가진 *바깥* stLayoutWrapper까지
+   같이 잡고 있었다 — st.container(key=f"screen_{screen}")로 화면 전체를 한 번 더
+   감싸는 바깥 stLayoutWrapper도 "back-link를 안의 어딘가 자손으로 가진다"는 조건을
+   만족하기 때문(:has()는 직계 자식이 아니라 모든 깊이의 자손을 다 잡음). 그 결과
+   back-link가 있는 화면(전체)가 브랜드보다 앞으로 밀린다(대부분 화면은 내용이 짧아
+   눈에 잘 안 띄었을 뿐, login처럼 폼이 길면 브랜드가 맨 아래로 밀려나는 게 뚜렷이
+   보인다(실제 리포트: login 화면만 예외로 이 바깥 wrapper를 되돌린다) —
+   [class*="st-key-screen_login"]을 자손으로 가진 stLayoutWrapper를 콕 집어서(back-link
+   자체가 아니라 컨테이너 전체를 감싼 바깥 wrapper) order를 0으로 되돌린다, 그 안의
+   back-link 자체는(더 안쪽 규칙이 그대로 적용돼) 화면 본문 맨 위(원래 자기 위치)에
+   남고, 화면 브랜드 뒤에 정상적으로 온다 — 결과적으로 브랜드(그 첫 줄 back-link)
+   순서가 된다.
+
+   2026-08-26 추가 — cooking_complete에서 같은 증상(로고가 아래로 밀림)이 재현돼
+   일반화한다. render_back_link()를 화면 맨 앞에서 부르는 화면은 전부 같은 구조적
+   문제를 겪는다(register.py 3곳 + my_recipes.py 3곳 + cooking.py 1곳, grep으로 확인) —
+   login 하나만 고치고 나머지는 리포트 들어올 때마다 하나씩 고치는 대신, 그 화면들
+   전부를 미리 이 목록에 넣는다.
+
+   ⚠️ 2026-08-26 이 규칙이 두 번째로 사라졌다가 복구됨 — VS Code에서 이 파일을 같이
+   열어두고 있으면, VS Code 자체 버퍼(이 편집 이전 상태로 캐시된)를 저장(Ctrl+S)할 때
+   방금 여기서 한 편집을 그대로 덮어써버리는 것으로 추정된다(git 커밋에도 이 규칙이
+   빠진 채로 들어간 적 있음). 이 파일을 VS Code에서도 동시에 열어두고 있다면, Claude
+   Code가 이 파일을 고친 직후엔 VS Code에서 그 파일을 반드시 새로고침(다시 불러오기)
+   한 뒤에 저장할 것 — 안 그러면 이 규칙(그리고 이 파일의 다른 최근 수정분)이 또
+   조용히 사라질 수 있다. */
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_login"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_cooking_complete"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_register_dish_name"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_register_ingredients"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_register_steps"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_my_recipes"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_edit_recipe"])
+{ order: 0; }
+
 [class*="st-key-ce_back_link"] { position: relative; margin-bottom: 4px; display: inline-block; }
 [class*="st-key-ce_back_link"] [data-testid="stElementContainer"]:has(div.stButton) {
   position: absolute; inset: 0; z-index: 2;
@@ -686,7 +714,7 @@ def inject_css() -> None:
         )
 
 
-def render_loading_overlay(message: str = "처리하고 있어요...") -> None:
+def render_loading_overlay(message: str = "말씀 잘 들었어요, 잠시만요...") -> None:
     """전체 화면을 덮는 반투명 로딩 팝업(2026-08-23 요청) — 발화 인식 후 다음 화면으로
     넘어가기 전(LLM/DB 조회, TTS 합성 등 몇 초 블로킹되는 구간, voice_io._drain_mic_while()
     참고) 동안, "지금 뭔가 처리 중이니 다른 동작을 하지 말아달라"는 걸 명확하게 보여준다.
@@ -700,11 +728,18 @@ def render_loading_overlay(message: str = "처리하고 있어요...") -> None:
     화면 렌더링엔 이 markdown 자체가 없으니 자연히 사라진다 - 별도로 "닫기" 처리가 필요
     없다.
     """
+    # 2026-08-26 요청 — "자꾸 깜박깜박거려서 불편하다"는 지적으로 페이드인 추가. 이
+    # div는 뜰 때마다 DOM에 새로 삽입되고 지워질 때는 그냥 통째로 제거되는 구조라(진짜
+    # 모달이 아니라 markdown 하나짜리 순수 오버레이, 위 문서 참고), CSS transition으로
+    # "사라질 때"까지 부드럽게 만들 수는 없다(이미 지워진 노드에 애니메이션을 걸 수
+    # 없음) — 대신 "나타날 때"만 짧게 페이드인시켜서 뚝 튀어나오는 느낌을 줄인다.
+    # 사라지는 쪽의 "반짝임"(뜨자마자 바로 없어짐)은 _drain_mic_while()의 최소 표시
+    # 시간 보장으로 따로 막는다.
     st.markdown(
         f'''
         <div style="position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.45);
                     display:flex; align-items:center; justify-content:center;
-                    pointer-events:all;">
+                    pointer-events:all; animation:ce-overlay-fadein 0.18s ease-out;">
           <div style="background:var(--surface); border-radius:20px; padding:28px 36px;
                       display:flex; flex-direction:column; align-items:center; gap:14px;
                       box-shadow:0 12px 32px rgba(0,0,0,0.25);">
@@ -716,7 +751,82 @@ def render_loading_overlay(message: str = "처리하고 있어요...") -> None:
         </div>
         <style>
           @keyframes ce-loading-spin {{ to {{ transform:rotate(360deg); }} }}
+          @keyframes ce-overlay-fadein {{ from {{ opacity:0; }} to {{ opacity:1; }} }}
         </style>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+
+def render_error_notice(message: str = "잠시 후 재시도 해주시길 바랍니다.") -> None:
+    """예상 못한 예외가 화면 그리다 말고 터졌을 때 쓰는 전체 화면 안내(2026-08-26 요청 —
+    "예방 차원으로 다른 에러들에 대해서도 셋팅"). app.py::main()의 최상위 try/except가
+    부른다.
+
+    render_loading_overlay()와 같은 순수 CSS 오버레이 패턴(스피너 대신 경고 아이콘) —
+    이미 일부 그려진 화면 위를 덮어서, 사용자에게 원본 스택트레이스/기술적 에러 문구
+    대신 이 문구 하나만 보이게 한다. 실제 예외 내용은 화면에 안 보이고 서버 콘솔에만
+    남는다(EC-05와 같은 정신 — 사용자에게는 조용히 실패하되 개발자는 원인을 추적할 수
+    있어야 함, 호출부인 app.py::main()의 except 블록 참고).
+
+    이건 화면 안 개별 실패(TTS 합성 실패 등, speak() 자신의 st.warning())를 대체하는
+    게 아니다 — 그런 곳들은 이미 더 구체적이고 유용한 문구를 따로 갖고 있어서 그대로
+    둔다. 이 함수는 그 어디서도 안 잡힌, 완전히 예상 못한 예외의 최후 방어선이다.
+    """
+    st.markdown(
+        f'''
+        <div style="position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.6);
+                    display:flex; align-items:center; justify-content:center;
+                    pointer-events:all;">
+          <div style="background:var(--surface); border-radius:20px; padding:28px 36px;
+                      display:flex; flex-direction:column; align-items:center; gap:14px;
+                      box-shadow:0 12px 32px rgba(0,0,0,0.25); max-width:320px; text-align:center;">
+            <div style="width:44px; height:44px; border-radius:50%; background:var(--danger-bg);
+                        color:var(--danger-text); display:flex; align-items:center;
+                        justify-content:center; font-size:22px; font-weight:800;">!</div>
+            <p style="margin:0; font-size:15px; font-weight:700; color:var(--text);">{message}</p>
+          </div>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+
+def render_access_blocked() -> None:
+    """랜딩페이지(https://chefear-landingpage.vercel.app) 버튼을 거치지 않은 직접 URL
+    접근을 막는 안내 화면(2026-08-26 요청 — "토큰 붙은 URL" 방식, app.py::main()
+    상단의 _access_gate_ok() 참고).
+
+    render_error_notice()와 같은 순수 CSS 풀스크린 오버레이 패턴을 재사용하지만
+    쓰임새는 다르다 — 저건 "이미 그려진 화면 위를 덮는" 최후 방어선이고, 이건 그
+    자체로 유일하게 그려지는 화면이다(호출부가 이 함수 직후 st.stop()으로 나머지
+    렌더링/모델 워밍업/DB 연결을 전부 건너뛴다). inset:0 풀스크린 div라 밑에 아무것도
+    안 그려져 있어도(= init_state() 등을 아직 안 거쳐도) 레이아웃이 안 깨진다.
+
+    이 게이트는 완전한 보안이 아니다 — 랜딩페이지 버튼의 URL(?key=...)은 그 페이지
+    HTML/JS를 열어보면(view-source) 그대로 노출된다. "우연히 주소를 직접 쳐보는"
+    정도의 진입만 막는 용도다.
+    """
+    st.markdown(
+        '''
+        <div style="position:fixed; inset:0; z-index:9999; background:var(--bg);
+                    display:flex; align-items:center; justify-content:center;
+                    pointer-events:all;">
+          <div style="background:var(--surface); border-radius:20px; padding:32px 36px;
+                      display:flex; flex-direction:column; align-items:center; gap:14px;
+                      box-shadow:0 12px 32px rgba(0,0,0,0.25); max-width:340px; text-align:center;">
+            <div style="width:44px; height:44px; border-radius:50%; background:var(--accent-soft);
+                        color:var(--accent); display:flex; align-items:center;
+                        justify-content:center; font-size:22px; font-weight:800;">🔒</div>
+            <p style="margin:0; font-size:15px; font-weight:700; color:var(--text);">
+              ChefEar 소개 페이지를 통해 들어와주세요.</p>
+            <a href="https://chefear-landingpage.vercel.app" target="_blank" rel="noopener noreferrer"
+               style="margin-top:4px; background:var(--accent); color:#fff; padding:10px 20px;
+                      border-radius:999px; font-size:14px; font-weight:700; text-decoration:none;">
+              ChefEar 소개 페이지로 이동
+            </a>
+          </div>
+        </div>
         ''',
         unsafe_allow_html=True,
     )
@@ -811,73 +921,18 @@ def render_badge(text: str) -> None:
     st.markdown(f'<span class="ce-badge">{text}</span>', unsafe_allow_html=True)
 
 
-def render_typewriter_message(lines: list[str], *, key: str, speed_ms: int = 28) -> None:
-    """AI 메시지를 아바타 아이콘·이름표·말풍선 카드 없이(2026-08-22 요청 — "챗봇 느낌
-    안 나게, 글씨만 보이게") 여러 줄로 줄바꿈해서, 한 글자씩 순서대로 타자기처럼
-    나타나게 그린다(recipe_confirm의 "이걸로 시작할까요?" 확인 질문용, 2026-08-22
-    재요청 — 요리명/문장을 줄바꿈하고 요리명만 크게 강조).
+# 2026-08-26 재요청 — 대화 기록(render_chat())에 "나: 다음...." 처럼 STT가 붙인 끝
+# 문장부호(마침표·물음표·느낌표·쉼표·물결·말줄임표)가 그대로 노출돼 지저분해 보인다는
+# 지적으로, 표시 직전에만 정규식으로 잘라낸다. classify_intent()가 이미 같은 목적으로
+# 쓰는 문자 집합(intent_classifier.py의 `.rstrip("?!.,~ ")` 패턴)과 맞춰서 일관성을
+# 유지한다 — 다만 거긴 str.rstrip()이고 여긴 사용자가 명시적으로 정규식을 요청해서
+# re.sub()로 구현. 문장 끝에서 저 문자들이 연속으로(말줄임표 등) 몇 개가 오든 한 번에
+# 다 떼어낸다. 중간에 있는 물음표/쉼표는 의미에 영향을 줄 수 있어 안 건드린다(끝만).
+_CHAT_TRAILING_PUNCT_RE = re.compile(r"[?!.,~…\s]+$")
 
-    lines: 화면에 줄 단위로 보여줄 목록(예: ["된장찌개", "조회수 1위 표준 레시피예요.",
-    "이걸로 시작할까요?"]). 첫 줄(보통 요리명)은 크고 굵게, 나머지는 보통 크기로
-    그린다. 애니메이션은 줄 순서대로 한 줄씩 다 친 뒤 다음 줄로 넘어간다.
 
-    st.markdown()에 <script>를 넣어도 브라우저가 innerHTML로 삽입된 스크립트는 실행하지
-    않는다(render_audio_player()가 st.iframe()을 쓰는 것과 같은 이유) — 그래서 여기도
-    st.iframe()으로 그려서 JS가 실제로 동작하게 한다.
-
-    key로 세션 안에서 이미 재생한 메시지인지 추적한다 — 같은 화면이 다른 이유로(마이크
-    입력 대기 등) 다시 그려질 때마다 애니메이션이 처음부터 또 재생되면 거슬리므로,
-    한 번 재생된 key는 이후 정적 텍스트로 바로 보여준다.
-    """
-    played = st.session_state.setdefault("_typewriter_played", set())
-
-    style = """
-    <style>
-      body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align:center; }
-      p { margin:0 0 4px; line-height:1.4; text-align:center; }
-      p:last-child { margin-bottom:0; }
-      .head { font-size:26px; font-weight:800; color:#ee7b36; }
-      .rest { font-size:15px; font-weight:600; color:#241c15; }
-    </style>
-    """
-
-    def _cls(idx: int) -> str:
-        return "head" if idx == 0 else "rest"
-
-    if key in played:
-        rows = "".join(f'<p><span class="{_cls(i)}">{line}</span></p>' for i, line in enumerate(lines))
-        st.iframe(f"{style}{rows}", height="content")
-        return
-
-    played.add(key)
-    placeholders = "".join(
-        f'<p><span class="{_cls(i)}" id="tw-{i}"></span></p>' for i in range(len(lines))
-    )
-    html = f"""
-    {style}
-    {placeholders}
-    <script>
-      const linesText = {json.dumps(lines)};
-      let lineIdx = 0;
-      let charIdx = 0;
-      function tick() {{
-        if (lineIdx >= linesText.length) return;
-        const el = document.getElementById("tw-" + lineIdx);
-        const text = linesText[lineIdx];
-        if (charIdx <= text.length) {{
-          el.textContent = text.slice(0, charIdx);
-          charIdx += 1;
-          setTimeout(tick, {speed_ms});
-        }} else {{
-          lineIdx += 1;
-          charIdx = 0;
-          setTimeout(tick, {speed_ms});
-        }}
-      }}
-      tick();
-    </script>
-    """
-    st.iframe(html, height="content")
+def _clean_chat_text(text: str) -> str:
+    return _CHAT_TRAILING_PUNCT_RE.sub("", text)
 
 
 def render_chat(rows: list[tuple[str, str]]) -> None:
@@ -888,9 +943,10 @@ def render_chat(rows: list[tuple[str, str]]) -> None:
             continue
         who = "나" if role == "user" else "ChefEar"
         icon = ICON_MIC if role == "user" else ICON_SPEAKER
+        display_text = _clean_chat_text(text)
         parts.append(
             f'<div class="ce-row"><span class="ce-avatar {role}">{icon}</span>'
-            f'<p><span class="who {role}">{who}:</span>{text}</p></div>'
+            f'<p><span class="who {role}">{who}:</span>{display_text}</p></div>'
         )
     parts.append("</div>")
     st.markdown("".join(parts), unsafe_allow_html=True)
@@ -1122,6 +1178,45 @@ def render_audio_autoplay(audio_path: str | Path, nonce: int | str = 0) -> None:
     st.iframe(html, height=1)
 
 
+def render_processing_chime(nonce: int | str = 0) -> None:
+    """"처리 중" 정적을 메우는 짧은 효과음 한 번(2026-08-26 요청 — "강사님이 얘가 진짜
+    움직이고 뭔가를 하고있는지를 모르겠다고 하시는데" 피드백, 사용 중 정적이 길어서
+    답답했다는 확인 후 도입). STT 인식 후 LLM/DB/TTS 처리가 몇 초 걸리는 동안
+    (voice_io._drain_mic_while() 참고) 화면을 안 보고 있어도(이 프로젝트 핵심 컨셉
+    자체가 "화면 안 보고 음성만으로") "지금 듣고 처리 중"이라는 걸 알 수 있게 하는
+    청각 신호. render_loading_overlay()(화면 팝업)와 같은 지점, 같은 조건(0.4초 넘게
+    걸릴 때만)에서 같이 트리거된다.
+
+    TTS로 만든 음성이 아니라 순수 사인파를 그 자리에서 합성한다 — 실제 TTS(GPU,
+    _GPU_LOCK)를 쓰면 지금 처리 중인 진짜 작업과 GPU를 다시 두고 경합해서 오히려
+    응답이 더 늦어진다(이 신호음 자체가 "처리가 오래 걸린다"는 신호인데, 그걸 알리려고
+    처리를 더 늦추는 건 앞뒤가 안 맞는다). render_audio_player()/render_audio_autoplay()가
+    쓰는 _wav_bytes_with_lead_silence()는 TTS 씹힘 방지용 450ms 무음 패딩이 있어서
+    여기엔 안 맞다(효과음은 트리거되는 바로 그 순간 들려야 의미가 있음) — 그래서
+    디스크 파일도 안 거치고 패딩 없이 매번 새로 합성한다(짧은 사인파라 비용도 무시할
+    만큼 작음).
+
+    nonce: 호출마다 다른 값을 넘겨야 한다 — audio_src 문자열이 이전 렌더와 완전히
+    같으면 프론트엔드가 iframe을 리마운트 안 해서 autoplay가 다시 실행되지 않는다
+    (render_audio_player() 문서의 같은 이유). 호출부(_drain_mic_while())가 자기
+    시작 시각(time.monotonic())을 그대로 넘겨서 매 호출마다 자연히 달라진다.
+    """
+    sr = 24000
+    duration_s = 0.16
+    freq_hz = 880.0  # A5 — 튀지 않으면서 정적 사이에서 또렷하게 들리는 높이
+    t = np.linspace(0, duration_s, int(sr * duration_s), endpoint=False)
+    tone = (0.25 * np.sin(2 * np.pi * freq_hz * t)).astype(np.float32)
+    # 끝부분 20ms를 선형으로 0까지 내려서 뚝 끊기는 클릭음을 방지한다.
+    fade_samples = int(sr * 0.02)
+    if fade_samples > 0:
+        tone[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+    buf = io.BytesIO()
+    sf.write(buf, tone, sr, format="WAV")
+    audio_src = "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    html = f'<!-- chime-nonce:{nonce} -->\n<audio src="{audio_src}" autoplay></audio>'
+    st.iframe(html, height=1)
+
+
 def render_step_card(
     total: int,
     current_step: int,
@@ -1257,7 +1352,15 @@ def render_big_mic(ready: bool = False):
     자체가 "지금은 말해도 소용없다"는 신호 역할을 한다.
     """
     cls = "ce-big-mic ready" if ready else "ce-big-mic"
-    hint = "듣고 있어요 · 편하게 말씀해주세요" if ready else "마이크 연결 중이에요, 잠시만 기다려주세요"
+    # 2026-08-26 재요청 — "그냥 연결 중"이라고만 하면 마이크 연결 자체가 실측으로
+    # 9~10초, 느리면(다른 기기/네트워크 상황에 따라) 수십 초까지 걸리는 걸(위 문서
+    # 참고, streamlit-webrtc 구조적 특성) 사용자가 얼마나 더 기다려야 할지 모른다는
+    # 지적으로, 무엇을 하는 중인지+예상 소요 시간을 같이 안내한다.
+    hint = (
+        "듣고 있어요 · 편하게 말씀해주세요"
+        if ready
+        else "마이크 연결을 위해 최적화 중이에요. 잠시만 기다려주세요. ( 약 10초 ~ 60초 소요 )"
+    )
     with st.container(key="ce_big_mic"):
         st.markdown(
             f'<div class="ce-big-mic-wrap"><span class="{cls}">{ICON_MIC_LG}</span></div>'
@@ -1387,7 +1490,11 @@ _STALE_CONTENT_MARKERS = {
     # 레시피 자동 선택 · 되묻지 않음 (FR-05)")를 마커로 써서, 그 뒤에 나오는
     # typewriter 메시지·재료 칩·마이크바·"다른 레시피 찾을래요" 버튼까지 한 번에
     # (꼬리 전체 제거로) 잡는다 — 마커가 화면 본문 맨 앞이라 뒤에 뭐가 오든 다 잡힘.
-    "조회수 1위 표준 레시피 자동 선택": ["recipe_confirm"],
+    # 2026-08-26 — /code-review 발견: 배지 문구 자체가 "조회수 1위 표준 레시피 자동
+    # 선택 · 되묻지 않음 (FR-05)"에서 "조회수 1위 표준 레시피"로 짧아졌는데(cooking.py::
+    # screen_recipe_confirm()의 render_badge() 호출부) 이 마커는 옛 문구 그대로 남아있어서
+    # 실제 DOM엔 이 문자열이 다신 안 뜨는 죽은 마커였다 — 현재 배지 문구로 맞춘다.
+    "조회수 1위 표준 레시피": ["recipe_confirm"],
     # 위 배지 마커 하나로는 부족했다(실측) — 배지+칩은 지워지는데 "다른 레시피
     # 찾을래요" 버튼만 따로 늦게 도착해서 배지가 이미 지워진 뒤라 "그 지점부터 꼬리
     # 전체 제거" 규칙의 앵커를 못 찾고 혼자 남는 사례 확인. 각자 독립적으로 잡히게
@@ -1413,12 +1520,20 @@ _STALE_CONTENT_MARKERS = {
     # cooking_complete 버튼과 register.py의 register_dish_name/register_ingredients/
     # register_steps(뒤로가기 링크)·complete(버튼) 다섯 화면이 전부 같이 쓴다 — 그래서
     # 소유자를 리스트로 표현해야 한다(위 설명 참고).
+    # 2026-08-26 재요청 이후 실사용 재현 보고(버그.png) — register.py::screen_no_match()에
+    # "처음 화면으로" 뒤로가기 링크를 추가했는데(다른 화면과 통일하려던 요청) 이 owner
+    # 리스트에 "no_match"를 안 넣었다. ruleStaleMarkers()가 그 링크(화면 첫 자식)를
+    # "no_match 소속이 아닌 잔상"으로 오판해서 그 지점부터 화면 끝까지(=사실상 화면
+    # 전체) 숨겨버렸다 — 음성 응답(TTS)은 정상 재생되는데 화면만 완전히 비어 보이는
+    # 증상으로 실측 재현됨. no_match를 owner에 추가해서 자기 자신의 뒤로가기 링크를
+    # 잔상으로 오판하지 않게 한다.
     "처음 화면으로": [
         "cooking_complete",
         "register_dish_name",
         "register_ingredients",
         "register_steps",
         "complete",
+        "no_match",
     ],
 }
 
@@ -1427,8 +1542,15 @@ _STALE_CONTENT_MARKERS = {
 # 출력하는 고정 wrapper `<div class="ce-transcript">`)까지 통째로 남아있었다. 대화
 # 내용은 매번 달라서 텍스트 마커로 못 잡지만, 감싸는 클래스는 항상 같아서 그걸로
 # 구조적으로 잡는다 — _STALE_CONTENT_MARKERS(텍스트 앵커 기반)와 별개의 규칙.
-# render_chat()을 쓰는 화면 = cooking_step(cooking.py)·no_match(register.py).
-_CHAT_LOG_SCREENS = ("cooking_step", "no_match")
+# render_chat()을 쓰는 화면 = cooking_step(cooking.py)·no_match(register.py)·
+# recipe_confirm(cooking.py, 2026-08-26 추가 — render_typewriter_message() 대신
+# render_chat()을 쓰도록 바뀜, cooking.py::screen_recipe_confirm() 참고). 이 목록에
+# 추가를 빠뜨리면 keepLastOnly()가 "허용 안 된 화면"으로 보고 .ce-transcript를 전부
+# 숨겨버린다 — 실제로 recipe_confirm에 막 render_chat()을 추가했을 때 "화면 전환은
+# 되는데 챗 박스(조회 확인 문구)가 안 보인다"로 정확히 이 증상이 재현됐다(위 docstring
+# 경고 "새 화면/새 위젯을 추가할 때 여기 쓰는 상수들도 같이 검토할 것"이 실제로 걸린
+# 사례).
+_CHAT_LOG_SCREENS = ("cooking_step", "no_match", "recipe_confirm")
 
 # 2026-08-25 사용자 실사용 재현 보고(버그.png, st.iframe() 교체 이후에도 재현) —
 # render_chips()가 그리는 재료 칩 목록(고정 wrapper `<div class="ce-chip-grid">`)도
@@ -1500,6 +1622,41 @@ _CE_SWEEP_JS = r"""
     }
   }
 
+  // 2026-08-26 재요청 — "RTCPeerConnection을 더 못 만든다"류 브라우저 수준 예외(파이썬
+  // try/except가 원천적으로 못 잡는 영역 — streamlit_webrtc 프론트엔드 내부에서 던지는
+  // JS 예외라 서버로 넘어오지도 않음, 오래 켜둔 탭에서 마이크 세대 재연결이 쌓이면
+  // 브라우저의 PeerConnection 개수 상한에 부딪혀 발생)를 사용자에게 원본 에러 문구
+  // 그대로 노출하는 대신, 친절한 안내로 갈아 보여준다. window.onerror/
+  // unhandledrejection 둘 다 잡아서 "예외적인 에러 전부"를 넓게 덮는다(요청 원문) —
+  // 특정 에러 문자열로 좁히지 않는다(다른 종류의 예상 못한 JS 예외도 같은 안내가
+  // 사용자 입장에선 원본 스택트레이스보다 낫다는 판단). innerHTML 대신 createElement로
+  // 조립한다(위 경고의 "꺾쇠+영문자 리터럴 금지"를 이 블록도 그대로 지키기 위해 — 태그
+  // 문자열 자체를 아예 안 씀).
+  function showRetryToast() {
+    if (document.getElementById("ce-error-toast")) return; // 이미 떠 있으면 중복 표시 안 함
+    var toast = document.createElement("div");
+    toast.id = "ce-error-toast";
+    toast.style.cssText =
+      "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99999;" +
+      "background:#241c15;color:#fff;padding:14px 22px;border-radius:14px;" +
+      "font-size:14.5px;font-weight:700;box-shadow:0 10px 28px rgba(0,0,0,0.3);" +
+      "max-width:88vw;text-align:center;cursor:pointer;";
+    toast.textContent = "잠시 후 재시도 해주시길 바랍니다.";
+    toast.addEventListener("click", function () {
+      toast.remove();
+    });
+    document.body.appendChild(toast);
+    setTimeout(function () {
+      if (toast.parentNode) toast.remove();
+    }, 5000);
+  }
+
+  if (!window.__ceErrorToastInstalled) {
+    window.__ceErrorToastInstalled = true;
+    window.addEventListener("error", showRetryToast);
+    window.addEventListener("unhandledrejection", showRetryToast);
+  }
+
   // 규칙 1 — 화면 컨테이너(app.py::main()의 st.container(key=f"screen_{screen}")).
   // CURRENT와 클래스명이 안 맞는 이전 화면 컨테이너를 숨긴다.
   function ruleScreenContainers() {
@@ -1522,8 +1679,28 @@ _CE_SWEEP_JS = r"""
       var f = frames[i];
       var srcdoc = (f.srcdoc || "").toLowerCase();
       if (srcdoc.indexOf(audioTag) === -1) continue; // 오디오 iframe이 아님
-      if (isFree) hide(f);
-      else unhide(f);
+      if (isFree) {
+        // 2026-08-26 사용자 실사용 재현 보고 — cooking_complete에서 "처음"으로 start로
+        // 넘어간 뒤에도 완료 멘트가 계속 들림. hide()는 iframe 자체를 display:none으로
+        // 숨길 뿐, 그 iframe은 완전히 별개 문서(같은 origin이지만 진짜 iframe 경계)라
+        // 안의 오디오 재생 자체는 안 멈춘다 — 화면만 안 보이고 소리는 계속 나는 것.
+        // hide() 전에 iframe 내부 문서로 들어가 오디오 요소를 직접 pause+mute한다
+        // (기존 st.iframe() 시절에도 같은 이유로 있었던 로직, 재구성 시 누락됐던 부분).
+        try {
+          var doc = f.contentDocument;
+          var audios = doc ? doc.querySelectorAll("audio") : [];
+          for (var j = 0; j < audios.length; j++) {
+            audios[j].pause();
+            audios[j].muted = true;
+            audios[j].volume = 0;
+          }
+        } catch (e) {
+          // 크로스오리진 등으로 접근 자체가 막히면 조용히 넘어간다 — hide()만이라도 적용.
+        }
+        hide(f);
+      } else {
+        unhide(f);
+      }
     }
   }
 
@@ -1598,6 +1775,19 @@ _CE_SWEEP_JS = r"""
     for (var i = 0; i < children.length; i++) unhide(children[i]);
 
     for (var i = 0; i < children.length; i++) {
+      // 2026-08-26 사용자 실사용 재현 보고 — cooking_step에서 대화 기록 전체가
+      // 안 보임. 원인: render_chat()이 이제(같은 날 "전체 다 보이게" 재요청으로)
+      // chat_log 전체를 보여주는데, 그 안엔 recipe_confirm에서 나온 옛 AI 메시지
+      // ("조회수 1위 표준 레시피예요." 등, _STALE_CONTENT_MARKERS의 recipe_confirm
+      // 전용 마커와 텍스트가 똑같음)가 **정상적으로** 남아있다 — 근데 아래 마커
+      // 매칭이 이 자식의 textContent를 통째로 검사하다가 그 문구를 "recipe_confirm
+      // 잔상이 cooking_step에 샜다"로 착각해서 대화 기록 전체를 숨겨버렸다(실측
+      // 확인 — 부모 stElementContainer에 data-ce-hidden="1"). .ce-transcript/
+      // .ce-chip-grid는 규칙 7/8(ruleChatAndChips(), 구조적 클래스 기반)이 이미
+      // 전담하고 있으므로, 여기 텍스트 마커 검사에서는 그 내용을 통째로 건너뛴다
+      // — 두 규칙이 같은 대상을 서로 다른 기준으로 판정하다 충돌하는 걸 막는다.
+      if (children[i].querySelector(".ce-transcript, .ce-chip-grid")) continue;
+
       var text = children[i].textContent || "";
       var stale = false;
       for (var marker in DATA.staleMarkers) {

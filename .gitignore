@@ -39,6 +39,9 @@ build/
 # 편집을 하기 전엔 항상 이 폴더에 전체 내용을 먼저 복사해두고 시작할 것.
 _work_backups/
 
+# 로컬 감사/분석 도구 상태 파일(SQLite) — 프로젝트 산출물 아님
+.audit/
+
 # OS / IDE
 .DS_Store
 .idea/

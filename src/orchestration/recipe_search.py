@@ -8,6 +8,7 @@ LLM 생성 fallback 없음). 못 찾으면 그냥 "없다"고 정직하게 답�
 from __future__ import annotations
 
 import difflib
+import re
 import unicodedata
 from functools import lru_cache
 
@@ -79,6 +80,24 @@ def _decompose_hangul(text: str) -> str:
     return unicodedata.normalize("NFD", text)
 
 
+def _collapse_stt_repetition(text: str) -> str:
+    """faster-whisper(beam_size=1, 그리디 디코딩)가 짧은 음절 조각을 연속으로 반복
+    생성하는 디코딩 아티팩트를 접는다 — 실측: "된장찌개"->"된장찌장찌개"("장찌"가 2회
+    연속), "가지무침"->"가지무칔무칔무칔"("무칔"이 3회 연속) 둘 다 이 패턴.
+
+    **이 함수 자체를 STT 결과에 바로 적용하지 않는다** — "샤브샤브"/"타르타르"/
+    "토마토"(내부에 "토마"가 2번 이어짐)처럼 2~3글자가 실제로 정당하게 반복되는
+    진짜 요리명이 60,282건 중 153건(0.26%) 있어서, 텍스트를 무조건 바꾸면 이런
+    진짜 이름을 깨뜨린다(실측 확인, 2026-08-26). 그래서 extract_dish_name()에서
+    "접은 버전도 후보 하나로 추가"하는 용도로만 쓴다 — 원본이 이미 실제 이름과
+    맞으면(exact/substring/fuzzy 어느 단계로든) candidates에 원본이 이미 들어있고,
+    max(candidates, key=len)이 더 긴 원본을 우선 채택하므로 접은 버전이 끼어들 수
+    없다. 원본이 DB에 없는 진짜 디코딩 아티팩트일 때만 이 접은 버전이 유일한
+    매칭 후보가 되어 구제한다.
+    """
+    return re.sub(r"(.{2,3})\1+", r"\1", text)
+
+
 @lru_cache(maxsize=8)
 def _decomposed_name_map(client) -> dict[str, str]:
     """자모 분해된 요리명 -> 원본 요리명 매핑. _all_dish_names()와 같은 client별
@@ -148,9 +167,79 @@ def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_C
         if close:
             candidates.append(name_map[close[0]])
 
+    # 2026-08-26 추가 — "가지무침"이 "가지무칔무칔무칔"로(faster-whisper beam_size=1
+    # 디코딩 아티팩트, _collapse_stt_repetition() 문서 참고) 오인식된 경우 대응.
+    # 접은 버전("가지무칔")도 위와 똑같이 부분일치/편집거리 후보로 시도해서 candidates에
+    # 추가한다 — 원본 텍스트를 바꿔치기하지 않고 후보 하나만 더 늘리는 것이라 안전하다.
+    # "샤브샤브"/"토마토"처럼 원본이 이미 실제 이름인 경우는 위에서 이미 그 원본이(더
+    # 긴 형태로) candidates에 들어가 있어서, max(candidates, key=len)이 항상 더 긴
+    # 원본을 우선 채택하고 접은 버전은 무시된다(실측: 60,282건 요리명 전체 스캔으로
+    # "접은 버전이 원본보다 길어지는 경우는 없음"을 확인함 — 접기는 항상 문자열을
+    # 줄이기만 하므로 구조적으로 보장됨).
+    collapsed = _collapse_stt_repetition(text)
+    if collapsed != text:
+        candidates.extend(name for name in names if name and len(name) >= 2 and name in collapsed)
+        for candidate in (collapsed, *collapsed.split()):
+            close = difflib.get_close_matches(_decompose_hangul(candidate), name_map.keys(), n=1, cutoff=fuzzy_cutoff)
+            if close:
+                candidates.append(name_map[close[0]])
+
     if candidates:
         return max(candidates, key=len)
 
+    return None
+
+
+def find_dish_name_ignoring_spaces(dish_name: str, client=None) -> str | None:
+    """dish_name이 DB에 완전일치로는 없지만, 공백만 다르게 붙어서 내용은 정확히 같은
+    이름이 있으면 그 DB 원본 문자열을 돌려준다.
+
+    2026-08-26 실측 리포트 — "실제 DB에 있는(직접 등록한) '고등어 라테'가 조회 안 됨"
+    재현/원인 확정: entity_extract_llm.py::extract_intent_llm()이 LLM에 넘기기 전
+    띄어쓰기를 전부 지우는 전처리를 하는데(2026-08-20, "소고기 미역국"이 "미역국"만
+    잘리는 문제 방지용), 그 결과 LLM이 돌려주는 dish_name도 종종 공백 없이("고등어라테")
+    나온다 — DB엔 원문 그대로("고등어 라테") 저장돼 있어서 select_standard_recipe()의
+    완전일치가 실패했다. 등록한 커스텀 레시피뿐 아니라 공백이 들어간 표준 요리명
+    전반에 해당하는 구조적 문제.
+
+    extract_dish_name()의 편집거리 유사도(difflib, FUZZY_CUTOFF=0.7)와는 성격이 다르다 —
+    "비슷한 다른 요리"로 새는 오매칭 위험이 있어서 pipeline.py::handle_utterance()의
+    안전망으로 한 번 넣었다가 되돌렸는데("초코민트된장찌개"가 "토마토된장찌개"로
+    오매칭되는 사례 실측), 이 함수는 유사도가 아니라 "공백만 빼면 내용이 정확히 같은가"
+    만 본다 — 다른 요리로 새는 경우가 구조적으로 없다(내용 자체가 100% 동일해야만
+    매칭됨).
+    """
+    client = client or get_client()
+    target = re.sub(r"\s+", "", dish_name)
+    if not target:
+        return None
+    for name in _all_dish_names(client):
+        if re.sub(r"\s+", "", name) == target:
+            return name
+    return None
+
+
+def find_dish_name_ignoring_repetition(dish_name: str, client=None) -> str | None:
+    """dish_name이 DB에 완전일치로는 없지만, 짧은 음절 반복만 접으면 내용이 정확히
+    같은 이름이 있으면 그 DB 원본 문자열을 돌려준다. find_dish_name_ignoring_spaces()와
+    같은 자리에서 같은 이유로 쓰는 안전망 — fuzzy 매칭이 아니라 "반복만 접으면 정확히
+    같은가"만 보므로 다른 요리로 새는 오매칭 위험이 없다.
+
+    2026-08-26 실측 확정 — pipeline.py::handle_utterance()의 `resolved_dish_name =
+    dish_name or extract_dish_name(...)`에서 로컬 LLM이 dish_name을 주면(예:
+    "된장찌장찌개", faster-whisper beam_size=1 반복 아티팩트를 LLM이 검증 없이
+    그대로 옮긴 것) extract_dish_name()의 _collapse_stt_repetition() 후보 로직이
+    통째로 건너뛰어져서 아무 보정도 못 받는다는 게 실측 확인됐다 — extract_dish_name()
+    은 "utterance"를 받는데 여긴 이미 확정된 "dish_name" 하나만 있어서 그 함수를
+    재사용할 수 없었다. find_dish_name_ignoring_spaces()와 나란히, dish_name
+    하나만 받아 반복만 접어서 정확일치 확인하는 이 함수로 별도 안전망을 둔다.
+    """
+    client = client or get_client()
+    collapsed = _collapse_stt_repetition(dish_name)
+    if not collapsed or collapsed == dish_name:
+        return None
+    if collapsed in _all_dish_names(client):
+        return collapsed
     return None
 
 

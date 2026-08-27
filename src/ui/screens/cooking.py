@@ -14,7 +14,6 @@ from theme import (
     render_mic_bar,
     render_spacer,
     render_step_card,
-    render_typewriter_message,
 )
 from ui.dispatch import COOKING_COMPLETE_MESSAGE, fallback_buttons, is_home_word, reset_to_start
 from ui.recipe_view import _ingredients_to_chips, refresh_recipe_view
@@ -24,6 +23,12 @@ from ui.voice_io import _AUDIO_DIR, _render_cached_speech, mic_is_playing, prefe
 
 def screen_start() -> None:
     render_spacer()
+    # 2026-08-26 요청 — "무엇을 만들고 싶으세요?" 제목부터 마이크 부분까지(로고·로그인
+    # 버튼은 제외)를 전체적으로 100px 아래로. 로고/로그인은 render_brand()가 app.py에서
+    # 이 함수보다 먼저 그려서 안 밀린다 — 그래서 이 화면 "본문"의 맨 앞에 고정 높이 빈
+    # 칸만 추가하면 그 아래 내용 전체가 그만큼 밀린다(위 render_spacer()의 flex:1과
+    # 달리 유동적이지 않은 고정 100px).
+    st.markdown('<div style="height:100px;"></div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="ce-center"><h1>무엇을 만들고 싶으세요?</h1>'
         "<p>숫자 메뉴 없이, 하고 싶은 말을 편하게 그대로 말씀해주세요.</p>"
@@ -83,13 +88,13 @@ def screen_recipe_confirm() -> None:
         goto("start")
         return
 
-    render_badge("조회수 1위 표준 레시피 자동 선택 · 되묻지 않음 (FR-05)")
-    # 2026-08-22 재요청: 이전 대화 기록(사용자 질문 등)은 아예 안 보여주고, 마지막 AI
-    # 메시지를 챗봇 말풍선 없이 요리명/문장 두 줄로 줄바꿈해서(요리명은 크게) 타자기처럼
-    # 한 글자씩 나타나는 순수 텍스트로 보여준다. 세 줄 문구는 dispatch.process_utterance()의
-    # 조회 확인 메시지(`speak(f'{dish_name}, 조회수 1위 표준 레시피예요. 이걸로
-    # 시작할까요?')`)와 내용이 같아야 한다 — 그쪽은 TTS로 자연스럽게 읽히려고 한 문장
-    # 그대로 두고, 화면 표시만 여기서 줄 단위로 다시 나눈다.
+    render_badge("조회수 1위 표준 레시피")
+    # 2026-08-22 재요청 때는 대화 기록을 안 보여주고 마지막 AI 메시지만 타자기 텍스트로
+    # 보여줬는데, 2026-08-26 재요청 — "다른 레시피 화면(cooking_step 등)에서도 쓰는
+    # 챗 형태 박스를 여기도 넣어달라"로 뒤집혔다. render_typewriter_message() 대신
+    # cooking_step/no_match와 완전히 같은 render_chat(chat_log) 컴포넌트를 그대로
+    # 재사용한다 — 사용자의 조회 질문("나: ...")까지 포함해서 다른 화면과 똑같이 전체
+    # 대화 기록을 보여준다.
     chat_log = st.session_state.chat_log
     if chat_log and chat_log[-1][0] == "ai":
         # dispatch.py가 이 화면으로 넘어오기 직전 speak(..., hidden=True)로 미리 합성/캐싱만
@@ -97,14 +102,8 @@ def screen_recipe_confirm() -> None:
         # 화면 하단에 재생바가 "떴다 사라짐" 깜빡이는 문제, no_match/unclassified와 같은 패턴).
         # nonce(2026-08-23) — 아래 "다시" 처리가 이 값을 올려서 같은 문구를 한 번 더 듣게 한다.
         _render_cached_speech(chat_log[-1][1], nonce=st.session_state.get("_audio_replay_nonce", 0))
-        # render_spacer()로 뱃지와의 사이를 벌려서, 텍스트 블록이 위쪽에 바짝 붙지 않고
-        # 아래쪽 "재료 미리보기" 사이 빈 공간의 세로 중앙쯤에 오게 한다(2026-08-22
-        # 스크린샷 지적 — screen_start() 등 다른 화면의 render_spacer() 패턴과 동일).
-        render_spacer()
-        render_typewriter_message(
-            [view["dish_name"], "조회수 1위 표준 레시피예요.", "이걸로 시작할까요?"],
-            key=f"recipe_confirm:{chat_log[-1][1]}",
-        )
+    if chat_log:
+        render_chat(chat_log)
 
     st.markdown("**재료 미리보기**")
     render_chips(_ingredients_to_chips(view["ingredients_raw"]))
@@ -134,18 +133,23 @@ def handle_recipe_confirm(text: str) -> None:
     이 화면은 process_utterance()를 안 거치고 직접 문자열을 비교하는 구조다(아래
     이유 참고) — process_utterance() 맨 앞에서 하던 chat_log 기록도 안 타고 있었어서
     "응"/"좋아" 같은 확정 발화가 대화 기록에서 통째로 빠지는 실측 리포트("내가 했던
-    대화 내용이 없다")로 확인, 여기서 직접 기록해준다.
+    대화 내용이 없다")로 확인, 각 분기 안에서 직접 기록해준다.
+
+    2026-08-26 재요청 — "내 발화가 성공하면(=정상적으로 인식·처리됐으면) 기록에
+    남겨야 한다": "처음"/"다시"/확정 단어 세 분기 전부 실제로 인식돼 뭔가 처리한
+    성공 케이스라 기록한다. 맨 아래 "아무 분기에도 안 걸린" 무시 케이스만 기록에서
+    빠진다(성공한 게 없어서). ChefEar/AI 응답(speak())은 이 규칙과 무관하게 항상
+    남는다.
     """
     view = st.session_state.recipe_view
     if not view:
         return  # 화면 본문이 이미 goto("start")로 넘어갔을 상황 — 방어적으로만 남김
 
-    st.session_state.chat_log.append(("user", text))
     norm = text.strip().rstrip("?!. ")
     # 2026-08-22 원래 의도로 되돌림 — 이 화면은 원래 "확정 단어 목록 -> 진행,
     # 그 외 전부 -> 처음 화면"이라는 단순한 이분법으로 설계됐었는데, 그동안
     # else 분기가 process_utterance()(classify_intent() 전체 파이프라인)로
-    # 넘어가게 돼 있었다. "조회수 1위 표준 레시피 자동 선택 · 되묻지 않음(FR-05)"
+    # 넘어가게 돼 있었다. "조회수 1위 표준 레시피"
     # 화면이라 여기서 진행/이전/재료대체 같은 다른 의도까지 판단할 필요가 없고,
     # 이 레시피가 아니면 "다른 레시피 찾을래요" 버튼과 똑같이 처음 화면으로
     # 보내 새로 요리명을 말하게 하는 게 원래 설계다.
@@ -157,8 +161,13 @@ def handle_recipe_confirm(text: str) -> None:
     # 단어와 정확히 같아야만 인정하던 것(예: "네 좋아요 시작할게요"는 안 걸림)을
     # 포함 여부로 완화했다. 확정 단어도 처음도 다시도 아니면 기존 그대로 처음 화면으로.
     if is_home_word(norm) or "처음" in norm:
+        st.session_state.chat_log.append(("user", text))
         reset_to_start()
     elif "다시" in norm:
+        # 2026-08-26 재요청 — "다음 페이지로 안 넘어가면 기록 안 함"으로 한 번 뺐다가,
+        # 사용자가 "내 발화가 성공하면 기록에 남겨야 한다"로 재확인해 되돌림(dispatch.py
+        # 의 "재청취" 처리와 같은 이유) — "다시"도 정상 인식된 확정 발화라 기록한다.
+        st.session_state.chat_log.append(("user", text))
         st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
         st.rerun()
     # 2026-08-24 — "좋아"를 "좋"(어근)으로 완화. 실측: "좋아"라고 말했는데 STT가
@@ -172,10 +181,23 @@ def handle_recipe_confirm(text: str) -> None:
     # 있어서(바로 아래 "확정 단어도 처음도 다시도 아니면... 아무 일도 안 하고 이
     # 화면에 그대로 머문다" 주석 참고), 지정 안 된 단어를 추가로 막을 필요 없이
     # 이 튜플에 새 단어를 더하기만 하면 된다.
+    #
+    # 2026-08-26(같은 날 밤) 실사용 재현 보고 — "냉장찌개 알려줘"(recipe_confirm에
+    # 이미 "김치찌개"가 떠 있는 상태에서, 전혀 다른/존재하지도 않는 요리를 말함)가
+    # "알려줘"라는 부분 문자열 하나 때문에 확정으로 오판돼 김치찌개 조리가 그대로
+    # 시작돼버렸다("돼지고기와 새우젓을 손질해주세요" 1단계가 곧장 나옴). "알려줘"/
+    # "부탁"은 "OO 레시피 알려줘"처럼 사실상 모든 요리명 조회 문장에 흔히 붙는
+    # 범용 어미라 이 화면(요리명 하나를 특정해서 확정 여부만 묻는 화면)에서 확정
+    # 단어로 쓰기엔 너무 헐겁다 — 이 화면은 "다른 레시피 찾을래요" 버튼/처음 화면
+    # 재검색으로만 요리를 바꿀 수 있다는 원칙과도 어긋난다(다른 요리를 부르는
+    # 발화가 여기서 엉뚱하게 확정으로 먹혀버리면 안 됨). 두 단어를 목록에서 뺀다 —
+    # 남은 단어들(응/네/좋/다음/그래/시작/진행/할래)은 요리명 뒤에 자연스럽게 안
+    # 붙는 짧은 확정 표현이라 같은 위험이 없다.
     elif (
-        any(word in norm for word in ("응", "네", "좋", "다음", "그래", "시작", "진행", "알려줘", "부탁", "할래"))
+        any(word in norm for word in ("응", "네", "좋", "다음", "그래", "시작", "진행", "할래"))
         or norm.lower() == "next"
     ):
+        st.session_state.chat_log.append(("user", text))
         st.session_state.pipeline_session["step_number"] = 1
         # register_steps의 "네, 저장할게요"와 같은 이유(2026-08-22 리포트) — 여기서
         # speak()가 그리는 재생바는 바로 다음 줄 goto()의 st.rerun()에 곧장 지워져서
@@ -279,7 +301,11 @@ def screen_cooking_step() -> None:
     render_chips(_ingredients_to_chips(view["ingredients_raw"]))
 
     if st.session_state.chat_log:
-        render_chat(st.session_state.chat_log[-4:])
+        # 2026-08-26 재요청 — 최근 4개(2턴)만 보여주던 창을 없애고 전체 대화 기록을
+        # 다 보여준다. 미분류 발화를 안 남기는 로직(process_utterance() 참고)으로 바꾼
+        # 뒤로 슬롯이 전부 의미있는 내용으로만 차서, 1단계처럼 앞쪽 내용이 몇 번의
+        # "다음"만으로 창 밖으로 밀려나가는 게 더 눈에 띄었다는 지적.
+        render_chat(st.session_state.chat_log)
 
     _mic_ready = mic_is_playing()
     render_mic_bar(
