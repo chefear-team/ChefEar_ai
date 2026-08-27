@@ -271,7 +271,21 @@ def main() -> None:
     # 요청 당시 구체적으로 안 밝혀짐, 필요하면 다음에 물어볼 것). 화면이 더 늘어날
     # 수 있어서 단일 비교 대신 집합으로 바꿨다.
     # 2026-08-26(같은 날, 또 재요청) — cooking_complete("요리가 완성됐어요!")도 추가.
-    _LOGIN_BUTTON_HIDDEN_SCREENS = ("recipe_confirm", "cooking_step", "cooking_complete")
+    # 2026-08-27 재요청 — register_dish_name("어떤 요리인가요?")도 추가. 요리명을
+    # 음성/텍스트로 막 입력하려는 집중 화면이라 로그인 유도가 방해된다는 판단으로
+    # 추정(사유 구체적으로 안 밝혀짐, 위 cooking_step과 같은 종류의 요청 — 필요하면
+    # 다음에 물어볼 것).
+    # 2026-08-27(같은 날, 또 재요청) — register_ingredients/register_steps도 추가.
+    # 재료·순서를 직접 타이핑하는 집중 입력 화면이라 로그인 버튼도 마이크 인식도
+    # 방해 요소로 판단됨(아래 register_steps 마이크 처리 변경과 같은 요청 세트).
+    _LOGIN_BUTTON_HIDDEN_SCREENS = (
+        "recipe_confirm",
+        "cooking_step",
+        "cooking_complete",
+        "register_dish_name",
+        "register_ingredients",
+        "register_steps",
+    )
     current_user = st.session_state.current_user
     if render_brand(
         show_login=(st.session_state.screen not in _LOGIN_BUTTON_HIDDEN_SCREENS),
@@ -391,7 +405,11 @@ def main() -> None:
         # 살려두고(안 그러면 orphan-reset, 위 login 분기 문서 참고) 반환값만 버린다.
         listen("register_ingredients", show_text_fallback=False)
     elif screen == "register_steps":
-        listen_background_only("register_steps", cancel_target="register_ingredients")
+        # 2026-08-27 재요청 — register_ingredients와 같은 이유로 "처음"/"취소"까지
+        # 포함해서 완전히 무시하도록 통일(기존엔 listen_background_only()로 그 두
+        # 단어만 반응했음). listen()은 그대로 불러서 마이크 연결은 살려두고(안 그러면
+        # orphan-reset, register_ingredients 위 주석 참고) 반환값만 버린다.
+        listen("register_steps", show_text_fallback=False)
     elif screen == "complete":
         text = _next_text("complete", show_mic=False)
         if text:
@@ -413,9 +431,11 @@ def main() -> None:
         # 라이브러리 자신이 "고아 컴포넌트"로 보고 강제로 리셋하는 걸 로그로 직접
         # 확인했다(WRTCDBG "orphan-reset" 줄, current_run과 last_rendered의 차이가
         # 남). 화면 전환 1번당 재연결 1번(기존부터 있던, 아직 못 고친 문제)과는 별개로,
-        # 이 화면들에 "머무르는 동안" 추가로 더 끊기는 원인이었다. register_ingredients/
-        # register_steps가 이미 쓰는 것과 같은 패턴(listen_background_only()로 마이크는
-        # 계속 그려서 살려두되, "처음"/"취소" 두 안전한 단어에만 반응) 적용.
+        # 이 화면들에 "머무르는 동안" 추가로 더 끊기는 원인이었다. login 화면이 이미
+        # 쓰는 것과 같은 패턴(listen()으로 마이크는 계속 그려서 살려두되 반환값은
+        # 버림)과 유사하게, listen_background_only()로 마이크는 계속 그려서 살려두되
+        # "처음"/"취소" 두 안전한 단어에만 반응하게 한다(2026-08-27 — register_ingredients/
+        # register_steps는 이 패턴에서 빠지고 완전 무시로 바뀜, 위 두 분기 주석 참고).
         listen_background_only(screen, cancel_target="start")
 
 

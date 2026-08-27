@@ -181,12 +181,25 @@ def screen_register_intro() -> None:
 
 
 def handle_register_intro(text: str) -> None:
-    """screen_register_intro()가 그려진 뒤 app.py가 잡아온 발화를 처리한다."""
+    """screen_register_intro()가 그려진 뒤 app.py가 잡아온 발화를 처리한다.
+
+    2026-08-27 수정 — "네"/"좋아"/"응"/"등록"이라고 말해도 등록 페이지로 안 넘어간다는
+    실측 리포트. 원인: `norm in (...)` 완전일치 조건이라, STT가 조사/어미를 붙여
+    돌려주면(실측 로그: "등록할래.", "등록한다고.", "둘록한다니까?" 등) 후보 목록
+    어느 것과도 정확히 안 맞아 전부 else(무시)로 빠졌다. dispatch.py의 `_REGISTER_WORD
+    in text`(등록은 단어 포함이면 무조건)와 같은 방식으로 포함 여부 검사로 완화한다.
+    부정(아니/괜찮아/취소/처음) 쪽을 먼저 검사해서, "아니 등록 안 할래"처럼 부정과
+    긍정 단어가 한 문장에 같이 들어간 경우 부정이 우선하게 한다 — 순서를 반대로 하면
+    "등록"이 먼저 걸려 거절 의사를 등록 확정으로 잘못 처리할 위험이 있다.
+
+    "좋"(어간, "좋아"의 활용형 전부 포함) 단독 포함 검사는 cooking.py::handle_recipe_confirm()이
+    이미 쓰는 것과 같은 트레이드오프다 — "좋다고?"처럼 STT가 변형해 돌려줘도 잡히게
+    하려는 목적인데, 이 화면 문맥과 무관한 발화("날씨 좋다" 등)에 우연히 "좋"이 들어
+    있어도 등록으로 오인식될 이론적 여지가 있다. 이 화면은 "등록할지" 확인 직후에만
+    잠깐 나타나는 좁은 화면이라 실사용상 위험은 낮다고 보고 기존 관례를 그대로 따른다.
+    """
     norm = text.strip().rstrip("?!. ")
-    if norm in ("네", "응", "좋아", "좋아요", "그래", "그래요", "등록", "등록할래요", "네, 등록할래요"):
-        get_owner_id()
-        goto("register_dish_name")
-    elif is_home_word(norm) or norm in ("아니", "아니요", "괜찮아", "괜찮아요", "취소"):
+    if is_home_word(norm) or any(word in norm for word in ("아니", "괜찮아", "취소")):
         # 2026-08-23 — "처음"류는 reset_to_start()(진행 중이던 값 전부 초기화)로,
         # 기존 "아니/취소"는 원래 하던 대로 단순 이동만(이 화면은 아직 등록 자체를
         # 시작 전이라 초기화할 진행 상태가 없음).
@@ -194,6 +207,9 @@ def handle_register_intro(text: str) -> None:
             reset_to_start()
         else:
             goto("start")
+    elif any(word in norm for word in ("네", "응", "좋", "그래", "등록")):
+        get_owner_id()
+        goto("register_dish_name")
     else:
         # 2026-08-25 추가 — dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고).
         # 위 두 분기 다 goto()로 화면을 다시 그리며 listen()을 재호출해 마이크 드레인

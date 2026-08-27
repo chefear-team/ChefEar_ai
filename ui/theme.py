@@ -1389,7 +1389,27 @@ _AUDIO_FREE_SCREENS = (
 # 넘어간 뒤에도 남는 것)이 실측 확인돼 같은 방식으로 추가.
 # no_match(2026-08-25 추가) — "초기"/"등록" 두 키워드만 반응하는 좁은 화면으로 바뀌면서
 # (register.py::handle_no_match() 참고) show_text_fallback=False로 바뀜.
-_NO_TEXT_FALLBACK_SCREENS = ("start", "recipe_confirm", "no_match")
+#
+# 2026-08-27 전수 점검 — src/app.py::main()의 실제 listen()/listen_background_only()
+# 호출부를 전부 교차검증한 결과, show_text_fallback=False로 부르는 화면이 이 목록에
+# 5개 빠져 있었다(register_ingredients/register_steps/login/my_recipes/edit_recipe —
+# 전부 직접 False를 넘기거나 listen_background_only()를 거쳐서 항상 False로 불림).
+# ruleTextFallback()은 "이 목록에 없으면 = 이 화면이 정상적으로 만든 것"으로 간주해서
+# unhide()해버리므로, 이 5개 화면에 있는 동안 다른 화면(cooking_step/register_intro/
+# register_dish_name 등, show_text_fallback 기본값 True)에서 새어든 범용 텍스트
+# 입력칸("또는 텍스트로 입력") 잔상을 못 잡고 오히려 되살렸을 것 — 아직 실사용
+# 재현 리포트로 확인된 건 아니라(다른 마커들처럼 "재현됨"이 아니라 코드 대조로 찾은
+# 것), 배포 전 실제 화면 전환으로 재검증할 것.
+_NO_TEXT_FALLBACK_SCREENS = (
+    "start",
+    "recipe_confirm",
+    "no_match",
+    "register_ingredients",
+    "register_steps",
+    "login",
+    "my_recipes",
+    "edit_recipe",
+)
 
 # 2026-08-25 — fallback_buttons()와 같은 부류의 잔상을 no_match 화면에서도 실측 확인:
 # screen_no_match()의 두 버튼(st.button()에 key= 없이 호출돼서 fallback_buttons()처럼

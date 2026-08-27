@@ -1,253 +1,253 @@
-# 셰프이어(ChefEar) — 팀 진행 가이드 (v2, 2026-08-14 원본 → 갱신)
+# 셰프이어(ChefEar) — 팀 진행 가이드 (v2)
 
-작성자: 김승욱 (팀장) · 원본 작성일: 2026-08-14 · 이 버전: 착수 후 갱신(PRD/SDD v0.8 기준 동기화)
-이 문서는 팀원 전원이 읽고 시작하는 문서입니다. 원본(Day1 배포본)에서 여러 항목이 바뀌었으니, 예전에 이미 읽었더라도 아래 변경 표시(⚠️)는 다시 확인해주세요.
+작성자: 김승욱(팀장) · 기준일: 2026-08-27 — 현재 배포·실사용 중인 소스 기준으로 전면 재작성
+
+이 문서는 팀원 전원이 읽고 시작하는 문서입니다. 지금 서비스가 실제로 어떤 구조로 동작하고 있는지, 새로 합류하는 사람이 무엇부터 봐야 하는지를 담았습니다.
 
 ---
 
 ## 0. 한 줄 정의
 
-부모님과 따로 살기 시작한 직후, 요리를 거의 해본 적 없는 완전 초보가, 칼질·반죽 등으로 손을 못 쓰는 상황에서 음성으로 레시피를 한 단계씩 안내받고 재료도 그 자리에서 바꿔가며 진행하는 에이전트. 자기만의 레시피로 저장되어 다음에도 재현된다.
+부모님과 따로 살기 시작한 직후, 요리를 거의 해본 적 없는 완전 초보가, 칼질·반죽 등으로 손을 못 쓰는 상황에서 음성으로 레시피를 한 단계씩 안내받고 재료도 그 자리에서 바꿔가며 진행하는 에이전트. 계정으로 로그인하면 자기만의 레시피로 저장되어 다음에도 재현된다.
 
 ---
 
-## 1. 반드시 먼저 이해해야 할 핵심 원칙 4가지
+## 1. 반드시 먼저 이해해야 할 핵심 원칙
 
-### 원칙 1. 딥러닝 과제 범위는 STT/TTS 둘 다입니다 ⚠️ TTS 베이스 모델 변경
-지도 강사 요구사항(공고 주제: "TTS·STT 서비스")에 따라, **파인튜닝하는 건 STT(Whisper)와 TTS(Qwen3-TTS 1.7B) 두 개**입니다.
+### 원칙 1. 딥러닝 과제 범위는 STT/TTS 둘 다입니다
 
-- **TTS 베이스는 Piper → Qwen3-TTS로 변경됐습니다.** Piper 원본 저장소가 2025년 10월 아카이브(유지보수 중단)되고 후속 포크가 GPL-3.0으로 전환되어 배제했습니다. Qwen3-TTS는 강사 가이드의 TTS 권장 목록에도 포함된 도구입니다.
-- **STT도 실제로 파인튜닝합니다.** 강사 가이드상 STT는 API 활용만으로도 감점이 없지만, 정량 지표(WER 전/후 비교)를 더 탄탄히 갖추기 위해 팀에서 파인튜닝하기로 확정했습니다. 학습 데이터는 KSS 원문 음성 + 파인튜닝된 Qwen3-TTS가 생성한 합성 음성(텍스트-음성 쌍)입니다.
+파인튜닝하는 건 STT(`openai/whisper-large-v3-turbo`)와 TTS(`Qwen3-TTS-12Hz-1.7B`) 두 개입니다. 둘 다 QLoRA로 파인튜닝했고, 파인튜닝 전/후 WER·CER·청취 비교를 발표 자료에 넣습니다.
 
-### 원칙 2. 서비스가 실행되는 동안 외부 LLM API를 호출하는 코드는 절대 넣지 않습니다
-지도 강사 가이드("1차 팀 프로젝트 가이드")에 따라, **완성된 서비스 코드 안에 OpenAI·Anthropic·Gemini·Groq 같은 외부 LLM API를 호출하는 부분이 있으면 요건 미충족**입니다. "API 한 번 호출하면 끝나는 패턴을 의도적으로 배제"한다는 게 명시되어 있습니다.
+### 원칙 2. 서비스 응답 경로에 외부 LLM API를 넣지 않습니다
 
-**아래 세 곳은 런타임 LLM 없이 처리합니다:**
+지도 강사 가이드("1차 팀 프로젝트 가이드")에 따라, 완성된 서비스가 사용자 요청에 응답하는 동안 OpenAI·Anthropic·Gemini·Groq 같은 외부 LLM API를 호출하는 코드가 있으면 요건 미충족입니다.
 
-| 상황 | 처리 방식(LLM 없음) |
-|---|---|
-| 의도 판단 | **임베딩 유사도 매칭**(sentence-transformers) — 발화를 벡터로 바꿔서, 미리 준비한 예문들과 제일 비슷한 걸 고름 |
-| 재료대체 요청이 DB에 없음 | **그 자리에서 답을 지어내지 않고, "그런 레시피는 없어요"라고 정직하게 말함** |
-| 조리순서 문의 | ⚠️ **60,282건 표준 데이터(실데이터)에서 조회만 함** — 아래 원칙 3 참고 |
+| 상황 | 처리 방식 |
+| --- | --- |
+| 의도 판단(다음/재료대체/등록 등) | 임베딩 유사도 매칭(sentence-transformers) — 발화를 벡터로 바꿔서 미리 준비한 예문 중 제일 비슷한 걸 고름 |
+| 자유발화 속 요리명 추정, "등록하고 싶다" 의도 보조 판단 | **로컬 LLM**(`LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct`)을 팀 GPU 데스크탑에 직접 로드해서 그 자리에서 추론. 인터넷 너머 외부 서버로 텍스트를 보내는 게 아니라서 강사 가이드가 금지하는 "외부 LLM API 호출"에 해당하지 않음 |
+| 재료대체 요청이 DB에 없음 | 그 자리에서 답을 지어내지 않고 "그런 레시피는 없어요"라고 정직하게 말함 |
+| 조리순서 문의 | 60,282건 표준 데이터(사전 적재된 실데이터)에서 조회만 함 |
 
-**개발 도구로서 LLM(Claude 등)을 코드 작성·자료조사·문서화에 쓰는 건 자유롭게 허용됩니다.** 경계선은 "언제 호출하느냐"입니다 — 개발 중이면 OK, 서비스 실행 중이면 안 됨.
+개발 도구로서 LLM(Claude 등)을 코드 작성·자료조사·문서화에 쓰는 건 자유롭게 허용됩니다. 경계선은 "언제, 어디서 추론이 일어나느냐"입니다 — 개발 중이거나 팀 GPU에서 직접 도는 로컬 모델이면 OK, 서비스가 응답하는 순간 남의 서버(외부 API)로 텍스트가 나가면 안 됩니다.
 
-### 원칙 3. 조리순서 데이터는 LLM으로 생성합니다
+### 원칙 3. 조리순서 데이터 구성은 있는 그대로 설명합니다
 
-요리명·재료 등 메타데이터(60,282건)는 만개의레시피 실데이터 기준이며, 동일 요리명이 여러 건 있을 때 조회수(INQ_CNT) 1위를 표준 레시피로 채택합니다. 조리순서(`COOKING_STEPS`) 텍스트는 ChatGPT(LLM)로 작성한 것이며, `source=api_standard`로 태깅되지만 조리순서 원문 자체는 실사용자가 작성한 문장이 아닙니다. 지도 강사 승인 하에 사용 중입니다(내용 검토 결과 조리법 자체는 사람마다 표현이 달라도 무방한 수준으로 확인됨, `db/README.md` 참고).
+요리명·재료·인분수·조회수 등 메타데이터(60,282건)는 만개의레시피 실데이터입니다. 동일 요리명이 여러 건 있을 때는 조회수(INQ_CNT) 1위를 표준 레시피로 채택합니다. 조리순서(`COOKING_STEPS`) 본문 텍스트는 원본 데이터에 해당 항목 자체가 없어서, 배포 전 단계에서 재료 목록을 근거로 LLM(ChatGPT)이 작성해 채워 넣은 것이고 `source=api_standard`로 함께 태깅됩니다. 이 작업은 서비스가 켜지기 전에 끝난 1회성 오프라인 데이터 준비이며, 서비스는 이렇게 준비된 문장을 조회만 할 뿐 실행 중에 새로 생성하지 않습니다. 이 구성을 숨기지 않고 발표에서도 그대로 설명합니다(아래 원칙 4와 같은 태도).
 
-표준 데이터 밖의 요리명을 요청받으면, 재료대체 매칭 실패와 동일하게 정직하게 "없다"고 안내하고 신규 등록으로 유도합니다.
+표준 데이터 밖의 요리명을 요청받으면, 재료대체 매칭 실패와 동일하게 정직하게 "없다"고 안내하고 로그인 상태라면 신규 등록으로 유도합니다.
 
 ### 원칙 4. 절대 임의로 지어내지 않습니다
-개발 중 애매한 상황이 생기면, 데이터를 직접 확인하고 없으면 "없다"고 인정합니다. 그럴듯하게 짐작해서 채우지 않습니다. (경쟁앱 조사도 마찬가지 — 실사용 테스트 없이 앱스토어 설명만 보고 단정하지 않습니다. 2장 참고.)
+
+애매한 상황이 생기면 데이터를 직접 확인하고, 없으면 "없다"고 인정합니다. 그럴듯하게 짐작해서 채우지 않습니다. 로컬 LLM(EXAONE)이 요리명을 잘못 짐작하거나 실패해도, 그럴듯한 다른 답으로 둔갑시키지 않고 "요리명 없음"과 동일하게 안전한 기본값으로 처리합니다.
 
 ---
 
-## 2. 디렉토리 구조 ⚠️ 대폭 변경 (2026-08-13 재갱신 — 런타임 실행 가능 구조로 보완)
+## 2. 디렉토리 구조
 
 ```
-ChefEar/
-├── README.md                             # 프로젝트 소개. ⚠️ HF Spaces 배포 전 맨 위에 YAML frontmatter(sdk: streamlit, app_file: src/app.py) 추가 필요 — 아직 없음
-├── requirements.txt                      # ⚠️ 신규 — HF Spaces 배포용 최소 의존성만(streamlit, sentence-transformers, faster-whisper, supabase). HF Spaces가 자동 인식하는 파일명은 이것뿐, requirements-main.txt는 안 읽음
-├── .env.example                          # ⚠️ 신규 — Supabase URL/KEY, HF Hub 모델 repo id 등 필요한 환경변수 이름만(값 없이) 기록
-├── docs/
-│   ├── ChefEar_PRD_SDD_v0.8.md          # 최신 PRD+SDD, 모르는 게 있으면 여기부터 확인
-│   ├── ChefEar_기획안.docx
-│   ├── decisions.md                      # 결정 안 된 것들(Open Issues) 추적
-│   └── meetings/                         # 회의록(킥오프, Sync, PoC Review 등)
+proj1-a/
+├── README.md                         # 프로젝트 소개·팀 정보·HF Spaces frontmatter
+├── AGENTS.md                         # AI 에이전트 공통 지침(원본). CLAUDE.md는 이 문서를 그대로 참조
+├── requirements.txt                  # 배포용 최소 의존성 — HF Spaces가 자동 인식하는 유일한 파일명
+├── requirements-main.txt             # env-main(로컬 개발·학습 전체) 의존성
+├── requirements-stt.txt              # STT 학습 확정 버전
+├── run_local.sh                      # 로컬 GPU 데스크탑에서 streamlit 앱을 실행하는 스크립트
+├── .env / .env.example / .env.example.local   # 환경변수(.env는 git 미추적, 값은 로컬에만 존재)
+├── .streamlit/config.toml
+├── .github/                          # PR 템플릿, secret-scan 워크플로
 │
-├── env-main/                             # 오케스트레이션·STT·TTS 파인튜닝·서비스 전부 통합(로컬 개발·학습용, git 대상 아님)
-├── requirements-main.txt                 # env-main 로컬 개발·학습 전체 의존성(peft/bitsandbytes 등 학습 패키지 포함, 배포엔 안 씀 — 위 requirements.txt와 역할 분리)
+├── docs/
+│   ├── ChefEar_PRD_SDD_v0.8.md           # 최신 PRD+SDD, 모르면 여기부터
+│   ├── ChefEar_설계서.pdf                 # 배포용 시스템 설계서(PDF)
+│   ├── ChefEar_팀_진행_가이드_v2.md       # 이 문서
+│   ├── ChefEar_경쟁사분석.md
+│   ├── decisions.md                      # 아직 확정되지 않은 항목 추적
+│   ├── stt.md                            # STT 학습 환경 스냅샷
+│   ├── specs/                            # 기능별 Spec(Why·Goal·What·How·AC)
+│   ├── meetings/                         # 회의록
+│   └── audits/                           # 조사·디버깅 기록
 │
 ├── src/
-│   ├── orchestration/                    # A(김승욱) 담당
-│   │   ├── intent_classifier.py             # 임베딩 유사도 매칭(LLM 아님) — classify_intent()
-│   │   ├── recipe_search.py                 # 순수 DB 조회 함수 모음: 표준레시피 선정·대체후보 검색·조리순서 조회(select_standard_recipe, search_variant_recipe, search_by_ingredient_content, get_precomputed_steps, get_current_step)
-│   │   ├── substitution.py                  # 재료 대체 세션 흐름 + 취소 롤백(cancel_substitution) — recipe_search.py 호출해서 상태만 관리
-│   │   ├── registration.py                  # ⚠️ 신규 — 신규 레시피 등록 세션(요리명→재료→재료확인→순서→최종확인), register_recipe()/save_recipe() → Supabase에 바로 insert(로컬 파일 저장 아님)
-│   │   └── pipeline.py                      # 전체 흐름 조립: STT → 의도분류 → 조회/등록/재료대체 라우팅 → TTS
-│   ├── stt/                              # C(하주성) 담당 — 파인튜닝
-│   │   ├── prepare_data.py                  # KSS 음성 + Qwen3-TTS 합성음 페어링
-│   │   ├── finetune_whisper.py              # Whisper 파인튜닝(학습, GPU 전용)
-│   │   └── infer.py                         # ⚠️ 신규 — 파인튜닝 체크포인트를 faster-whisper(int8, CTranslate2)로 변환 + 런타임 추론, stt_transcribe()
-│   ├── tts/                              # B(홍민하) 담당 — 파인튜닝
-│   │   ├── prepare_data.py                  # KSS 24kHz 리샘플링
-│   │   ├── finetune_qwen3tts.py             # Qwen3-TTS 파인튜닝(학습, GPU 전용)
-│   │   └── infer.py                         # ⚠️ 신규 — 파인튜닝 체크포인트 로드, 런타임 음성 합성, tts_synthesize()
-│   ├── ui/                               # B(홍민하) 담당(Streamlit), 화면 컴포넌트
-│   └── app.py                            # HF Spaces 배포 엔트리포인트 — README frontmatter의 app_file 경로와 반드시 일치시킬 것
+│   ├── app.py                        # 실제 서비스 엔트리포인트 — streamlit run src/app.py
+│   ├── orchestration/                # 김승욱 담당
+│   │   ├── intent_classifier.py          # 임베딩 유사도 의도분류 — classify_intent()
+│   │   ├── entity_extract.py             # 정규식 기반 재료명 추출(재료대체용)
+│   │   ├── entity_extract_llm.py         # 로컬 LLM 기반 요리명 추정·등록의도 판단
+│   │   ├── recipe_search.py              # 표준레시피 선정·재료대체 검색·요리명 보정
+│   │   ├── substitution.py               # 재료 대체 세션 상태(적용/취소 롤백)
+│   │   ├── registration.py               # 신규 등록 세션, 저장/수정/삭제
+│   │   ├── auth.py                       # 계정 로그인(PBKDF2 해시)
+│   │   ├── identity.py                   # 익명 쿠키 UUID 개인화
+│   │   ├── pipeline.py                   # 발화 하나를 의도별로 라우팅하는 조립 함수
+│   │   ├── db.py                         # Supabase 클라이언트(자격증명 없으면 mock 전환)
+│   │   ├── mock_client.py                # 로컬 개발용 가짜 클라이언트
+│   │   └── load_data.py                  # 표준 레시피 CSV → Supabase 적재 스크립트
+│   ├── llm/infer.py                  # 로컬 LLM(EXAONE) 로드·추론
+│   ├── stt/                          # 하주성 담당
+│   │   ├── infer.py                      # 배포용 STT 추론(faster-whisper, CTranslate2 int8)
+│   │   ├── export_ct2.py                 # 파인튜닝 체크포인트 → CTranslate2 변환(오프라인 1회)
+│   │   ├── prepare_data.py / finetune_whisper.py  # 학습 데이터 준비·QLoRA 파인튜닝
+│   │   └── compare_realtime_models.py    # 파인튜닝 전/후 비교
+│   ├── tts/                          # 홍민하 담당
+│   │   ├── infer.py                      # 배포용 TTS 추론(Qwen3-TTS)
+│   │   ├── pronunciation.py              # TTS 직전 발음 보정 테이블
+│   │   └── prepare_data.py / finetune_qwen3tts.py  # 학습 데이터 준비·QLoRA 파인튜닝
+│   └── ui/                           # 실제 서비스 화면 컴포넌트 — src/app.py가 조립
+│       ├── session.py                    # 세션 상태 초기화, 화면 전환, 로그인 쿠키 복원
+│       ├── voice_io.py                   # 상시 마이크(WebRTC) 연결, STT/TTS 호출·캐싱
+│       ├── dispatch.py                   # 발화 → 의도 처리 → 화면 전환 디스패처
+│       ├── recipe_view.py                # 화면에 보여줄 레시피 뷰 갱신
+│       └── screens/                      # cooking.py · register.py · my_recipes.py
+│
+├── ui/                                # 화면 시각 자산 + 초기 목업
+│   ├── theme.py                          # CSS/아이콘/카드 등 공용 컴포넌트(실서비스가 그대로 재사용)
+│   ├── mic_vad.py                        # silero-vad 기반 발화 구간 분리기(실서비스가 재사용)
+│   └── streamlit_screens/                # 초기 버튼 기반 목업 — 화면 흐름 검증용, 실서비스 경로 아님
 │
 ├── db/
-│   └── schema.sql                        # recipes, recipe_steps 테이블(Supabase) — Supabase SQL 에디터에 수동 실행, 별도 마이그레이션 도구 안 씀
+│   ├── schema.sql                    # recipes / recipe_steps / users 테이블 DDL(Supabase SQL Editor에 수동 실행)
+│   └── README.md
 │
 ├── data/
-│   ├── standard/
-│   │   └── 요리명별_조리과정_60282건.csv    # ⚠️ 실물 미확보 — 서비스가 쓰는 조리순서 전량(실데이터), 확보 경로 확인 필요
-│   ├── kadx_raw/                         # ⚠️ 신규, 실물 미확보 — KADX 원본 CSV 4개(234,538건 시드: 재료·요리명·메타), 확보 경로 확인 필요
-│   ├── intent_examples/
-│   │   └── 기준예문.csv                     # ⚠️ 실물 미확보 — 녹음용_문장스크립트_v1.csv 카테고리 재활용 예정(취소 카테고리 포함), 원본 파일 위치 확인 필요
-│   ├── kss/                              # TTS·STT 학습 원본 음성(공개 데이터셋, CC BY-NC-SA 4.0) — 다운로드 스크립트로 채움
-│   ├── synthesized/                      # Qwen3-TTS가 만든 합성음(STT 학습용 페어)
-│   ├── evaluation_scripts/
-│   │   └── 평가문장_200개.csv               # WER 평가용 텍스트(레시피 질문)
-│   ├── mos_participants/                 # MOS 청취평가 참여자 기록(5명 이상, 학습용 아님)
-│   └── consent/                          # KSS 라이선스 확인 기록
+│   ├── standard/                     # 요리명별 조리과정 CSV
+│   ├── kadx_raw/                     # KADX 원본 시드 CSV
+│   ├── intent_examples/기준예문.csv   # 의도분류 기준 예문
+│   ├── kss/                          # TTS·STT 학습 원본 음성(KSS, CC BY-NC-SA 4.0)
+│   ├── synthesized/                  # STT 학습용 합성음(파인튜닝된 TTS가 생성)
+│   └── evaluation_scripts/           # WER/CER 평가용 텍스트
 │
-├── models/                               # 로컬 학습 산출물 스테이징(git 대상 아님) — 실배포는 HF Hub에서 다운로드해서 씀, 여기서 바로 안 읽음
-│   ├── stt_finetuned/
+├── models/                            # 학습 산출물 로컬 스테이징(git 미추적)
+│   ├── stt_finetuned/ct2_int8/            # 배포가 실제로 읽는 CTranslate2 변환본
 │   └── tts_finetuned/
 │
 ├── results/
-│   ├── stt/                              # wer_rtf_epoch*.csv, loss_curve.png
-│   └── tts/                              # wer_rtf_epoch*.csv, final_comparison.png
+│   ├── stt/
+│   └── tts/                           # WER/CER/응답속도 측정 결과 CSV
 │
-└── tests/
-    └── integration_test.md               # 수동 시나리오 체크리스트(AC-14~16 GWT 기준) — pytest 아님, 의도된 형태
+├── landing/                           # 메인 서비스와 분리된 소개 페이지(로컬 전용 Streamlit)
+│
+└── tests/                             # pytest 스위트(단위 테스트 + 통합 시나리오)
 ```
 
-**바뀐 점(v2 최초)**: `env-piper-train/`(Piper 폐기로 삭제), `data/recipe_batches/`(5,100건 배치 방식 폐기로 삭제), `data/recording_scripts/`·`data/recordings/`(팀원 녹음 안 함, KSS로 대체되어 삭제), `docs/조리순서_생성_프롬프트_가이드.md`(LLM 생성 자체 폐기로 삭제) — 전부 지웠습니다. 대신 `db/`, `results/`, `data/kss/`, `data/synthesized/`, `data/mos_participants/`를 새로 추가했습니다.
-
-**추가 변경(2026-08-13, 실행 가능 구조로 보완)**: PRD_SDD 7.1 함수 목록·8.2 배포 아키텍처와 대조해서 빠진 부분을 채웠습니다.
-- 신규 파일: `requirements.txt`(HF Spaces 배포용, 루트), `.env.example`, `src/orchestration/registration.py`(신규등록 로직 담을 곳이 없었음), `src/stt/infer.py`·`src/tts/infer.py`(학습 스크립트만 있고 런타임 추론 코드가 없었음), `data/kadx_raw/`(원본 시드 CSV 자리 자체가 없었음)
-- 코멘트 재정의: `recipe_search.py`/`substitution.py` 역할 분담이 애매했던 걸 "순수 DB 조회 vs 세션 상태 관리"로 명확히 나눔
-- ⚠️ 표시된 데이터 파일(60,282건 조리순서 CSV, KADX 원본 4개, 녹음용_문장스크립트_v1.csv)은 **실물이 어디 있는지 아직 확인 안 됨** — 구조만 파놓은 상태, 착수 전 확보 경로부터 확정 필요
+배포된 모델(어댑터·병합본)은 Hugging Face Hub의 팀 저장소(`leeony/chefear-stt-large-v3-turbo`, `kimseunguk/qwen3-tts-kss-finetuned`, CTranslate2 변환본은 `kimseunguk/chefear-stt-ct2-int8`)에서 앱 시작 시 내려받습니다 — 가중치를 git 저장소에 직접 커밋하지 않습니다.
 
 ---
 
-## 3. 팀 역할 분담 ⚠️ 담당자 확정(기존 문서에 반대로 적혀있던 것 정정)
+## 3. 팀 역할 분담
 
-| 파트 | 담당 업무 |
-|---|---|
-| **A. 오케스트레이션/통합(김승욱)** | 의도분류(임베딩 유사도 매칭), 기준 예문 세트 관리, 재료대체·취소 로직(실데이터 검색만, LLM 없음), 조리순서 실데이터(60,282건) 전처리·적재, Supabase 검색, Hugging Face Spaces 배포, 1주차 통합테스트 주관 |
-| **B. TTS 파인튜닝/UI(홍민하)** | Qwen3-TTS 1.7B 학습 환경 구성 및 KSS 기반 파인튜닝, Streamlit UI 구현 |
-| **C. STT 파인튜닝(하주성)** | KSS 원문 음성 + Qwen3-TTS 합성 음성으로 STT 학습데이터 구성, Whisper 파인튜닝, WER 평가(전/후 비교) |
-
-**임시로 파트 정리했으며, 팀원 간 회의 후 조정 가능합니다.**
+| 파트 | 담당 | 업무 |
+| --- | --- | --- |
+| 오케스트레이션/통합(조장) | 김승욱 | 의도분류, 기준 예문 세트 관리, 재료대체·취소·등록 로직, 로컬 LLM 연동, Supabase 연동·적재, 배포, 통합테스트 |
+| TTS 파인튜닝/UI | 홍민하 | Qwen3-TTS-12Hz-1.7B + KSS 학습·파인튜닝, Streamlit UI 구현 |
+| STT 파인튜닝 | 하주성 | Whisper Small·wav2vec2 비교 실험, whisper-large-v3-turbo QLoRA 파인튜닝, WER/CER 평가 및 최종 모델 선정 |
 
 ---
 
-## 4. 재료 대체가 실제로 어떻게 처리되는지 (LLM 없이) ⚠️ 취소 케이스 추가
+## 4. 재료 대체가 실제로 어떻게 처리되는지 (LLM 생성 없이)
 
 ```
 사용자: "바지락 넣어도 돼?"
    │
    ① Supabase에서 "바지락된장찌개" 같은 요리명이 정확히 있는지 검색
-   │  있으면 → 그 레시피로 전환 제안 (끝)
+   │  있으면 → 그 레시피로 전환 (끝)
    │
    ② 없으면, 재료 목록 안에 "바지락"이 들어간 다른 요리(예: "해물된장찌개")가 있는지 검색
    │  있으면 → 그 레시피 제시 (끝)
    │
    ③ 그것도 없으면 → "죄송해요, 이 조합의 레시피는 없어요"라고 정직하게 답함
-      (LLM이 그럴듯한 답을 만들어내지 않음)
 
-사용자: "아니 그냥 원래대로" / "취소해줘" (신규)
+사용자: "취소해줘" / "아니 그냥 원래대로"
    │
-   └─ 세션에 기록된 직전 recipe_id로 롤백(cancel_substitution())
+   └─ 세션에 기록된 직전 recipe_id로 롤백(1회, 재료대체가 적용된 직후에만 가능)
 ```
 
-이번 스프린트는 **1:1 단순 재료 치환까지만** 지원합니다. 조리법 자체를 바꾸는 재구성(볶음→찜 등)이나 양념 비율 재계산은 범위 밖이고, 동시 대체도 최대 2개까지만 지원합니다.
+1:1 단순 재료 치환까지만 지원합니다. 조리법 자체를 바꾸는 재구성(볶음→찜 등)이나 양념 비율 재계산은 범위 밖이고, 동시 대체도 최대 2개까지만 지원합니다. 조리가 이미 진행 중일 때는 새 요리로 전환되지 않습니다 — 다른 요리를 조회하려면 항상 처음 화면으로 돌아가야 합니다(오인식으로 진행 중이던 레시피가 갑자기 다른 요리로 바뀌는 것을 막기 위함).
 
-## 5. 조리순서 문의 처리 (LLM 없이) ⚠️ 전면 변경
+## 5. 조리순서 문의 처리 (LLM 실시간 생성 없이)
 
 ```
 사용자: "OO 어떻게 만들어?"
    │
    ├─ 60,282건 표준 데이터 안에 있음 → 재료+조리순서 다 안내 (대부분 이 경우)
    │
-   └─ 표준 데이터 밖(전혀 새로운 조합 등) → 재료조차 확인 불가
+   └─ 표준 데이터 밖 → 재료조차 확인 불가
        "죄송해요, 이 요리는 아직 등록된 레시피가 없어요. 직접 알려주시면 등록해드릴까요?"
-       → 신규 등록 흐름으로 유도
+       → (로그인 상태면) 신규 등록 흐름으로 유도, (비로그인 상태면) 로그인 안내
 ```
-
-~~5,100건 안/밖으로 나뉘던 이전 방식은 폐기됐습니다~~ — 이제 표준 데이터가 전체 고유 요리명(60,282개)을 커버하기 때문에, "아직 준비 안 됨" 안내는 예외적인 경우에만 나옵니다.
 
 ---
 
-## 6. 개발 환경 세팅 (중요 — 반드시 순서대로) ⚠️ 환경 분리 폐지
+## 6. 개발 환경 세팅
 
-### 6.1 왜 이제 작업 공간을 하나만 쓰는가
-~~Piper(TTS) 학습이 STT 학습과 완전히 다른 버전을 요구해서 환경을 분리했었습니다.~~ Piper를 더 이상 쓰지 않고, Qwen3-TTS와 Whisper 둘 다 HuggingFace transformers 계열 파인튜닝(LoRA/전체)이라 **환경을 하나로 통합**합니다.
+### 6.1 환경 하나로 통합
+
+오케스트레이션·STT 파인튜닝·TTS 파인튜닝·서비스 전부 하나의 환경(env-main)에서 돌립니다. STT(Whisper)·TTS(Qwen3-TTS)·로컬 LLM(EXAONE) 모두 HuggingFace `transformers` 계열이라 별도 학습 환경 분리가 필요 없습니다.
 
 ```bash
-# 오케스트레이션·STT 파인튜닝·TTS 파인튜닝·서비스 전부 이 환경 하나로
 python3.12 -m venv env-main
 source env-main/bin/activate
-pip install -r requirements-main.txt --break-system-packages
+pip install -r requirements-main.txt
 ```
 
-⚠️ **주의**: Qwen3-TTS 1.7B 파인튜닝은 노트북(RTX 4060 8GB)에서는 사실상 어렵습니다. 데스크탑(RTX 5070 12GB)에서도 배치사이즈를 최소화해야 하며, 실제로 OOM 없이 완주 가능한지 아직 실측 중입니다. 착수 초반에 먼저 확인하세요.
+상시 마이크(`streamlit-webrtc`) 기능은 그 ICE 구현 의존성(`aioice`)이 아직 Python 3.14를 공식 지원하지 않으므로, 서비스를 실제로 띄울 venv는 Python 3.13으로 만들어야 합니다. `run_local.sh`가 알려진 venv 후보 경로들을 순서대로 찾아 실행하므로, 새 계정에서는 이 스크립트의 후보 목록에 자신의 venv 경로를 추가하면 됩니다.
 
-### 6.2 기술 스택 버전 (고정, 임의로 바꾸지 말 것)
+```bash
+./run_local.sh                     # 기본값: src/app.py(실제 서비스) 실행
+./run_local.sh tests/test_ui.py    # STT→LLM→DB→TTS 수동 확인용 테스트 화면
+```
+
+### 6.2 기술 스택 버전 (고정)
 
 | 구분 | 패키지 | 버전 |
-|---|---|---|
-| 언어 | Python | 3.12 (env-main) |
-| 실행 | streamlit | 1.61.1 |
-| 임베딩(의도분류 겸용) | sentence-transformers | 5.6.1 (모델: jhgan/ko-sroberta-multitask) |
-| STT 학습 | transformers / peft / accelerate / bitsandbytes | 버전 재검증 필요(착수 후) |
-| STT 추론 | faster-whisper | 1.2.1 |
-| TTS 학습 | Qwen3-TTS 커뮤니티 LoRA 저장소(instavar/qwen3-tts-lora-finetuning 등) | 버전 미정, **비공식 실험적 저장소**라 디버깅 시간 여유 두기 |
-| TTS 추론 | Qwen3-TTS 공식 저장소 기반 | 버전 미정 |
-| STT·TTS 평가 | jiwer | 4.0.0 (파인튜닝 전/후 실제 비교 대상) |
-| 벡터DB | supabase | 2.31.0 (SQL 절대 안 씀, 잠정) |
+| --- | --- | --- |
+| 언어 | Python | 3.12 (env-main), 서비스 실행 venv는 3.13 |
+| 실행/배포 | streamlit | 1.61.1 |
+| 임베딩(의도분류) | sentence-transformers | 5.6.1 (모델: jhgan/ko-sroberta-multitask) |
+| STT 학습·로컬 LLM 공유 스택 | transformers / peft / bitsandbytes / accelerate | 4.57.3 / 0.20.0 / 0.50.0 / 1.12.0 |
+| STT 추론(배포) | faster-whisper | 1.2.1 (CTranslate2 int8, GPU) |
+| TTS 추론(배포) | qwen-tts | 0.1.1 |
+| STT·TTS 평가 | jiwer | 4.0.0 |
+| DB | supabase | 2.31.0 (SQL RPC 미사용, Python 필터만) |
+| 상시 마이크 | streamlit-webrtc / silero-vad / aiortc | 0.77.0 / 6.2.1 / 1.15.0 |
+| 쿠키(개인화·로그인 유지) | streamlit-cookies-manager | 0.2.0 |
 
-**주의**: `groq`, `piper-tts` 패키지는 requirements에서 완전히 제외했습니다. Qwen3-TTS 학습 시 **24kHz 리샘플링은 필수**(코덱이 다른 샘플레이트를 거부함)입니다.
+`groq`, `piper-tts` 패키지는 requirements에서 완전히 제외합니다. Qwen3-TTS 학습 시 24kHz 리샘플링은 필수입니다.
 
----
+### 6.3 Supabase
 
-## 7. 음성 학습 데이터 ⚠️ 녹음 절차 전면 폐지
-
-### 7.1 팀원·지인 녹음, 하지 않습니다
-~~파인튜닝된 Whisper가 진짜 사람 목소리로도 잘 알아듣는지 확인하려면 실제 녹음이 필요합니다~~ — **이 계획은 폐기됐습니다.** TTS·STT 파인튜닝 모두 **KSS(공개 한국어 음성 데이터셋)**를 사용합니다. TTS는 KSS 원문 음성으로 직접 학습하고, STT는 KSS 원문 음성 + 파인튜닝된 Qwen3-TTS가 생성한 합성 음성을 함께 학습 데이터로 씁니다.
-
-KSS 라이선스는 CC BY-NC-SA 4.0(비상업)으로, 본 프로젝트(수업 과제)는 조건을 충족합니다. 팀원 동의서도 필요 없습니다(본인 목소리를 쓰지 않으므로).
-
-### 7.2 그래도 사람이 필요한 부분 — MOS 청취평가
-강사 가이드 8장에 **TTS MOS(평균 의견 점수) 평가 — 5명 이상 청취 평가**가 필수 정량 지표로 명시돼 있습니다. 이건 "학습용 녹음"이 아니라 **"완성된 TTS 음성을 듣고 점수 매기는" 평가 참여**라 훨씬 부담이 적습니다. `data/mos_participants/`에 참여자·점수를 기록합니다.
-
-### 7.3 STT 학습데이터 관련 유의사항
-자기가 만든 합성음(Qwen3-TTS 출력)으로만 STT를 학습시키면 특정 목소리·패턴에 치우칠 수 있습니다(model collapse 위험). KSS 원문 음성과 합성음을 함께 섞어 쓰고, 검증 단계에서 팀원 실제 음성으로도 별도 테스트하는 것을 권장합니다.
+`db/schema.sql`을 Supabase 대시보드 SQL Editor에 직접 붙여넣어 실행합니다(별도 마이그레이션 도구 없음). `.env`에 `SUPABASE_URL`/`SUPABASE_KEY`를 채우면 `src/orchestration/db.py`의 `get_client()`가 자동으로 실제 DB를 씁니다 — 자격증명이 없으면 코드 수정 없이 인메모리 mock 클라이언트로 동작해 로컬 개발을 막지 않습니다.
 
 ---
 
-## 8. 전체 일정 (2주) ⚠️ 녹음 일정 삭제, 파인튜닝 일정 갱신
+## 7. 음성 학습 데이터
 
-### 1주차 — 개발
-| 기간 | 내용 |
-|---|---|
-| Day1 | 인수인계(이 문서 공유), 인터페이스 확정, env-main 세팅, 임베딩 의도분류 기준예문 정리, STT 학습데이터 구성 착수, Qwen3-TTS 학습 환경 구성, HF Spaces 저장소 초기화 |
-| Day2~3 | KSS 기반 Qwen3-TTS 1차 파인튜닝, TTS 결과물로 STT 학습데이터 생성 및 Whisper 1차 파인튜닝, Supabase 시드 적재(60,282건) |
-| Day4 | 조회/등록 흐름 통합, HF Spaces 배포 1차 시도 — **CPU 환경에서 Qwen3-TTS 추론 속도 반드시 실측**(6.1 참고) |
-| **Day5~7** | **1주차 통합테스트** — TTS·STT 파인튜닝 1차 모델 포함 전체 파이프라인 동작 확인 |
+TTS·STT 파인튜닝 모두 **KSS(공개 한국어 음성 데이터셋, CC BY-NC-SA 4.0)** 를 사용합니다. TTS는 KSS 원문 음성으로 직접 학습하고, STT는 KSS 원문 음성과 파인튜닝된 Qwen3-TTS가 생성한 합성 음성을 함께 학습 데이터로 씁니다. 본 프로젝트는 수업 과제(비상업)라 KSS 라이선스 조건을 충족합니다. 팀원·지인의 실제 목소리를 녹음해 쓰지 않으므로 별도 동의서는 필요 없습니다.
 
-### 2주차 — 정확도 개선 + 발표 준비
-| 기간 | 내용 |
-|---|---|
-| Day8~9 | 하이퍼파라미터 튜닝(LR, epoch 등) 반복 테스트, MOS 청취평가 참여자 섭외·진행 |
-| Day10 | 결과 안 좋으면 한 번 더 반복 |
-| Day11~14 | Before/After 비교자료 정리, 발표 준비·리허설 |
+MOS(청취 평가)나 TTS→STT 재인식 검증처럼 "완성된 음성을 듣고 확인"하는 작업에는 팀원이 직접 참여합니다 — 학습용 녹음과는 다른, 부담이 적은 확인 절차입니다.
 
 ---
 
-## 9. 배포 ⚠️ 리스크 추가
+## 8. 배포
 
-**Hugging Face Spaces (CPU Basic, 완전 무료)**를 사용합니다. GPU는 학습(파인튜닝) 때만 필요하고, 배포된 서비스의 추론은 CPU로 처리하는 게 목표입니다.
+팀 GPU 데스크탑(RTX 5070, 12GB VRAM) 한 대에서 Streamlit 서비스와 STT·TTS·임베딩·로컬 LLM 모델을 모두 상시 구동합니다. GPU는 학습(파인튜닝)뿐 아니라 배포된 서비스의 추론에도 그대로 쓰입니다 — Qwen3-TTS(1.7B)를 목표 응답시간(5초 이내) 안에 CPU만으로 구동하기 어려워, 이미 확보된 GPU 자원을 상시 노출하는 방식을 택했습니다.
 
-⚠️ **미해결 리스크**: 이 계획은 원래 Piper(경량)를 전제로 세웠습니다. Qwen3-TTS(1.7B 파라미터)로 바뀌면서, **GPU 없는 무료 CPU 환경에서 목표 응답시간(5초 이내) 안에 동작하는지 아직 실측하지 못했습니다.** 안 되면 대안: ① GPU 지원 플랫폼(Modal 등)으로 전환 ② 데스크탑을 Tailscale로 상시 노출해 추론 서버로 활용 ③ Qwen3-TTS 0.6B 경량 모델로 축소. 착수 초반 실측 필수입니다.
+외부 접속은 Cloudflare Tunnel로 공개 도메인(`chefear.store`)을 통해 이 GPU 데스크탑에 연결됩니다. 랜딩페이지(`chefear-landingpage.vercel.app`)를 거쳐 접속 링크로 안내하며, `.env`의 `ACCESS_GATE_TOKEN`을 설정하면 그 토큰이 붙은 URL로만 접근을 허용하는 약한 접근 제어를 둘 수 있습니다(비워두면 게이트가 꺼집니다). WebRTC 마이크 연결은 Cloudflare Realtime TURN을 우선 쓰고, 없으면 자체 TURN 또는 구글 공개 STUN으로 대체됩니다.
+
+STT(faster-whisper)·임베딩(sentence-transformers)·로컬 LLM(EXAONE)·TTS(Qwen3-TTS) 넷 다 같은 GPU를 공유하므로, 모델 종류별 락으로 동시 추론을 직렬화해 자원 경합을 막습니다.
 
 ---
 
-## 10. 발표 시 반드시 챙길 것 ⚠️ 항목 변경
+## 9. 발표 시 챙길 것
 
-1. **STT/TTS 둘 다 Before/After 비교** (WER, 청취 비교) — 이제 STT도 파인튜닝하므로 둘 다 필요합니다
-2. **"왜 LLM을 런타임에서 뺐는지"를 먼저 설명** — 지도 강사 가이드를 따른 것임을 명확히
-3. **조리순서 데이터 구성을 있는 그대로 설명** — 요리명·재료 등 메타데이터(60,282건)는 실데이터로 확보했지만 조리순서(`COOKING_STEPS`) 원문 실데이터는 못 구해 LLM(ChatGPT)으로 채웠다는 점,
-(2026-08-16)을 숨기지 말고 그대로 설명(원칙 4: 절대 임의로 지어내지 않음 — 발표에서도 동일 원칙 적용)
-4. **경쟁앱(레시피오·레시핏·만개의레시피) 실사용 비교 결과** — 우리 차별점이 근거와 어떻게 맞아떨어지는지
+1. **STT/TTS 둘 다 Before/After 비교**(WER·CER, 청취 비교)
+2. **"왜 로컬 LLM은 외부 API 배제 원칙에 안 걸리는지"를 먼저 설명** — 팀 GPU에서 직접 도는 완전 로컬 추론이라는 점
+3. **조리순서 데이터 구성을 있는 그대로 설명** — 메타데이터는 실데이터, 조리순서 본문은 배포 전 LLM으로 사전 작성했다는 점(원칙 3, 숨기지 않음)
+4. **경쟁앱(레시피오·레시핏·만개의레시피) 비교 결과** — 우리 차별점(자유발화 이해·검증된 표준 데이터·실시간 재료 대체·계정 기반 개인화 저장)이 근거와 어떻게 맞아떨어지는지
 5. **KSS 라이선스 확인했다는 것** 한 줄 명시(동의서는 불필요 — 팀원 녹음 안 함)
 
 ---
 
-## 11. 질문 있으면
+## 10. 질문 있으면
 
-`docs/ChefEar_PRD_SDD_v0.8.md`에 지금까지 정리된 모든 기술 결정과 근거가 다 있습니다(v0.2~v0.8 변경 요약도 포함). 여기 없는 애매한 상황이 생기면, 임의로 판단하지 말고 팀 채팅방에 먼저 물어봐 주세요.
+`docs/ChefEar_PRD_SDD_v0.8.md`와 `docs/ChefEar_설계서.pdf`에 지금까지 정리된 기술 결정과 근거가 다 있습니다. 여기 없는 애매한 상황이 생기면, 임의로 판단하지 말고 팀 채팅방에 먼저 물어봐 주세요.

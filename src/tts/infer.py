@@ -256,28 +256,18 @@ def _dynamic_max_new_tokens(text: str) -> int:
     return min(_MAX_NEW_TOKENS_CEILING, max(DEFAULT_MAX_NEW_TOKENS, estimated))
 
 
-# 2026-08-27 추가 — "요"처럼 끝음절이 잘려 들린다는 반복 리포트를 TTS_DEBUG 로그로
-# 재분석한 결과, max_new_tokens(예산)는 원인이 아니었다(실사용 17건 전부 예산의
-# 20~35%만 쓰고 스스로 멈춤 — duration_s를 qwen_tts 25Hz 코덱 기준으로 역산하면
-# 실제 소비량은 글자당 약 4.2토큰뿐, _TOKENS_PER_CHAR=20의 1/5도 안 됨). "끊기는
-# 지점이 항상 끝"이라는 패턴(리포트로 재확인)은 화면 rerun이 재생을 끊는 것과도 안
-# 맞다(TTS_DEBUG 직후 재연결/rerun 신호를 찾아봤지만 17건 중 0건) — 자동회귀 TTS가
-# EOS를 텍스트 끝 도달 기준으로 살짝 이르게 판단해, 마지막 음소의 코덱 프레임이
-# 완전히 디코드되기 전에 멈추는 흔한 현상으로 추정된다. HF generate() 표준 파라미터인
-# min_new_tokens(적어도 이만큼은 강제로 더 생성)로 EOS를 조금 늦게 허용해서 완화를
-# 시도한다 — 실측 평균(4.2/char)보다 약간 높게 잡아, 이미 멈추던 지점보다는 몇 스텝
-# 더 나가되 필요 이상으로 강제하진 않는다(너무 높이면 문장이 끝난 뒤 불필요한
-# 잡음/침묵이 붙을 위험). **실제 청취 검증 없이 넣은 값이다** — 이 프로젝트 특성상
-# 텍스트/로그만으로는 "끝 음절이 살아났는지"를 확인할 수 없으므로, 사람이 직접 듣고
-# 확인 전까지는 잠정치로 취급할 것. 오히려 어색해지면 이 하한부터 낮출 것.
-_MIN_TOKENS_PER_CHAR = 5
-
-
-def _dynamic_min_new_tokens(text: str, max_new_tokens: int) -> int:
-    """실측 평균(글자당 ~4.2토큰)보다 살짝 높은 하한을 계산한다 — 위 문서 참고.
-    max_new_tokens(예산)를 절대 넘지 않도록 방어적으로 clamp한다."""
-    estimated = len(text) * _MIN_TOKENS_PER_CHAR
-    return min(max_new_tokens, estimated)
+# 2026-08-27 시도했다 즉시 되돌림 — "요"처럼 끝음절이 잘린다는 리포트에 min_new_tokens
+# (HF generate() 표준 파라미터)로 EOS를 늦게 허용해보려 했으나, **실제 청취 검증 없이
+# 넣은 값이라고 스스로 경고했던 바로 그 위험이 현실화됐다**: 재시작 직후부터 TTS_DEBUG
+# 로그가 단 한 줄도 안 찍혔다(실측 확인 — 재시작 이후 전체 로그에서 0건). speak()의
+# 예외 처리가 st.warning()(화면에만 표시, 서버 콘솔엔 안 남음)이라 콘솔상으론 아무
+# 흔적도 없이 TTS가 전면 침묵했다 — 로그인 안 된 상태의 "등록" 안내 음성("로그인 후
+# 이용해 주세요")도 이 때문에 전혀 안 나와서 "등록 기능이 고장났다"는 리포트로 이어짐
+# (사용자가 화면이 안 바뀐다고 마이크에 대고 말한 것까지 그대로 STT에 잡힘). 이
+# qwen_tts 버전의 generate_voice_clone()/generate_custom_voice()이 min_new_tokens를
+# 실제로 받아들이는지 검증 없이 넣은 게 원인으로 추정 — 확정 원인 조사보다 되돌리는
+# 게 급선무라 바로 제거한다. 끝음절 잘림 완화는 이 방법 말고, 실제 청취로 먼저
+# 검증되는 다른 방법으로 다시 시도할 것.
 
 # do_sample=True(확률적 샘플링)라 시드 고정 없이는 같은 문장도 호출마다 결과가 달라진다
 # (2026-08-19 확인: 그동안 시드 고정이 전혀 없었음). 재현 가능한 테스트/비교를 위해 매
@@ -323,9 +313,6 @@ def tts_synthesize(
     # 화면 표시/로그/DB용 원문(text)은 그대로 두고, TTS에 넘길 사본에만 발음 보정을 적용.
     tts_text = apply_pronunciation_fixes(text)
 
-    # 2026-08-27 추가 — 끝음절 조기종료(EOS) 완화 시도, _dynamic_min_new_tokens() 문서 참고.
-    min_new_tokens = _dynamic_min_new_tokens(tts_text, max_new_tokens)
-
     if model_type == "base":
 
         # custom_voice 화자 임베딩이 없는 체크포인트 — 레퍼런스 음성으로 목소리를 복제해서 생성.
@@ -345,8 +332,6 @@ def tts_synthesize(
             voice_clone_prompt=_voice_clone_prompt,
 
             max_new_tokens=max_new_tokens,
-
-            min_new_tokens=min_new_tokens,
         )
 
     elif model_type == "custom_voice":
@@ -362,8 +347,6 @@ def tts_synthesize(
             instruct=instruct,
 
             max_new_tokens=max_new_tokens,
-
-            min_new_tokens=min_new_tokens,
         )
 
     else:

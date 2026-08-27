@@ -13,6 +13,7 @@ from orchestration.recipe_search import (
     extract_dish_name,
     find_dish_name_ignoring_repetition,
     find_dish_name_ignoring_spaces,
+    find_dish_name_stripping_query_suffix,
     search_variant_recipe,
     select_standard_recipe,
 )
@@ -217,6 +218,17 @@ def handle_utterance(
             repetition_corrected = find_dish_name_ignoring_repetition(resolved_dish_name, client=client)
             if repetition_corrected and repetition_corrected != resolved_dish_name:
                 found = select_standard_recipe(repetition_corrected, owner_id=session.get("owner_id"), client=client)
+        if found is None:
+            # 2026-08-27 추가 — 위 두 안전망과 나란히, LLM이 "레시피"류 질의 접미사를
+            # dish_name에서 못 떼고 그대로 돌려준 경우(예: "멸치볶음레시피") 대응.
+            # 편집거리/유사도 전혀 없이 "접미사를 뗀 결과가 DB에 글자 그대로 있는가"만
+            # 보므로(find_dish_name_stripping_query_suffix() 문서 참고), 위에서 되돌린
+            # fuzzy 매칭과 달리 다른 요리로 새는 오매칭 위험이 구조적으로 없다 — 사용자가
+            # 실제로 등록한 적 없는 새 요리("OO레시피"라는 이름 자체가 그 사람만의 것일
+            # 수도 있음)라면 접미사를 떼도 DB에 없으니 그대로 "없다"고 정직하게 답한다.
+            suffix_corrected = find_dish_name_stripping_query_suffix(resolved_dish_name, client=client)
+            if suffix_corrected and suffix_corrected != resolved_dish_name:
+                found = select_standard_recipe(suffix_corrected, owner_id=session.get("owner_id"), client=client)
         if found is None:
             return {"intent": intent, "message": DISH_NOT_FOUND_MESSAGE}
         session["current_recipe_id"] = found["recipe_id"]
