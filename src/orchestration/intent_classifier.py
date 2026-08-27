@@ -53,7 +53,7 @@ MODEL_NAME = "jhgan/ko-sroberta-multitask"  # 한국어 문장 임베딩에 특�
 THRESHOLD = 0.5
 MARGIN = 0.05
 
-VALID_INTENTS = {"조회", "등록", "진행", "재청취", "이전", "재료대체", "취소", "감탄사"}
+VALID_INTENTS = {"조회", "등록", "진행", "재청취", "이전", "감탄사"}
 # 2026-08-26 추가 — "감탄사"(감사합니다/아멘/고마워요 등)만 새로 추가. "긍정"(응/네/좋아
 # 등, 기준예문.csv엔 있지만 여기 화이트리스트엔 의도적으로 빠져있음 — my_recipes.py
 # 관련 코드가 아니라 recipe_confirm 등 화면이 직접 문자열 비교로 처리하기로 이미
@@ -144,21 +144,14 @@ def _pick_intent(ranked: list[tuple[str, tuple[float, str]]], context_recipe_id:
             )
             return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_UNCLASSIFIED}
 
-    if top_intent == "재료대체" and not context_recipe_id:
-        # EC-05: "바지락 넣어도 돼?"처럼 재료대체 의도로 보이지만, 지금 어떤
-        # 레시피를 진행 중인지(context_recipe_id)를 모르면 뭘 대체해야 할지
-        # 알 수 없다. 이럴 땐 의도 분류 자체는 맞았어도 실행할 수 없으니
-        # 되물어야 한다.
-        return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_NEED_CONTEXT}
-
     if top_intent == "등록" and context_recipe_id:
         # 2026-08-26 요청 — "등록"은 아직 아무 레시피도 안 고른 첫 화면에서만 의미
         # 있는 의도다("등록은 첫 페이지 아니면 의미없는 문구다"). 그런데 실측 로그로
         # "다음 단계 알려줘"류 조리 중 발화가 "진행"과 근소한 차이로 "등록" 예문과도
         # 계속 비슷하게 잡히는 게 확인됐다(예: 진행=0.435 vs 등록=0.404) — margin
         # 미달로 대부분은 미분류로 걸러지지만, 운 좋게(?) margin을 넘기면 조리
-        # 흐름 중간에 뜬금없이 등록 화면으로 튕겨나간다. 위 재료대체(EC-05)와 같은
-        # 자리에서, 이미 레시피를 진행 중(context_recipe_id 있음)이면 "등록"으로
+        # 흐름 중간에 뜬금없이 등록 화면으로 튕겨나간다. 이미 레시피를 진행
+        # 중(context_recipe_id 있음)이면 "등록"으로
         # 분류됐어도 미분류로 되돌려 무시한다. 사용자가 "등록"이라는 단어를 직접
         # 말하는 경로(dispatch.py::_REGISTER_WORD)는 이 함수를 거치지 않는 별도
         # 분기라 화면과 무관하게 여전히 동작한다 — 명시적 단어 vs 애매한 임베딩

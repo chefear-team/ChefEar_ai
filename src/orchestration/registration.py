@@ -108,7 +108,6 @@ def register_recipe(session: dict, step: str, value=None, client=None) -> dict:
             instructions=reg["instructions"],
             source="user_custom",  # 신규 등록은 항상 사용자 버전
             origin_id=None,
-            owner_id=session.get("owner_id"),  # 작업3: 쿠키 UUID (누구 레시피인지)
             client=client,
         )
         session["registration"] = None  # 저장 끝났으니 임시 등록 상태는 정리
@@ -123,7 +122,6 @@ def save_recipe(
     instructions: list[str],
     source: str = "user_custom",
     origin_id: str | None = None,
-    owner_id: str | None = None,
     client=None,
 ) -> dict:
     """레시피 하나를 실제로 recipes/recipe_steps 테이블에 저장한다(7.5 확정 저장).
@@ -133,9 +131,12 @@ def save_recipe(
     같은 로직이 전혀 없음) — 그래서 사용자가 같은 요리를 여러 버전으로 저장해도
     전부 별도의 행으로 남는다.
 
-    owner_id(작업3, 쿠키 UUID): user_custom을 저장할 때 "이건 누구 것인지"를
-    같이 남긴다. load_data.py로 적재하는 api_standard 데이터는 owner_id가
-    항상 None이다(특정 개인 소유가 아니라 모두를 위한 표준 데이터라서).
+    2026-08-27 — 계정/쿠키 시스템을 없애면서 "누가 등록했는지" 추적을 그만뒀다
+    (owner_id는 항상 None으로 저장, `recipes.owner_id` 컬럼 자체는 나중에 다른
+    식별자로 재사용할 수 있게 스키마엔 남겨둠). 대신 승인(approved) 컬럼으로
+    공개 여부를 가린다 — 신규 user_custom은 관리자가 승인(`approved='Y'`)하기
+    전까진 아무도 조회할 수 없다(admin_recipe_approval.md). api_standard는
+    load_data.py가 적재 시점에 이미 approved='Y'로 넣는다.
     """
     client = client or get_client()
     # .insert({...}) 는 딕셔너리 하나(행 하나)를 즉시 넣고, .execute().data는
@@ -150,7 +151,7 @@ def save_recipe(
                 "ingredients": ", ".join(ingredients),  # 리스트를 콤마로 이어붙여 텍스트 컬럼에 저장
                 "source": source,
                 "origin_id": origin_id,
-                "owner_id": owner_id,
+                "approved": "N",  # 관리자 승인 대기 — 승인 전까진 조회에서 제외됨
             }
         )
         .execute()
@@ -170,45 +171,8 @@ def save_recipe(
     return {"recipe_id": recipe_id, "saved": True}
 
 
-def update_recipe(
-    recipe_id: str,
-    dish_name: str,
-    ingredients: list[str],
-    instructions: list[str],
-    client=None,
-) -> dict:
-    """이미 저장된 user_custom 레시피 한 건을 제자리에서 고친다(마이 레시피 화면의 "수정").
-
-    save_recipe()는 일부러 매번 새 행을 insert만 하고 절대 덮어쓰지 않는다(EC-17) —
-    "새 버전으로 등록"과 "이미 있는 내 레시피를 고치기"는 다른 동작이라서 함수도
-    나눴다. recipe_steps는 통째로 지우고 다시 넣는다 — 조리순서는 몇 단계짜리로
-    바뀔지 몰라서(늘거나 줄 수 있음) 행 단위로 하나씩 맞춰 UPDATE하는 것보다
-    delete-then-insert가 훨씬 단순하고, on delete cascade와 달리 recipes 행 자체는
-    안 건드리므로 recipe_id/created_at/owner_id 등은 그대로 유지된다.
-
-    2026-08-27 추가 — my_recipes.py::screen_edit_recipe()가 사용자가 직접 타이핑한
-    dish_name을 여기로 그대로 넘기는데(.strip()만 적용, 내부 공백은 그대로), 등록
-    경로(register_recipe())와 똑같은 공백 문제가 수정 경로에도 생길 수 있어
-    _normalize_dish_name()으로 똑같이 정리한다.
-    """
-    client = client or get_client()
-    client.table("recipes").update(
-        {"dish_name": _normalize_dish_name(dish_name), "ingredients": ", ".join(ingredients)}
-    ).eq("id", recipe_id).execute()
-
-    client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
-    step_payload = [
-        {"recipe_id": recipe_id, "step_number": i, "step_text": text, "source": "user_custom"}
-        for i, text in enumerate(instructions, start=1)
-    ]
-    if step_payload:
-        client.table("recipe_steps").insert(step_payload).execute()
-
-    return {"recipe_id": recipe_id, "updated": True}
-
-
 def delete_recipe(recipe_id: str, client=None) -> dict:
-    """user_custom 레시피 한 건을 완전히 지운다(마이 레시피 화면의 "삭제").
+    """레시피 한 건을 완전히 지운다(관리자 페이지의 "삭제" — admin_recipe_approval.md).
 
     recipe_steps부터 먼저 지운다 — schema.sql의 on delete cascade가 recipes 삭제 시
     딸린 recipe_steps도 자동으로 지워주긴 하지만, 여기서 명시적으로 먼저 지워서 그

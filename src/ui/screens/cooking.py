@@ -53,15 +53,13 @@ def screen_start() -> None:
     # (이 화면은 대화 기록을 화면에 안 보여주므로 비워도 다른 부작용 없음).
     chat_log = st.session_state.chat_log
     if chat_log and chat_log[-1][0] == "ai":
-        # 2026-08-27 수정 — "로그인 안 된 상태에서 '등록'을 반복해도 안내 음성이
-        # 계속 안 들린다" 실측 리포트. nonce 없이 부르면 recipe_confirm과 달리 이
-        # 화면만 매번 같은 문구("로그인 후 이용해 주세요.")를 똑같은 nonce=0으로
-        # 그려서, 브라우저가 "이미 로드된 오디오"로 보고 두 번째 시도부터 autoplay를
-        # 다시 실행하지 않았다(render_audio_player()/render_audio_autoplay() 문서
-        # 참고 — 같은 audio_src 문자열이면 iframe srcDoc이 안 바뀐 걸로 보고 리마운트
-        # 안 함). recipe_confirm이 이미 쓰는 것과 같은 패턴(_audio_replay_nonce)으로
-        # 맞춘다 — dispatch.py::_block_register_if_not_logged_in()이 매번 이 값을
-        # 올려주므로, 여기서 그 값을 읽기만 하면 반복해도 매번 새로 재생된다.
+        # 2026-08-27 수정 — 같은 화면(start)에 머무른 채 같은 문구를 반복 재생해야
+        # 하는 경우(예: 조회 실패 안내), nonce 없이 부르면 브라우저가 "이미 로드된
+        # 오디오"로 보고 두 번째 시도부터 autoplay를 다시 실행하지 않는다
+        # (render_audio_player()/render_audio_autoplay() 문서 참고 — 같은 audio_src
+        # 문자열이면 iframe srcDoc이 안 바뀐 걸로 보고 리마운트 안 함). recipe_confirm이
+        # 이미 쓰는 것과 같은 패턴(_audio_replay_nonce)으로 맞춘다 — 반복 재생이
+        # 필요한 호출부가 이 값을 올려주면, 여기서 읽기만 해도 매번 새로 재생된다.
         _render_cached_speech(chat_log[-1][1], nonce=st.session_state.get("_audio_replay_nonce", 0))
         st.session_state.chat_log = []
     # 2026-08-23 요청 — "준비됐는지 안 됐는지 모르겠다": 실제 연결 상태(mic_is_playing())를
@@ -132,8 +130,12 @@ def screen_recipe_confirm() -> None:
     # 문제 대응). "응"(긍정) 확인은 classify_intent()가 처리하지 않아서(의도적 제외,
     # tests/integration_test.md 기록) 이 화면 전용 핸들러가 문자열을 직접 비교한다.
 
-    if st.button("다른 레시피 찾을래요", use_container_width=True):
-        goto("start")
+    # 2026-08-27 — 잔상 방지용 key. 이 버튼 자체엔 원래 key가 없어서 CSS로 화면
+    # 소속을 특정할 방법이 없었다 — theme.py::render_screen_cleanup()이 이 key로
+    # "recipe_confirm이 아닌 화면에 남아있으면 잔상"으로 판정해 지운다.
+    with st.container(key="recipe_confirm_other_recipe_btn"):
+        if st.button("다른 레시피 찾을래요", use_container_width=True):
+            goto("start")
 
 
 def handle_recipe_confirm(text: str) -> None:
@@ -159,7 +161,7 @@ def handle_recipe_confirm(text: str) -> None:
     # 그 외 전부 -> 처음 화면"이라는 단순한 이분법으로 설계됐었는데, 그동안
     # else 분기가 process_utterance()(classify_intent() 전체 파이프라인)로
     # 넘어가게 돼 있었다. "조회수 1위 표준 레시피"
-    # 화면이라 여기서 진행/이전/재료대체 같은 다른 의도까지 판단할 필요가 없고,
+    # 화면이라 여기서 진행/이전 같은 다른 의도까지 판단할 필요가 없고,
     # 이 레시피가 아니면 "다른 레시피 찾을래요" 버튼과 똑같이 처음 화면으로
     # 보내 새로 요리명을 말하게 하는 게 원래 설계다.
     #
@@ -258,6 +260,33 @@ def screen_cooking_step() -> None:
     prefetch_remaining_steps_audio(view, step_number)
 
     render_badge(f'{view["dish_name"]} · {step_number} / {total} 단계')
+
+    # 2026-08-28 추가 — "1단계예요, 이전 단계가 없어요." 같은 1회성 안내(dispatch.py의
+    # no_previous 분기)는 조리 단계 자체의 오디오가 아니라서 아래 render_step_card()가
+    # 재생을 못 맡는다 — 이 화면엔 start()/recipe_confirm()과 달리 "도착 화면이 대화
+    # 기록의 마지막 안내를 다시 찾아 들려주는" 로직이 아예 없어서, hidden=True로
+    # 캐싱만 해두고 아무도 재생을 안 하는 버그였다(실측 리포트). 같은 패턴으로 여기서
+    # 재생한다 — 조리 단계 오디오(_audio_replay_nonce)와 같은 rerun에서 동시에
+    # 재생되면 겹쳐 들리므로 반드시 별도 nonce(_cooking_notice_nonce, dispatch.py
+    # 주석 참고)를 쓴다. 이 화면은 chat_log를 비우지 않는데(render_chat()으로 계속
+    # 표시해야 해서), 정상적인 단계 진행(다음/이전/다시)의 마지막 ai 메시지는 조리
+    # 단계 텍스트 자체라 _common_audio_path() 캐시가 없어 _render_cached_speech()가
+    # 조용히 no-op한다(voice_io.py 문서 참고) — 그래서 이 안내문 케이스만 골라 재생되고
+    # 정상 단계 진행엔 부작용이 없다.
+    #
+    # 2026-08-28 수정 — 이 슬롯을 조건부로(캐시 있을 때만) 그리면 screen_cooking_step
+    # 컨테이너의 직계 자식 개수가 rerun마다 달라진다("다시" 후엔 no-op라 0개, "이전"(1단계)
+    # 후엔 안내 st.html 1개) — 이게 정확히 app.py::main() 주석이 설명하는 Streamlit#8360
+    # stale-widget 트리거다. 실측: "다시" -> "이전" 순서에서 안내 엘리먼트가 새로 생기며
+    # 아래 스텝 카드/재생바가 한 칸 밀려 통째로 리마운트되고, _audio_replay_nonce가 안
+    # 바뀌었는데도 1단계 음성이 다시 재생돼 안내와 겹쳐 들렸다(음성 2개). fallback_buttons()
+    # 의 이전/다시/다음 행도 같은 이유로 잔상 중복됐다. 고정 key 컨테이너로 감싸서 안내
+    # 유무와 무관하게 항상 한 칸만 차지하게 해 자식 개수를 고정한다 — 안이 비어도 슬롯은
+    # 유지되므로 스텝 카드 위치가 안 밀린다.
+    with st.container(key="cs_notice_audio_slot"):
+        chat_log = st.session_state.chat_log
+        if chat_log and chat_log[-1][0] == "ai":
+            _render_cached_speech(chat_log[-1][1], nonce=st.session_state.get("_cooking_notice_nonce", 0))
 
     # 2026-08-21: speak()가 만드는 재생 위젯은 그 직후 goto()의 st.rerun()으로 화면이
     # 바로 새로고침되면서 같이 사라진다 — speak() 안에서 렌더링한 건 "그 rerun 전까지만"

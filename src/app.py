@@ -42,7 +42,7 @@ from theme import (
     render_error_notice,
     render_screen_cleanup,
 )
-from ui.dispatch import listen_background_only, process_utterance
+from ui.dispatch import process_utterance
 from ui.screens.cooking import (
     handle_recipe_confirm,
     screen_cooking_complete,
@@ -50,20 +50,17 @@ from ui.screens.cooking import (
     screen_recipe_confirm,
     screen_start,
 )
-from ui.screens.my_recipes import screen_edit_recipe, screen_login, screen_my_recipes
 from ui.screens.register import (
-    handle_no_match,
     handle_register_dish_name,
     handle_register_intro,
     screen_complete,
-    screen_no_match,
     screen_register_dish_name,
     screen_register_ingredients,
     screen_register_intro,
     screen_register_steps,
     screen_unclassified,
 )
-from ui.session import goto, init_state, restore_login_from_cookie
+from ui.session import goto, init_state
 from ui.voice_io import listen
 
 load_env()
@@ -73,17 +70,18 @@ SCREENS = {
     "recipe_confirm": screen_recipe_confirm,
     "cooking_step": screen_cooking_step,
     "cooking_complete": screen_cooking_complete,
-    "no_match": screen_no_match,
     "unclassified": screen_unclassified,
     "register_intro": screen_register_intro,
     "register_dish_name": screen_register_dish_name,
     "register_ingredients": screen_register_ingredients,
     "register_steps": screen_register_steps,
     "complete": screen_complete,
-    "login": screen_login,
-    "my_recipes": screen_my_recipes,
-    "edit_recipe": screen_edit_recipe,
 }
+
+# 음성 트리거로 관리자 페이지↔메인을 전환할 때 st.switch_page()에 넘길 st.Page 객체.
+# __main__ 블록이 Page를 실제로 만들 때 여기에 채운다(main()/_exit_admin()은 읽기만).
+_MAIN_PAGE = None
+_ADMIN_PAGE = None
 
 
 def _access_gate_ok() -> bool:
@@ -101,7 +99,42 @@ def _access_gate_ok() -> bool:
     expected = os.environ.get("ACCESS_GATE_TOKEN", "").strip()
     if not expected:
         return True
-    return st.query_params.get("key") == expected
+    # 2026-08-28 — 한 번 ?key=로 통과한 세션은 계속 통과로 본다. st.switch_page()로
+    # 관리자 페이지에 갔다 오면(음성 트리거/← 메인으로) URL의 ?key=가 떨어져 나가서,
+    # 이 가드가 없으면 돌아온 메인 화면이 소개페이지 안내로 막히는 게 실측 확인됐다.
+    # ?key= 게이트 자체가 "약한 접근 제한"이라, 세션 지속은 보안 성격을 안 바꾼다.
+    if st.query_params.get("key") == expected:
+        st.session_state["_access_ok"] = True
+        return True
+    return bool(st.session_state.get("_access_ok"))
+
+
+def _admin_gate_ok() -> bool:
+    """관리자 페이지 접근 게이트 **1차** — `.env`의 ADMIN_ACCESS_TOKEN 토큰
+    (docs/specs/admin_recipe_approval.md). 2차(화자검증)는 통과 뒤 `_run_admin_page()`
+    안에서 `ui/screens/admin_auth.py`가 한다(docs/specs/admin_voice_2fa.md).
+
+    _access_gate_ok()와 정반대 방향의 기본값을 쓴다는 점에 주의: 토큰이 비어있으면
+    _access_gate_ok()는 fail-open(게이트 꺼짐, 로컬 개발 편의)이지만, 여긴
+    fail-closed(아무도 못 들어감)다. 여긴 "약한 접근 제한"이 아니라 레시피 승인/삭제
+    같은 실제 데이터 조작 권한이라, 설정을 깜빡했을 때 기본값이 안전한 쪽(닫힘)이어야
+    한다.
+    """
+    expected = os.environ.get("ADMIN_ACCESS_TOKEN", "").strip()
+    if not expected:
+        return False
+    return st.query_params.get("admin_key") == expected
+
+
+def _enroll_gate_ok() -> bool:
+    """관리자 목소리 등록 화면(`/enroll?enroll_key=`) 접근 게이트 —
+    docs/specs/admin_voice_2fa.md. `_admin_gate_ok()`와 완전히 같은 fail-closed 패턴,
+    별개 시크릿(ADMIN_ENROLL_TOKEN). 등록이 끝나면 이 값을 비우거나 바꿔서 등록 창을
+    닫아두는 걸 권장한다."""
+    expected = os.environ.get("ADMIN_ENROLL_TOKEN", "").strip()
+    if not expected:
+        return False
+    return st.query_params.get("enroll_key") == expected
 
 
 def _start_model_warmup() -> None:
@@ -168,7 +201,9 @@ def _start_model_warmup() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="ChefEar", page_icon="🍲", layout="centered", initial_sidebar_state="collapsed")
+    # 2026-08-27 — st.set_page_config()는 st.navigation()으로 멀티페이지 구조가 되면서
+    # 스크립트 진입점(`if __name__ == "__main__":` 블록)으로 옮겼다 — Streamlit은 이
+    # 호출이 스크립트당(페이지별이 아니라) 딱 한 번, 다른 st.* 호출보다 먼저 와야 한다.
 
     # 2026-08-26 요청 — 랜딩페이지 버튼을 거치지 않은 직접 URL 접근 차단(토큰 붙은 URL
     # 방식, _access_gate_ok()/render_access_blocked() 문서 참고). init_state()보다
@@ -178,6 +213,17 @@ def main() -> None:
         inject_css()
         render_access_blocked()
         st.stop()
+
+    # 2026-08-28 — 음성 트리거("관리자 페이지 접근할게요", dispatch._is_admin_trigger())로
+    # 세운 플래그. 이 rerun에서 __main__이 관리자 st.Page를 nav에 등록했을 테니, 여기서
+    # 그 페이지로 전환한다(옵션 A — 이동만, 실제 인증은 도착 화면 챌린지). 인증까지
+    # 끝났으면 반복 전환 안 함.
+    if (
+        st.session_state.get("_admin_via_voice")
+        and not st.session_state.get("_admin_verified")
+        and _ADMIN_PAGE is not None
+    ):
+        st.switch_page(_ADMIN_PAGE)
 
     init_state()
 
@@ -251,57 +297,15 @@ def main() -> None:
 
     # voice_io.prefetch_remaining_steps_audio()의 백그라운드 스레드가 참조하는
     # "지금 활성 레시피" 표시를 매 rerun마다 최신 상태로 맞춘다(2026-08-22 요청) — 사용자가
-    # 다른 레시피로 넘어가거나(재료대체 포함) 처음 화면으로 돌아가 pipeline_session이
-    # 리셋되면, 이 값도 즉시 바뀌어서 버려진 레시피의 백그라운드 합성이 다음 단계
-    # 진입 전에 스스로 멈춘다.
+    # 처음 화면으로 돌아가 pipeline_session이 리셋되면, 이 값도 즉시 바뀌어서 버려진
+    # 레시피의 백그라운드 합성이 다음 단계 진입 전에 스스로 멈춘다.
     st.session_state._active_recipe_box["recipe_id"] = st.session_state.pipeline_session.get("current_recipe_id")
-    # 새로고침해도 로그인이 풀리지 않게, 저장해둔 로그인 쿠키로 세션을 복원한다
-    # (2026-08-22 요청) - _start_model_warmup()보다 먼저 해야 화면이 뜨자마자 바로
-    # 로그인 상태로 보인다.
-    restore_login_from_cookie()
     _start_model_warmup()
     inject_css()
-    # 2026-08-21 요청 당시엔 start 화면에서만 보여줬는데, 2026-08-25 재요청으로
-    # 모든 화면에서 같은 자리(우측 상단)에 항상 보이게 바꿨다 — no_match 화면에서
-    # "로그인해야 등록 가능"이라는 안내를 새로 넣으면서, 정작 그 화면에 로그인
-    # 버튼 자체가 없는 게 어색하다는 지적. 로그인 상태면 아이콘 대신 아이디를
-    # 보여주고, 누르면 로그인 화면 대신 마이 레시피로 바로 간다(2026-08-22 요청).
-    # 2026-08-26 재요청 — recipe_confirm에 이어 cooking_step도 예외로 로그인 버튼을
-    # 뺀다(레시피 확인/조리 진행 중엔 로그인 유도가 방해된다는 판단으로 추정 — 사유는
-    # 요청 당시 구체적으로 안 밝혀짐, 필요하면 다음에 물어볼 것). 화면이 더 늘어날
-    # 수 있어서 단일 비교 대신 집합으로 바꿨다.
-    # 2026-08-26(같은 날, 또 재요청) — cooking_complete("요리가 완성됐어요!")도 추가.
-    # 2026-08-27 재요청 — register_dish_name("어떤 요리인가요?")도 추가. 요리명을
-    # 음성/텍스트로 막 입력하려는 집중 화면이라 로그인 유도가 방해된다는 판단으로
-    # 추정(사유 구체적으로 안 밝혀짐, 위 cooking_step과 같은 종류의 요청 — 필요하면
-    # 다음에 물어볼 것).
-    # 2026-08-27(같은 날, 또 재요청) — register_ingredients/register_steps도 추가.
-    # 재료·순서를 직접 타이핑하는 집중 입력 화면이라 로그인 버튼도 마이크 인식도
-    # 방해 요소로 판단됨(아래 register_steps 마이크 처리 변경과 같은 요청 세트).
-    _LOGIN_BUTTON_HIDDEN_SCREENS = (
-        "recipe_confirm",
-        "cooking_step",
-        "cooking_complete",
-        "register_dish_name",
-        "register_ingredients",
-        "register_steps",
-    )
-    current_user = st.session_state.current_user
-    if render_brand(
-        show_login=(st.session_state.screen not in _LOGIN_BUTTON_HIDDEN_SCREENS),
-        username=(current_user or {}).get("username"),
-    ):
-        if current_user:
-            goto("my_recipes")
-        else:
-            # 2026-08-25 요청 — 로그인 전에 있던 화면을 기억해뒀다가 로그인 성공 후
-            # 그 화면으로 바로 돌아간다(원래는 항상 start로 보냈음). 실제 로그인
-            # 성공 처리는 my_recipes.py::screen_login()이 이 값을 pop해서 쓴다 —
-            # "login" 화면 자체가 여기 저장될 일은 구조상 없지만(로그인 안 된 상태에서만
-            # 이 분기를 타고, 로그인 화면 자체엔 이 브랜드 버튼과 별개로 이미 있는
-            # 뒤로가기 링크가 있음), 혹시 몰라 my_recipes.py 쪽에서 한 번 더 방어한다.
-            st.session_state["_login_return_screen"] = st.session_state.screen
-            goto("login")
+    # 2026-08-27 — 일반 사용자 로그인/회원가입/마이레시피를 전부 없앴다(계정 시스템
+    # 제거 결정). 로그인 버튼도 같이 없앤다 — 관리자 접근은 별도 게이트(admin_recipe_
+    # approval.md)로 이동.
+    render_brand()
 
     # 2026-08-24 — "화면 전체를 st.empty() 슬롯 하나로 감싸서 매번 통째로 교체" 시도는
     # 되돌림(실측: "된장찌개 레시피 알려줘" 인식 후 무반응/회색 화면으로 멈추는 새 증상
@@ -359,9 +363,7 @@ def main() -> None:
 
     # 화면별로 원래 각 screen_*() 함수 안에서 하던 listen()/listen_background_only()
     # 호출과 그 결과 처리를 그대로 여기로 옮겼다 — 파라미터(show_mic/show_text_fallback/
-    # key_prefix)와 처리 로직은 원래 화면 파일에 있던 것과 동일하다. login/my_recipes/
-    # edit_recipe는 원래도 마이크를 안 썼던 화면이라 여기서도 아무것도 안 부른다(다른
-    # 화면으로 넘어가면 다음 실행에서 다시 마이크가 붙는다).
+    # key_prefix)와 처리 로직은 원래 화면 파일에 있던 것과 동일하다.
     if screen == "start":
         text = _next_text("start", show_mic=False, show_text_fallback=False)
         if text:
@@ -378,14 +380,6 @@ def main() -> None:
         text = _next_text("cooking_complete", show_mic=False)
         if text:
             process_utterance(text)
-    elif screen == "no_match":
-        # 2026-08-25 요청 — 이 화면은 "초기"/"등록" 두 키워드만 반응하고 나머지는
-        # 다 무시하는 아주 좁은 화면(handle_no_match() 문서 참고)이라, 텍스트로 자유
-        # 문장을 입력받는 대체 입력칸 자체가 혼란만 준다는 지적 — 버튼(원래 레시피로
-        # 계속하기/새 레시피로 등록할래요)은 그대로 두고 텍스트 폴백 입력칸만 없앤다.
-        text = _next_text("no_match", show_mic=False, show_text_fallback=False)
-        if text:
-            handle_no_match(text)
     elif screen == "unclassified":
         text = _next_text("unclassified")
         if text:
@@ -414,46 +408,84 @@ def main() -> None:
         text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
-    elif screen == "login":
-        # 2026-08-26 재요청 — login 화면은 음성으로 아무것도 하면 안 된다("처음"/"취소"도
-        # 포함, 아이디/비밀번호를 입력하는 민감한 화면이라 음성 오인식으로 화면이 갑자기
-        # 바뀌는 것 자체를 원치 않음). 그렇다고 listen() 호출 자체를 아예 없애면 바로
-        # 아래 my_recipes/edit_recipe 문서에 적은 "orphan-reset"(마이크 강제 재연결)
-        # 문제가 되돌아온다 — 그래서 listen()은 그대로 매 rerun마다 불러서 마이크
-        # 연결은 살려두되, 돌아온 텍스트를 완전히 버린다(어떤 분기 처리도 안 함).
-        # listen_background_only()(아래 my_recipes/edit_recipe가 쓰는 것)는 "처음"/
-        # "취소"에는 반응하므로 이 화면엔 안 맞아서 직접 listen()을 부른다.
-        listen("login", show_text_fallback=False)
-    elif screen in ("my_recipes", "edit_recipe"):
-        # 2026-08-26 실측 확인 — 이 화면들은 원래 마이크를 아예 안 불렀는데("원래도
-        # 마이크를 안 썼던 화면"), 폼 입력처럼 상호작용마다 rerun이 여러 번 이어지는
-        # 화면에서 마이크 컴포넌트가 그 여러 rerun 동안 계속 안 그려지자 streamlit_webrtc
-        # 라이브러리 자신이 "고아 컴포넌트"로 보고 강제로 리셋하는 걸 로그로 직접
-        # 확인했다(WRTCDBG "orphan-reset" 줄, current_run과 last_rendered의 차이가
-        # 남). 화면 전환 1번당 재연결 1번(기존부터 있던, 아직 못 고친 문제)과는 별개로,
-        # 이 화면들에 "머무르는 동안" 추가로 더 끊기는 원인이었다. login 화면이 이미
-        # 쓰는 것과 같은 패턴(listen()으로 마이크는 계속 그려서 살려두되 반환값은
-        # 버림)과 유사하게, listen_background_only()로 마이크는 계속 그려서 살려두되
-        # "처음"/"취소" 두 안전한 단어에만 반응하게 한다(2026-08-27 — register_ingredients/
-        # register_steps는 이 패턴에서 빠지고 완전 무시로 바뀜, 위 두 분기 주석 참고).
-        listen_background_only(screen, cancel_target="start")
 
 
-if __name__ == "__main__":
-    # 2026-08-26 요청 — "예방 차원으로 다른 에러들에 대해서도 셋팅"(오늘 밤 RTCPeerConnection
-    # 브라우저 예외에 이어, 파이썬 쪽에서 예상 못한 예외가 나는 경우까지 포함). main() 안
-    # 곳곳의 개별 try/except(TTS 합성 실패, DB 조회 실패 등, speak() 등 각자 st.warning()
-    # 문구를 이미 갖고 있음)는 그대로 두고 건드리지 않는다 — 저것들은 그 자리에서 뭐가
-    # 실패했는지 알려주는 게 사용자에게 더 유용하다. 이건 그 어디서도 안 잡힌 완전히
-    # 예상 못한 예외(코드 버그, 새 화면 추가 시 놓친 분기 등)의 최후 방어선 — Streamlit
-    # 기본 동작(빨간 트레이스백을 화면에 그대로 노출)을 대신해서 render_error_notice()로
-    # 사용자에게는 "잠시 후 재시도 해주시길 바랍니다."만 보여주고, 실제 예외는 서버 콘솔에만
-    # 남긴다(EC-05와 같은 정신 — 화면은 안 죽되 원인 추적은 개발자만 할 수 있게).
+def _run_with_error_notice(label: str, fn) -> None:
+    """2026-08-26 요청 — "예방 차원으로 다른 에러들에 대해서도 셋팅"(오늘 밤 RTCPeerConnection
+    브라우저 예외에 이어, 파이썬 쪽에서 예상 못한 예외가 나는 경우까지 포함). main()/admin
+    화면 안 곳곳의 개별 try/except(TTS 합성 실패, DB 조회 실패 등, speak() 등 각자
+    st.warning() 문구를 이미 갖고 있음)는 그대로 두고 건드리지 않는다 — 저것들은 그
+    자리에서 뭐가 실패했는지 알려주는 게 사용자에게 더 유용하다. 이건 그 어디서도 안
+    잡힌 완전히 예상 못한 예외(코드 버그, 새 화면 추가 시 놓친 분기 등)의 최후
+    방어선 — Streamlit 기본 동작(빨간 트레이스백을 화면에 그대로 노출)을 대신해서
+    render_error_notice()로 사용자에게는 "잠시 후 재시도 해주시길 바랍니다."만
+    보여주고, 실제 예외는 서버 콘솔에만 남긴다(EC-05와 같은 정신).
+    """
     try:
-        main()
+        fn()
     except Exception as exc:  # noqa: BLE001 — 의도적으로 넓게 잡는 최후 방어선(위 문서 참고)
         import traceback
 
-        print(f"[app] main() 예상 못한 예외: {exc!r}", flush=True)
+        print(f"[app] {label} 예상 못한 예외: {exc!r}", flush=True)
         traceback.print_exc()
         render_error_notice()
+
+
+def _exit_admin() -> None:
+    """관리자 페이지에서 메인으로 빠져나온다 — 음성 트리거 플래그와 인증 상태를 지운다.
+    (IP 기준 시도 제한은 admin_auth 모듈 메모리라 여기서 안 건드린다 — 나가도 잠금은 유지.)"""
+    for k in ("_admin_via_voice", "_admin_verified", "_admin_challenge", "_admin_warm_started"):
+        st.session_state.pop(k, None)
+    if _MAIN_PAGE is not None:
+        st.switch_page(_MAIN_PAGE)
+
+
+def _run_admin_page() -> None:
+    # 1차 = ?admin_key= 토큰(_admin_gate_ok) 또는 음성 트리거 플래그(_admin_via_voice).
+    # 2차 = 화자검증(랜덤 단어 챌린지). 통과 세션 플래그가 서면 Phase 1 승인 목록을
+    # 보여준다(docs/specs/admin_voice_2fa.md). 새로고침하면 세션이 날아가 다시 인증(EC-10).
+    from ui.screens.admin import render_admin
+    from ui.screens.admin_auth import render_voice_challenge
+
+    inject_css()
+    if st.button("← 메인으로", key="admin_exit"):
+        _exit_admin()
+    if not st.session_state.get("_admin_verified"):
+        render_voice_challenge()
+        return
+    st.caption(f"관리자: {st.session_state['_admin_verified']}")
+    render_admin()
+
+
+def _run_enroll_page() -> None:
+    from ui.screens.admin_enroll import render_admin_enroll
+
+    inject_css()
+    render_admin_enroll()
+
+
+if __name__ == "__main__":
+    # 2026-08-27 — 관리자 페이지(docs/specs/admin_recipe_approval.md)를 독립 Streamlit
+    # 페이지로 분리했다. st.set_page_config()는 st.navigation()보다 먼저, 스크립트당
+    # 한 번만 불러야 한다.
+    st.set_page_config(page_title="ChefEar", page_icon="🍲", layout="centered", initial_sidebar_state="collapsed")
+
+    _MAIN_PAGE = st.Page(lambda: _run_with_error_notice("main()", main), title="ChefEar", default=True)
+    _pages = [_MAIN_PAGE]
+    # 토큰(?admin_key=)이 맞거나, 음성 트리거("관리자 페이지 접근할게요")로 세션 플래그가
+    # 서면 관리자 Page를 등록한다. 둘 다 아니면 목록에 아예 안 넣어 /admin이 "없는
+    # 페이지"로 보인다(존재를 숨김). 등록되더라도 실제 진입은 화자검증 챌린지가 막는다.
+    if _admin_gate_ok() or st.session_state.get("_admin_via_voice"):
+        _ADMIN_PAGE = st.Page(
+            lambda: _run_with_error_notice("admin", _run_admin_page), title="관리자", url_path="admin"
+        )
+        _pages.append(_ADMIN_PAGE)
+    if _enroll_gate_ok():
+        # 관리자 목소리 등록 화면(docs/specs/admin_voice_2fa.md). enroll_key 별도 시크릿,
+        # 위 admin과 같은 이유로 토큰 안 맞으면 목록에 안 넣는다.
+        _pages.append(
+            st.Page(lambda: _run_with_error_notice("enroll", _run_enroll_page), title="관리자 등록", url_path="enroll")
+        )
+    # position="hidden" — 사이드바에 페이지 목록/링크를 노출하지 않는다. 관리자 페이지는
+    # URL(?admin_key=<토큰>)을 직접 아는 사람만 접근해야 하므로, 링크로 존재를 드러내면 안 됨.
+    st.navigation(_pages, position="hidden").run()

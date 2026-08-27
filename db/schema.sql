@@ -99,7 +99,21 @@ create table if not exists users (
     id uuid primary key default gen_random_uuid(),
     username text not null unique,
     -- 원문 비밀번호는 저장하지 않는다. "salt(hex):hash(hex)" 형태의 PBKDF2-HMAC-SHA256
-    -- 해시 문자열(orchestration/auth.py의 hash_password() 참고).
+    -- 해시 문자열이었다(orchestration/auth.py, 2026-08-27 계정 시스템 제거로 코드는
+    -- 삭제됨). 테이블은 남겨둔다 — 나중에 구글 OAuth 등을 붙이면 이 자리를 다시 쓸 수도
+    -- 있고, DROP은 되돌리기 어려운 조작이라 지금 코드에서 안 쓴다고 굳이 지우지 않는다.
     password_hash text not null,
     created_at timestamptz not null default now()
 );
+
+-- ── approved(2026-08-27 추가, docs/specs/admin_recipe_approval.md): 관리자 승인 워크플로우 ──
+-- 'Y'면 조회(select_standard_recipe)에 노출되고, 'N'이면 관리자가 승인하기 전까지
+-- 아무도(등록한 사람 포함) 조회할 수 없다. api_standard는 처음부터 검수된 데이터라
+-- 기본값을 'Y'로 두고, 신규 user_custom은 registration.py::save_recipe()가 매번
+-- 명시적으로 'N'을 넣는다(테이블 기본값만 믿으면 그 코드를 깜빡했을 때 바로 공개돼버림).
+alter table recipes add column if not exists approved text not null default 'Y' check (approved in ('Y', 'N'));
+
+-- 이미 있던 행(이 컬럼이 생기기 전에 적재된 api_standard/user_custom)은 전부 승인된
+-- 것으로 간주한다 — 안 그러면 기존 데이터가 이 마이그레이션 직후 전부 조회 안 되는
+-- 회귀가 생긴다. 한 번만 실행하면 되고, 재실행해도 이미 'Y'인 행은 그대로라 안전하다.
+update recipes set approved = 'Y' where approved is distinct from 'Y';

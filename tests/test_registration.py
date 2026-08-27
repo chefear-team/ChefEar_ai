@@ -6,7 +6,7 @@ from orchestration.registration import register_recipe, save_recipe
 
 def test_ac06_full_flow_confirms_and_saves_as_user_custom():
     client = FakeSupabaseClient()
-    session = {"owner_id": "user-A"}  # 작업3: 쿠키에서 이미 발급받은 UUID라고 가정
+    session: dict = {}
 
     register_recipe(session, "dish_name", "문어초무침", client=client)
     register_recipe(session, "ingredients", ["문어", "오이", "초고추장"], client=client)
@@ -19,7 +19,10 @@ def test_ac06_full_flow_confirms_and_saves_as_user_custom():
     saved = client.table("recipes").rows[result["recipe_id"]]
     assert saved["dish_name"] == "문어초무침"
     assert saved["source"] == "user_custom"
-    assert saved["owner_id"] == "user-A"
+    # 2026-08-27 — 계정/쿠키 시스템 삭제로 등록자를 추적하지 않는다(owner_id 안 채움).
+    # 대신 관리자 승인 전까진 조회에서 제외되도록 approved='N'으로 저장된다
+    # (admin_recipe_approval.md).
+    assert saved["approved"] == "N"
     steps = [r for r in client.table("recipe_steps").rows.values() if r["recipe_id"] == result["recipe_id"]]
     assert len(steps) == 2
 

@@ -1,4 +1,4 @@
-"""ChefEar 신규 등록 플로우 화면(no_match -> register_intro -> ... -> complete) —
+"""ChefEar 신규 등록 플로우 화면(register_intro -> ... -> complete) —
 src/app.py에서 분리(2026-08-22, 화면 컴포넌트화).
 
 register_recipe()가 돌려주는 prompt/summary는 대화 중간(재료·순서 누적)에만 있고,
@@ -24,10 +24,7 @@ from theme import (
     ICON_CHECK_SMALL,
     ICON_QUESTION_CIRCLE,
     ICON_SPARKLE,
-    ICON_X_CIRCLE,
     render_back_link,
-    render_badge,
-    render_chat,
     render_chips,
     render_dots,
     render_mic_bar,
@@ -36,95 +33,10 @@ from theme import (
 from orchestration.db import get_client
 from orchestration.registration import register_recipe
 from ui.dispatch import fallback_buttons, is_home_word, reset_to_start
-from ui.session import get_owner_id, goto
+from ui.session import goto
 from ui.voice_io import _render_cached_speech, mic_is_playing, speak
 
 _REGISTER_SAVED_MESSAGE = "저장이 완료됐어요!"
-
-
-def screen_no_match() -> None:
-    # 2026-08-26 요청 — 로고 밑에 다른 화면들(register_dish_name 등, 이 파일 아래
-    # 참고)과 똑같은 "처음 화면으로" 뒤로가기 링크가 이 화면엔 빠져 있었다 — 같은
-    # 패턴(render_back_link() 호출 결과가 True면 start로) 그대로 맞춘다.
-    if render_back_link("처음 화면으로"):
-        goto("start")
-    render_spacer()
-    st.markdown(f'<div class="ce-lead-icon warn">{ICON_X_CIRCLE}</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="ce-center"><h1>이 조합의 레시피는 없어요</h1>'
-        "<p>요리명과 재료 내용, 두 가지 기준으로 모두 찾아봤지만 없어서 정직하게 말씀드려요.</p></div>",
-        unsafe_allow_html=True,
-    )
-    chat_log = st.session_state.chat_log
-    if chat_log and chat_log[-1][0] == "ai":
-        # dispatch.py가 이 화면으로 넘어오기 직전 speak(..., hidden=True)로 미리 합성/캐싱만
-        # 해둔 문구를 여기서 다시 찾아 들려준다(2026-08-22 리포트 — 화면 전환 중 재생바가
-        # "떴다 사라짐" 깜빡이는 문제, recipe_confirm과 같은 패턴).
-        _render_cached_speech(chat_log[-1][1])
-    # 2026-08-26 재요청(cooking_step과 같은 이유) — 최근 2개만 보여주던 창을 없애고 전체를 보여준다.
-    render_chat(st.session_state.chat_log)
-    st.caption("실데이터 검색만으로 판단해요 — 없는 레시피를 지어내지 않아요 (1.5 원칙).")
-    render_spacer()
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.session_state.pipeline_session.get("current_recipe_id") and st.button(
-            "원래 레시피로 계속하기", type="primary", use_container_width=True
-        ):
-            goto("cooking_step")
-    with c2:
-        # 2026-08-25 요청 — 등록은 owner_id가 있어야 "내가 등록한 레시피"로 걸러지는
-        # 로그인 계정 기준 기능이라(get_owner_id() 문서 참고), 로그인 안 한 상태에서
-        # 버튼을 눌러 register_intro까지 갔다가 결국 등록 자체가 익명으로만 처리되는
-        # 혼란을 막기 위해 로그인 여부로 버튼을 활성/비활성화한다.
-        is_logged_in = st.session_state.current_user is not None
-        if st.button("새 레시피로 등록할래요", use_container_width=True, disabled=not is_logged_in):
-            goto("register_intro")
-    if not is_logged_in:
-        # 2026-08-25 요청 — st.caption()은 회색 잔글씨라 눈에 잘 안 띈다는 지적으로,
-        # "조회수 1위 표준 레시피 자동 선택" 등에 이미 쓰는 강조 배지(.ce-badge, 은은한
-        # 강조색 알약 모양)로 바꿔서 눈에 띄게 한다.
-        render_badge("로그인을 하시면 레시피를 등록할 수 있어요.")
-
-    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 아래 handle_no_match()에 넘긴다.
-
-
-def handle_no_match(text: str) -> None:
-    """screen_no_match()가 그려진 뒤 app.py가 잡아온 발화를 처리한다.
-
-    2026-08-25 추가 — 원래는 다른 화면들처럼 process_utterance()(classify_intent()
-    전체 파이프라인)를 그대로 써서, 이 화면에서 아무 말이나 해도 배경 스레드(LLM/DB
-    조회)가 돌면서 로딩 팝업("다음으로 넘어가고 있어요...")이 뜨고, 심지어 "다른
-    레시피 알려줘"처럼 재조회 시도로 이어질 수도 있었다. 이 화면은 요리명+재료 둘
-    다로 이미 못 찾은 상태라 여기서 또 조회를 시도할 필요가 없다는 요청(2026-08-25)으로,
-    아주 좁은 키워드 몇 개만 문자열로 직접 비교하는 구조로 바꿨다 — recipe_confirm/
-    register_intro와 같은 패턴. 아래 네 가지 외의 모든 발화는 배경 작업을 전혀 안
-    띄우므로(=process_utterance() 자체를 안 부름) 로딩 팝업도 안 뜨고, DB 조회도
-    전혀 안 일어난다.
-    """
-    norm = text.strip().rstrip("?!.,~ ")
-    # 2026-08-25 재요청 — "다른 레시피 알려줘"류(is_lookup_like()) 인식 분기를 없애고
-    # "초기"/"등록" 두 키워드만 반응하도록 더 좁혔다(다른 발화는 전부 무시). "등록"은
-    # 로그인 계정이 있을 때만 실제로 이동시킨다 — "새 레시피로 등록할래요" 버튼이
-    # 로그인 여부로 활성/비활성화되는 것과 음성 경로를 똑같이 맞춘다(screen_no_match()
-    # 참고, 안 그러면 버튼은 막혀있는데 음성으로는 뚫리는 불일치가 생김).
-    if is_home_word(norm) or "처음" in norm:
-        # is_home_word()의 _HOME_WORDS(dispatch.py)에 "초기"/"초기화면"/"초기 화면"/
-        # "초기화"가 이미 다 들어있어서(2026-08-25 이전에 추가됨) "초기"는 이 한 줄로
-        # 이미 잡힌다 — 별도 분기 불필요.
-        reset_to_start()
-    elif "등록" in norm:
-        if st.session_state.current_user is not None:
-            goto("register_intro")
-        else:
-            # 로그인 안 한 상태의 "등록" 발화는 무시(로그인하라고 화면에 이미 캡션으로
-            # 안내돼 있음, screen_no_match() 참고) — 아래 else와 같은 이유로 rerun만.
-            st.rerun()
-    else:
-        # dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고) — 화면은 그대로 두고
-        # rerun만 걸어서 마이크 드레인 루프가 끊기지 않게 한다. 이 분기는 애초에
-        # process_utterance()를 부른 적이 없어서 로딩 팝업이 뜬 적도 없다.
-        st.rerun()
 
 
 def screen_unclassified() -> None:
@@ -137,8 +49,7 @@ def screen_unclassified() -> None:
     )
     chat_log = st.session_state.chat_log
     if chat_log and chat_log[-1][0] == "ai":
-        # screen_no_match()와 같은 이유(2026-08-22) — dispatch.py의 hidden=True speak()가
-        # 미리 캐싱해둔 문구를 여기서 다시 들려준다.
+        # dispatch.py의 hidden=True speak()가 미리 캐싱해둔 문구를 여기서 다시 들려준다.
         _render_cached_speech(chat_log[-1][1])
     render_spacer()
     render_mic_bar("다시 말씀해주세요", "또는 아래 버튼을 눌러주세요", listening=False)
@@ -173,7 +84,6 @@ def screen_register_intro() -> None:
     c1, c2 = st.columns(2)
     with c1:
         if st.button("네, 등록할래요", type="primary", use_container_width=True):
-            get_owner_id()
             goto("register_dish_name")
     with c2:
         if st.button("괜찮아요", use_container_width=True):
@@ -208,7 +118,6 @@ def handle_register_intro(text: str) -> None:
         else:
             goto("start")
     elif any(word in norm for word in ("네", "응", "좋", "그래", "등록")):
-        get_owner_id()
         goto("register_dish_name")
     else:
         # 2026-08-25 추가 — dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고).
@@ -219,8 +128,9 @@ def handle_register_intro(text: str) -> None:
 
 
 def screen_register_dish_name() -> None:
-    """FR-06 1단계: 요리명 질문. no_match에서 넘어온 추측값(pending_dish_name)을
-    그대로 쓰지 않고 사용자가 직접 확인/수정하게 한다 — 규칙 기반 추출은 틀릴 수 있어서
+    """FR-06 1단계: 요리명 질문. 다른 경로(LLM wants_register 등)에서 넘어온
+    추측값(pending_dish_name)을 그대로 쓰지 않고 사용자가 직접 확인/수정하게 한다 —
+    규칙 기반 추출은 틀릴 수 있어서
     (entity_extract.py 참고) 등록처럼 DB에 실제로 남는 데이터는 검증 없이 넘기면 안 된다."""
     if render_back_link("처음 화면으로"):
         goto("start")
@@ -239,8 +149,13 @@ def screen_register_dish_name() -> None:
     # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 아래 handle_register_dish_name()에
     # 넘긴다(위 파일 docstring 참고).
 
-    if st.button("취소", use_container_width=True):
-        goto("register_intro")
+    # 2026-08-27 — 잔상 방지용 key. "취소"는 여러 화면이 같이 쓰는 흔한 문구라 텍스트
+    # 마커로는 어느 화면 소속인지 특정할 수 없어서(theme.py::_STALE_CONTENT_MARKERS
+    # 문서 참고, 오지우기 위험 때문에 원래부터 제외돼 있었음) 이 화면 전용 key로
+    # 구조적으로 잡는다(recipe_confirm_other_recipe_btn과 같은 패턴).
+    with st.container(key="register_dish_name_cancel_btn"):
+        if st.button("취소", use_container_width=True):
+            goto("register_intro")
 
 
 def handle_register_dish_name(text: str) -> None:
@@ -287,10 +202,20 @@ def screen_register_ingredients() -> None:
     # 2026-08-25 — 그 listen_background_only() 호출 자체는 app.py::main()이 화면별 key
     # 컨테이너 밖에서 직접 부른다(위 파일 docstring 참고).
 
-    new_item = st.text_input("재료 추가(쉼표로 여러 개 가능)", key="reg_ing_new", placeholder="예: 두부, 감자")
+    # 2026-08-27 — "추가" 누른 뒤에도 입력칸에 방금 친 글자가 그대로 남아있다는 지적.
+    # st.text_input()은 key가 고정이면 session_state[key]에 값을 계속 들고 있어서
+    # rerun해도 안 비워진다 — Streamlit은 위젯이 그려진 뒤에 그 값을 코드로 직접 지울
+    # 방법이 없어서(위젯 인스턴스화 후 session_state[key] 대입은 예외), voice_io.py의
+    # listen()이 이미 쓰는 것과 같은 패턴(turn 카운터로 매번 새 key)을 그대로 가져온다 —
+    # key가 바뀌면 완전히 새 위젯이라 이전 값이 안 남는다.
+    _ing_turn = st.session_state.setdefault("reg_ing_turn", 0)
+    new_item = st.text_input(
+        "재료 추가(쉼표로 여러 개 가능)", key=f"reg_ing_new_{_ing_turn}", placeholder="예: 두부, 감자"
+    )
     if st.button("추가") and new_item.strip():
         items = [x.strip() for x in new_item.split(",") if x.strip()]
         register_recipe(st.session_state.pipeline_session, "ingredients", items, client=get_client())
+        st.session_state.reg_ing_turn = _ing_turn + 1
         st.rerun()
 
     if reg["ingredients"] and st.button("네, 맞아요", type="primary", use_container_width=True):
@@ -359,16 +284,20 @@ def screen_register_steps() -> None:
     # 2026-08-25 — 그 listen_background_only() 호출 자체는 app.py::main()이 화면별 key
     # 컨테이너 밖에서 직접 부른다(위 파일 docstring 참고).
 
-    new_step = st.text_input("순서 추가", key="reg_step_new", placeholder="새 단계 추가")
+    # reg_ing_new와 같은 이유로 turn 카운터 기반 key를 써서 "단계 추가" 이후
+    # 입력칸에 방금 텍스트가 남아있지 않게 한다.
+    _step_turn = st.session_state.setdefault("reg_step_new_turn", 0)
+    new_step = st.text_input("순서 추가", key=f"reg_step_new_{_step_turn}", placeholder="새 단계 추가")
     if st.button("단계 추가") and new_step.strip():
         register_recipe(st.session_state.pipeline_session, "instructions", [new_step.strip()], client=get_client())
+        st.session_state.reg_step_new_turn = _step_turn + 1
         st.rerun()
 
     if reg["instructions"] and st.button("네, 저장할게요", type="primary", use_container_width=True):
         # 2026-08-23 리포트(AppTest로 재현 확인) — register_recipe()의 "confirm" step은
         # session["current_recipe_id"]를 안 채우고 session["registration"]도 저장 직후
         # None으로 비운다(registration.py 참고). screen_complete()는 요리명을
-        # st.session_state.recipe_view에서 읽는데(조회/재료대체 때만 채워지는 값) 신규
+        # st.session_state.recipe_view에서 읽는데(조회 때만 채워지는 값) 신규
         # 등록 플로우는 그걸 채운 적이 없어서, "저장이 완료됐어요!" 화면에 방금 등록한
         # 요리명 대신 기본값 "레시피"만 뜨는 버그가 있었다. register_recipe() 호출 전에
         # reg는 이미 dish_name을 들고 있는 지역 참조이므로(위 register_recipe() 호출이
@@ -384,18 +313,22 @@ def screen_register_steps() -> None:
 
 
 def screen_complete() -> None:
+    # 2026-08-27 — 관리자 승인(Y/N) 워크플로우 도입으로 문구 갱신. 예전엔 owner_id
+    # 기반 개인화("회원님 버전으로 먼저 안내") + 즉시 조회 가능을 전제로 한 문구였는데,
+    # 이제 신규 등록은 관리자가 승인하기 전까진 아무도(등록한 사람 포함) 조회할 수
+    # 없다(admin_recipe_approval.md 참고) — 그 사실을 정직하게 안내한다.
     dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
         f'<div class="ce-center"><h1>저장이 완료됐어요!</h1>'
-        f"<p>{dish_name}, 다음에 다시 찾으면 회원님 버전으로 먼저 안내해드릴게요.</p></div>",
+        f"<p>{dish_name}, 관리자 승인 후에 검색할 수 있어요.</p></div>",
         unsafe_allow_html=True,
     )
     _render_cached_speech(_REGISTER_SAVED_MESSAGE)
     st.markdown(
         '<div style="text-align:center;">'
-        f'<span class="ce-status-badge">{ICON_CHECK_SMALL} 나만의 레시피로 저장됨</span></div>',
+        f'<span class="ce-status-badge">{ICON_CHECK_SMALL} 심사 대기 중</span></div>',
         unsafe_allow_html=True,
     )
     render_spacer()

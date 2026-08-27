@@ -8,6 +8,7 @@ import base64
 import io
 import json
 import re
+import time
 from pathlib import Path
 from string import Template
 
@@ -1022,8 +1023,17 @@ _AUDIO_PLAYER_TEMPLATE = Template("""
 <div class="player">
   <span class="wave" id="wave">$bars</span>
 </div>
-<audio id="audio" src="$audio_src" preload="auto" autoplay></audio>
+<audio id="audio" src="$audio_src#$nonce" preload="auto" autoplay></audio>
 <script>
+// 2026-08-28 — 이 스크립트 본문 전체를 IIFE로 감싼다. 인라인 <script>는 전역 스코프에서
+// 실행되는데, render_audio_player()가 rerun마다(조리 진행/"다시" 등) 다시 렌더되면
+// Streamlit이 replaceChild로 이 <script>를 재주입하면서 이전 렌더의 `const audio`가
+// 아직 전역에 살아있어 "Identifier 'audio' has already been declared" SyntaxError가 났다.
+// 이 에러는 원래부터 계속 났는데, render_screen_cleanup()의 스윕 스크립트(window.onerror
+// 핸들러를 설치함)가 DOMPurify에 잘려 안 돌던 동안엔 안 보였다 — base64 로더로 스윕이
+// 실제로 돌기 시작하자 이 에러를 잡아 "잠시 후 재시도" 토스트를 반복해서 띄웠다.
+// IIFE로 감싸면 const가 함수 스코프가 돼 재주입돼도 전역 충돌이 없다.
+(function () {
   const audio = document.getElementById('audio');
   const wave = document.getElementById('wave');
   const bars = wave.querySelectorAll('span');
@@ -1046,14 +1056,23 @@ _AUDIO_PLAYER_TEMPLATE = Template("""
   // 더 이상 수동으로 재생을 시작할 방법이 없다 - "다시" 음성 명령/버튼으로 다시 이
   // 화면에 들어오면 재생을 다시 시도한다.
   // 2026-08-23 수정 — "재생 시작 부분이 씹혀 들림"(크롬에서 특히) 리포트 원인 중 하나로
-  // 확인: <audio autoplay> 속성이 이미 자체적으로 재생을 시작한 직후(비동기) 이 스크립트가
+  // 확인: audio 엘리먼트의 autoplay 속성이 이미 자체적으로 재생을 시작한 직후(비동기) 이 스크립트가
   // 곧장 audio.play()를 한 번 더 불러서, 크롬이 그 두 시작 신호가 겹치는 걸 재생 살짝
   // 되감기/재시작으로 처리해 첫 음절이 손실됐던 것으로 보인다(정확한 내부 동작은 미확인).
+  // 2026-08-27 추가 발견 — 이 주석 안에 태그 모양 텍스트를 꺾쇠괄호로 직접 써넣으면
+  // st.html(unsafe_allow_javascript=True)가 쓰는 DOMPurify 새니타이저가 스크립트 태그
+  // 자체를 통째로 걸러내 버린다(Playwright로 실측 재현 — 이 스크립트를 한 줄씩 늘려가며
+  // 이진탐색한 결과 바로 이 줄에서 처음 사라짐을 확인, ADD_TAGS로 script를 허용해놔도
+  // 마찬가지). 이 재생바가 안 움직이고 "다시" 재생 시 소리 자체가 하나도 안 들리던
+  // 실사용 리포트의 진짜 원인이 이거였다 — JS 문법 에러가 아니라 주석 문구가 우연히
+  // 태그처럼 생겨서 새니타이저를 착각하게 만든 것. 이 주석(과 위 주석)에서 꺾쇠괄호를
+  // 다 빼서 풀어 쓴 이유이니, 앞으로 이 스크립트 블록 안 주석에는 꺾쇠괄호를 쓰지 말 것.
   // autoplay가 이미 시작한 상태(paused=false)라면 이 명시적 호출을 건너뛰어서 이중 트리거를
   // 피한다 - autoplay가 막혀서 여전히 paused인 경우에만 이 폴백이 실행된다.
   if (audio.paused) {
     audio.play().catch(function () {});
   }
+})();
 </script>
 """)
 
@@ -1143,22 +1162,37 @@ def render_audio_player(audio_path: str | Path, height: int = 64, nonce: int | s
     조용히 대기 상태로 남는다 - 2026-08-21 요청으로 재생 버튼을 없애서, 막혔을 때 이
     위젯 안에서 수동으로 다시 시작할 방법은 이제 없다(파형만 표시, 클릭 불가).
 
-    nonce: "다시"(재청취)처럼 같은 파일을 같은 단계에서 다시 재생해야 할 때 쓴다 — audio_src가
-    이전 렌더와 완전히 같은 문자열이면 Streamlit 프론트엔드(React)가 iframe의 srcDoc이
-    안 바뀐 걸로 보고 DOM을 그대로 유지해버려서(리마운트 안 함) <audio autoplay>가 다시
-    실행되지 않는다(2026-08-21, "다시" 재생 요청으로 확인됨). html 맨 앞에 안 보이는
-    주석으로 넣어 매 호출마다 문자열 자체를 다르게 만들면 프론트엔드가 새 iframe으로
-    인식해서 다시 로드 -> autoplay가 재실행된다.
+    nonce: "다시"(재청취)처럼 같은 파일을 같은 단계에서 다시 재생해야 할 때 쓴다 — 최종 html
+    문자열이 이전 렌더와 완전히 같으면 Streamlit 프론트엔드(React)가 이 st.html() 위젯
+    내용이 안 바뀐 걸로 보고 DOM을 그대로 유지해버려서(리마운트 안 함) <audio autoplay>가
+    다시 실행되지 않는다(2026-08-21, "다시" 재생 요청으로 확인됨).
+
+    2026-08-28 수정 — 원래는 html 맨 앞에 `<!-- replay-nonce:N -->` 주석을 붙여 문자열을
+    다르게 만들었는데(st.iframe() 시절 srcDoc 비교엔 이걸로 충분했음), 2026-08-27
+    st.iframe() -> st.html() 전환 이후로 이 방식이 조용히 깨졌다: st.html()이 거치는
+    DOMPurify 새니타이저가 HTML 주석 노드를 통째로 제거해서, "다시"(같은 wav·같은 파형)
+    에선 nonce가 몇이든 최종 html이 완전히 동일해졌다 -> 프론트엔드가 리마운트를 안 해
+    autoplay 재실행이 안 됨(라이브 DOM 실측 — "다시" 후에도 <audio>가 ended 상태 그대로,
+    새 엘리먼트도 안 생김. 사용자 리포트 "'다시' 해도 안 읽어줌"의 원인). 이제 nonce를
+    제거되는 주석 대신 <audio src>의 data URI 뒤 프래그먼트(`...#<nonce>`)로 넣는다 —
+    브라우저는 data URI의 `#...`를 디코딩에서 무시하지만(재생엔 영향 없음, 실측 확인)
+    src 속성값 자체가 달라지므로 html 문자열이 바뀌어 프론트엔드가 리마운트한다.
     """
     data = _wav_bytes_with_lead_silence(audio_path)
     audio_src = "data:audio/wav;base64," + base64.b64encode(data).decode("ascii")
     bar_heights = _compute_wave_bars(audio_path)
     bars_html = "".join(f'<span style="height:{h}px"></span>' for h in bar_heights)
-    html = f"<!-- replay-nonce:{nonce} -->\n" + _AUDIO_PLAYER_TEMPLATE.substitute(
+    # nonce는 템플릿 안에서 <audio src="...#$nonce">로 들어간다(위 docstring 2026-08-28
+    # 수정 참고 — DOMPurify가 지우는 주석 대신 src 프래그먼트로).
+    html = _AUDIO_PLAYER_TEMPLATE.substitute(
         bars=bars_html,
         audio_src=audio_src,
+        nonce=nonce,
     )
-    st.iframe(html, height=height)
+    # 2026-08-27 수정 — render_audio_autoplay()와 같은 원인/같은 수정(그쪽 문서 참고) —
+    # st.iframe()의 중첩 iframe이 autoplay 권한을 못 받아 조용히 차단됐다. 이 함수는
+    # <script>(파형 진행 표시)가 있어서 st.html()의 unsafe_allow_javascript=True가 필요.
+    st.html(html, unsafe_allow_javascript=True)
 
 
 def render_audio_autoplay(audio_path: str | Path, nonce: int | str = 0) -> None:
@@ -1166,16 +1200,27 @@ def render_audio_autoplay(audio_path: str | Path, nonce: int | str = 0) -> None:
     화면 없는 버전. "저장이 완료됐어요!" 화면처럼 안내 문구를 음성으로만 들려주고
     재생 컨트롤 자체는 화면에 남기고 싶지 않을 때 쓴다(2026-08-21).
 
-    height=1(최소값 — st.iframe은 0을 허용 안 함, StreamlitInvalidHeightError)이라
     화면에 거의 자리를 차지하지 않지만, 안의 <audio autoplay>는 render_audio_player()와
-    똑같이 동작한다 — nonce로 매 호출마다 문자열을 다르게 만들어야 재렌더 시에도
-    프론트엔드가 iframe을 새로 마운트해 autoplay가 다시 실행된다(같은 이유는
-    render_audio_player() 문서 참고).
+    똑같이 동작한다 — nonce로 매 호출마다 html 문자열을 다르게 만들어야 재렌더 시에도
+    프론트엔드가 이 위젯을 새로 마운트해 autoplay가 다시 실행된다. nonce를 <audio src>의
+    data URI 뒤 프래그먼트로 넣는 이유는 render_audio_player() 문서(2026-08-28 수정) 참고 —
+    st.html()의 DOMPurify가 HTML 주석을 제거해서 예전의 `<!-- replay-nonce -->` 방식이
+    깨졌었다.
     """
     data = _wav_bytes_with_lead_silence(audio_path)
     audio_src = "data:audio/wav;base64," + base64.b64encode(data).decode("ascii")
-    html = f"<!-- replay-nonce:{nonce} -->\n<audio src=\"{audio_src}\" autoplay></audio>"
-    st.iframe(html, height=1)
+    html = f'<audio src="{audio_src}#{nonce}" autoplay></audio>'
+    # 2026-08-27 수정 — "hidden 재생 음성이 계속 안 들린다"(등록 안내 등) 실측 리포트
+    # 원인 확정: st.iframe()은 내용을 별도 iframe으로 감싸는데, Streamlit의 st.iframe()
+    # 파이썬 API엔 allow="autoplay" 같은 permissions-policy를 넘길 방법 자체가 없다
+    # (공식 시그니처 확인 — src/width/height/tab_index뿐). 그 결과 크롬이 이 안쪽
+    # <audio autoplay>를 "권한 없는 중첩 iframe"으로 보고 조용히(에러 없이) 차단한다 —
+    # Playwright 헤드리스 브라우저로 직접 재현/검증: 같은 오디오를 allow 속성 없는
+    # iframe에 넣으면 paused=true, allow="autoplay"를 명시하면 정상 재생됨을 확인.
+    # st.html()은 공식 문서에 "content is not iframed"라고 명시돼 있어(iframe.py와
+    # 대조 확인) 최상위 문서에 직접 삽입되므로 이 중첩 iframe 문제 자체가 없다 —
+    # 실제 라이브 서버(디버그 패널 + 캐시된 조회 응답)로 autoplay 정상 동작까지 검증 후 반영.
+    st.html(html)
 
 
 def render_processing_chime(nonce: int | str = 0) -> None:
@@ -1196,9 +1241,11 @@ def render_processing_chime(nonce: int | str = 0) -> None:
     디스크 파일도 안 거치고 패딩 없이 매번 새로 합성한다(짧은 사인파라 비용도 무시할
     만큼 작음).
 
-    nonce: 호출마다 다른 값을 넘겨야 한다 — audio_src 문자열이 이전 렌더와 완전히
-    같으면 프론트엔드가 iframe을 리마운트 안 해서 autoplay가 다시 실행되지 않는다
-    (render_audio_player() 문서의 같은 이유). 호출부(_drain_mic_while())가 자기
+    nonce: 호출마다 다른 값을 넘겨야 한다 — 사인파 합성 파라미터가 고정이라 audio_src
+    자체는 매번 똑같아서, nonce가 html 문자열을 다르게 만들어주지 않으면 프론트엔드가
+    이 위젯을 리마운트 안 해 autoplay가 다시 실행되지 않는다(그러면 효과음이 세션당
+    사실상 한 번만 난다). nonce를 <audio src>의 data URI 뒤 프래그먼트로 넣는 이유는
+    render_audio_player() 문서(2026-08-28 수정) 참고. 호출부(_drain_mic_while())가 자기
     시작 시각(time.monotonic())을 그대로 넘겨서 매 호출마다 자연히 달라진다.
     """
     sr = 24000
@@ -1213,8 +1260,12 @@ def render_processing_chime(nonce: int | str = 0) -> None:
     buf = io.BytesIO()
     sf.write(buf, tone, sr, format="WAV")
     audio_src = "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-    html = f'<!-- chime-nonce:{nonce} -->\n<audio src="{audio_src}" autoplay></audio>'
-    st.iframe(html, height=1)
+    html = f'<audio src="{audio_src}#{nonce}" autoplay></audio>'
+    # 2026-08-27 수정 — render_audio_autoplay()/render_audio_player()와 같은 원인(그쪽
+    # 문서 참고): st.iframe()엔 allow="autoplay"를 넘길 방법이 없어 중첩 iframe의
+    # <audio autoplay>가 크롬에서 조용히 차단된다. 이 효과음도 같은 매커니즘으로 안
+    # 들렸을 것 — st.html()로 통일.
+    st.html(html)
 
 
 def render_step_card(
@@ -1503,6 +1554,14 @@ _STALE_CONTENT_MARKERS = {
     # 보강. 이 마이크바 문구('"이전" · "다시" · "다음"')는 cooking_step 전용(다른 화면은
     # 다른 문구를 씀, screen_cooking_step()의 render_mic_bar() 호출부 확인).
     '"이전" · "다시" · "다음"': ["cooking_step"],
+    # 2026-08-27 재현 — 위 2026-08-25 주석은 "꼬리 전체 제거"로 이 캡션까지 같이
+    # 잡힌다고 적어놨지만, 실제로는 fallback_buttons()가 cooking_step *과*
+    # unclassified 둘 다에서 불리는데(dispatch.py 참고) unclassified의 마이크바는
+    # 다른 문구를 써서 앞쪽 앵커(위 마커)가 아예 없다 — 그러면 꼬리 제거 자체가
+    # 발동을 못 해서 이 캡션이 그대로 샌다(실측: "처음으로" 전환 후 start에 남음).
+    # 메모리 기록의 교훈("꼬리 제거에 기대지 말고 각 잔상 후보는 독립 마커로")대로
+    # 별도 마커로 뺀다 — fallback_buttons()를 부르는 두 화면 다 소유자로 등록.
+    "음성이 잘 안 될 땐 아래 버튼으로도 진행할 수 있어요": ["cooking_step", "unclassified"],
     # 2026-08-25 사용자 실사용 재현 보고 — 실제 음성으로 "닭도리탕" 조회 -> recipe_confirm
     # (레시피 소개 화면) -> "처음으로" -> start 전환에서, recipe_confirm의 재료 칩
     # (예: "닭 1마리", "당근 1/3개")과 "다른 레시피 찾을래요" 버튼까지 통째로 남는 것
@@ -1579,6 +1638,37 @@ _CHAT_LOG_SCREENS = ("cooking_step", "no_match", "recipe_confirm")
 # register_ingredients(register.py).
 _CHIP_GRID_SCREENS = ("recipe_confirm", "cooking_step", "register_ingredients")
 
+# 2026-08-27 사용자 실사용 재현 보고 — recipe_confirm에서 음성 "처음"으로 start 전환한
+# 뒤에도 recipe_confirm의 마이크 카드(.ce-mic-bar, render_mic_bar() 호출부 — "듣는 중"/
+# '"응" 또는 다른 요청을 말씀해주세요')와 "다른 레시피 찾을래요" 버튼이 화면에 그대로
+# 남는 것 확인. 이 문구들은 이미 _STALE_CONTENT_MARKERS에 있었는데도 안 잡혔다 —
+# ruleStaleMarkers()는 CURRENT 화면 컨테이너의 "직계 자식"만 훑으므로, React 재조정
+# 과정에서 이 잔상이 그보다 더 깊이 중첩되거나 컨테이너 밖에 붙어버리면 텍스트 매칭
+# 자체가 그 자식까지 못 내려간다(반대로 .ce-transcript/.ce-chip-grid는 이 구조 문제를
+# 진작에 겪어서 규칙 7/8로 별도 승격됐었는데, .ce-mic-bar는 아직 텍스트 마커에만
+# 의존하고 있었음). render_mic_bar()를 실제로 쓰는 화면만 여기 whitelist로 두고,
+# ruleChatAndChips()와 완전히 같은 keepLastOnly() 구조 규칙으로 승격한다 — start는
+# 원래 .ce-mic-bar를 안 쓰는 화면(큰 마이크 아이콘은 별도 컴포넌트)이라 여기 없으면
+# start에 남은 .ce-mic-bar는 전부 잔상으로 간주돼 지워진다.
+_MIC_BAR_SCREENS = ("recipe_confirm", "cooking_step", "unclassified", "register_intro", "register_dish_name")
+
+# 2026-08-27 — "취소"처럼 여러 화면이 같이 쓰는 흔한 버튼 문구는 텍스트 마커로 어느
+# 화면 소속인지 특정할 수 없다(_STALE_CONTENT_MARKERS에 "취소"를 못 넣는 이유,
+# 잘못 지우면 다른 화면의 진짜 취소 버튼까지 지울 위험). 이런 위젯은 화면 전용 key를
+# 직접 주고(예: st.container(key="register_dish_name_cancel_btn")) 여기 {key: 소유
+# 화면} 형태로 등록하면 구조적으로(텍스트 무관) 잡힌다 — recipe_confirm의 "다른
+# 레시피 찾을래요" 버튼에서 처음 쓴 패턴을 재사용 가능하게 일반화했다.
+_SINGLE_OWNER_WIDGET_KEYS = {
+    "recipe_confirm_other_recipe_btn": "recipe_confirm",
+    "register_dish_name_cancel_btn": "register_dish_name",
+    # 2026-08-28 — fallback_buttons()(캡션 + 이전/다시/다음)를 감싼 화면 전용 컨테이너.
+    # cooking_step/unclassified -> start("처음") 전환 시 이 캡션·버튼이 새 화면 컨테이너
+    # 밑으로 재부모화돼 잔상으로 남던 것(특히 st.caption은 어느 규칙으로도 안 잡혔음)을
+    # 구조적으로 숨긴다. ui/dispatch.py::fallback_buttons()의 st.container(key=...) 참고.
+    "cooking_step_fallback": "cooking_step",
+    "unclassified_fallback": "unclassified",
+}
+
 # 2026-08-25 — 로그인/회원가입 위젯(login_*/signup_* key)이 다른 화면으로 넘어간 뒤에도
 # 남는 사례가 있어서(각 위젯이 개별 텍스트 마커로 잡혔었는데, "아이디"/"비밀번호" 같은
 # 문구가 화면마다 다른 위치에 비동기로 나뉘어 도착해 위 마커 방식만으론 불안정했다),
@@ -1642,16 +1732,39 @@ _CE_SWEEP_JS = r"""
     }
   }
 
-  // 2026-08-26 재요청 — "RTCPeerConnection을 더 못 만든다"류 브라우저 수준 예외(파이썬
+  // 2026-08-26 — "RTCPeerConnection을 더 못 만든다"류 브라우저 수준 예외(파이썬
   // try/except가 원천적으로 못 잡는 영역 — streamlit_webrtc 프론트엔드 내부에서 던지는
   // JS 예외라 서버로 넘어오지도 않음, 오래 켜둔 탭에서 마이크 세대 재연결이 쌓이면
   // 브라우저의 PeerConnection 개수 상한에 부딪혀 발생)를 사용자에게 원본 에러 문구
-  // 그대로 노출하는 대신, 친절한 안내로 갈아 보여준다. window.onerror/
-  // unhandledrejection 둘 다 잡아서 "예외적인 에러 전부"를 넓게 덮는다(요청 원문) —
-  // 특정 에러 문자열로 좁히지 않는다(다른 종류의 예상 못한 JS 예외도 같은 안내가
-  // 사용자 입장에선 원본 스택트레이스보다 낫다는 판단). innerHTML 대신 createElement로
-  // 조립한다(위 경고의 "꺾쇠+영문자 리터럴 금지"를 이 블록도 그대로 지키기 위해 — 태그
-  // 문자열 자체를 아예 안 씀).
+  // 그대로 노출하는 대신, 친절한 안내로 갈아 보여준다. innerHTML 대신 createElement로
+  // 조립한다(태그 문자열 자체를 아예 안 씀).
+  //
+  // 2026-08-28 수정 — 원래는 error/unhandledrejection을 무조건 다 잡아 토스트를 띄웠는데
+  // (그땐 catch-all이 의도였음), 사소한 JS 에러에도 5초마다 반복해서 뜨는 게 실측
+  // 확인됐다(예: 인라인 <script> 재주입 시 const 재선언 SyntaxError — 이건 별도로
+  // _AUDIO_PLAYER_TEMPLATE를 IIFE로 감싸 고쳤지만, 다른 무해한 예외도 얼마든지 있을 수
+  // 있음). 원래 이 안내가 겨냥한 "복구하면 되는 연결/WebRTC 예외"로만 좁힌다 — 그 외
+  // 예외는 콘솔에만 남기고 토스트는 안 띄운다.
+  function _looksRecoverableConnError(detail) {
+    var s = String(detail || "").toLowerCase();
+    return (
+      s.indexOf("rtcpeerconnection") !== -1 ||
+      s.indexOf("peerconnection") !== -1 ||
+      s.indexOf("cannot create so many") !== -1 ||
+      s.indexOf("setremotedescription") !== -1 ||
+      s.indexOf("setlocaldescription") !== -1 ||
+      (s.indexOf("ice") !== -1 && s.indexOf("connect") !== -1) ||
+      s.indexOf("websocket") !== -1
+    );
+  }
+  function _onGlobalError(e) {
+    var detail =
+      (e && e.message) ||
+      (e && e.error && (e.error.message || e.error)) ||
+      (e && e.reason && (e.reason.message || e.reason)) ||
+      (e && e.reason);
+    if (_looksRecoverableConnError(detail)) showRetryToast();
+  }
   function showRetryToast() {
     if (document.getElementById("ce-error-toast")) return; // 이미 떠 있으면 중복 표시 안 함
     var toast = document.createElement("div");
@@ -1673,8 +1786,8 @@ _CE_SWEEP_JS = r"""
 
   if (!window.__ceErrorToastInstalled) {
     window.__ceErrorToastInstalled = true;
-    window.addEventListener("error", showRetryToast);
-    window.addEventListener("unhandledrejection", showRetryToast);
+    window.addEventListener("error", _onGlobalError);
+    window.addEventListener("unhandledrejection", _onGlobalError);
   }
 
   // 규칙 1 — 화면 컨테이너(app.py::main()의 st.container(key=f"screen_{screen}")).
@@ -1724,6 +1837,65 @@ _CE_SWEEP_JS = r"""
     }
   }
 
+  // 규칙 2b — 2026-08-27 st.iframe()->st.html() 전환(autoplay 차단 버그 수정) 이후
+  // 새로 생긴 구멍. render_audio_player()/render_audio_autoplay()가 이제 오디오 태그를
+  // iframe 없이 메인 문서에 직접 그린다 — 그래서 위 규칙 2(iframe 안쪽 오디오를
+  // pause+mute하는 로직)가 더 이상 이 오디오들을 못 찾는다. 화면 컨테이너를
+  // display:none으로 숨겨도(규칙 1) 오디오 태그 재생 자체는 안 멈춘다는 건 규칙 2의
+  // 2026-08-26 발견과 완전히 같은 문제라 — st.iframe() 시절엔 audio-free 화면만
+  // 챙기면 됐지만(다른 화면 오디오는 iframe 경계 안에서 자연히 격리됐었으므로), 이제는
+  // 모든 오디오가 한 문서 안에 같이 있어서 화면이 뭐든 "지금 화면 소속이 아닌 오디오는
+  // 다 멈춘다"로 일반화해야 한다 — 안 그러면 예: cooking_step 단계 음성이 아직 재생
+  // 중인데 "완료"로 넘어가면 완료 멘트와 겹쳐 들리는 회귀가 재현될 수 있다(예전에
+  // "두 번 겹쳐 들린다"로 여러 번 리포트됐던 것과 같은 부류).
+  function ruleStaleAudio() {
+    var audios = document.querySelectorAll("audio");
+    for (var i = 0; i < audios.length; i++) {
+      var a = audios[i];
+      var screenEl = a.closest('[class*="st-key-screen_"]');
+      if (!screenEl) continue; // 화면 컨테이너 밖(아직 마운트 중 등)이면 건드리지 않음
+      var m = (screenEl.className || "").match(/st-key-screen_(\S+)/);
+      if (!m) continue;
+      var owner = m[1];
+      // 2026-08-27(추가) — "초기메뉴로 돌아가도 파형 카드가 화면에 남아있다" 실측
+      // 리포트. 원인: 이 규칙은 소리(재생)만 멈추지 화면에 보이는 파형 카드
+      // (render_audio_player()의 .player + 파형)는 안 지운다 — st.iframe() 시절엔
+      // ruleAudioFrames()가 iframe 통째로 hide()해서 소리+화면이 한 번에 없어졌는데,
+      // st.html() 전환 뒤로는 <audio>와 .player가 같은 문서의 형제 노드로 바뀌어서
+      // 오디오만 멈추면 그 옆 파형 카드는 그대로 남는다. .player 자체의 파형 애니메이션
+      // 스크립트(_AUDIO_PLAYER_TEMPLATE)는 안 건드리고, 그 바깥의 stElementContainer
+      // (Streamlit이 이 st.html() 위젯 하나에 씌우는 표준 래퍼, ruleTextFallback()가
+      // 이미 같은 선택자를 씀)를 화면 소속에 따라 껐다 켰다만 한다.
+      var widgetContainer = a.closest('[data-testid="stElementContainer"]') || a.parentElement;
+      if (owner === CURRENT) {
+        unhide(widgetContainer);
+        // 2026-08-27(추가, 실사용 리포트 — "1단계 음성이 아예 안 나옴") — 화면 전환
+        // 찰나의 레이스로 옛 화면(예: recipe_confirm) 기준의 낡은 감시 인터벌이 이
+        // 오디오를 아직 못 지워진 채 살아있다가 "소속 아님"으로 오판해 바로 아래
+        // 분기로 먼저 pause+mute+volume=0을 걸어버리는 경우가 실측 확인됐다(그 다음
+        // 틱에서야 CURRENT가 정정돼 여기로 들어옴). hide()/unhide()는 data-ce-hidden
+        // 마커로 짝이 맞는데, 이 mute 로직만 짝(원상복구)이 없어서 한 번 꺼지면
+        // 영원히 안 켜지는 게 진짜 원인이었다 — 우리가 직접 끈 경우(data-ce-muted
+        // 마커로 표시)에 한해서만 여기서 되돌린다(자연 종료(ended)나 사용자가 건드린
+        // 경우는 마커가 없으므로 안 건드림).
+        if (a.getAttribute("data-ce-muted") === "1") {
+          a.removeAttribute("data-ce-muted");
+          a.muted = false;
+          a.volume = 1;
+          if (a.paused && !a.ended) a.play().catch(function () {});
+        }
+        continue; // 지금 화면 소속 — 정상
+      }
+      if (!a.paused) {
+        a.pause();
+        a.muted = true;
+        a.volume = 0;
+        a.setAttribute("data-ce-muted", "1");
+      }
+      hide(widgetContainer);
+    }
+  }
+
   // 규칙 3 — 텍스트 대체 입력칸을 절대 안 만드는 화면(_NO_TEXT_FALLBACK_SCREENS)에서
   // listen()의 범용 텍스트 입력칸이 남아있으면 그 stElementContainer 조상을 숨긴다.
   function ruleTextFallback() {
@@ -1755,6 +1927,24 @@ _CE_SWEEP_JS = r"""
       var owner = rest.slice(0, tail);
       if (owner === CURRENT) unhide(el);
       else hide(el);
+    }
+  }
+
+  // 규칙 4b — 2026-08-27 추가. "취소"처럼 여러 화면이 같이 쓰는 흔한 버튼 문구는
+  // 텍스트 마커로 소속 화면을 특정할 수 없다(_STALE_CONTENT_MARKERS에 "취소"를 못
+  // 넣는 이유와 같음). 그런 위젯엔 화면 전용 key를 직접 줬고(예:
+  // recipe_confirm_other_recipe_btn, register_dish_name_cancel_btn), 여기서
+  // DATA.singleOwnerWidgetKeys({key: 소유 화면})를 순회하며 구조적으로(텍스트 무관)
+  // 잡는다 — ruleScreenContainers()와 같은 원리, 대상만 화면 전체가 아니라 위젯 하나.
+  function ruleSingleOwnerWidgets() {
+    for (var key in DATA.singleOwnerWidgetKeys) {
+      if (!Object.prototype.hasOwnProperty.call(DATA.singleOwnerWidgetKeys, key)) continue;
+      var owner = DATA.singleOwnerWidgetKeys[key];
+      var nodes = document.querySelectorAll('[class*="st-key-' + key + '"]');
+      for (var i = 0; i < nodes.length; i++) {
+        if (CURRENT === owner) unhide(nodes[i]);
+        else hide(nodes[i]);
+      }
     }
   }
 
@@ -1826,18 +2016,24 @@ _CE_SWEEP_JS = r"""
     }
   }
 
-  // 규칙 7/8 — render_chat()/render_chips()의 고정 wrapper(.ce-transcript/.ce-chip-grid).
-  // 내용이 매번 달라 텍스트 마커로 못 잡는 대신, 항상 같은 클래스로 구조적으로 잡는다.
+  // 규칙 7/8/9 — render_chat()/render_chips()/render_mic_bar()의 고정 wrapper
+  // (.ce-transcript/.ce-chip-grid/.ce-mic-bar). 내용이 매번 달라 텍스트 마커로 못
+  // 잡는 대신, 항상 같은 클래스로 구조적으로 잡는다. keepLastOnly()는 전역
+  // querySelectorAll이라 컨테이너 중첩 위치와 무관하게 잡는다는 점이 핵심 —
+  // ruleStaleMarkers()(직계 자식만 훑음)가 못 잡는 깊이/위치의 잔상도 여기선 잡힌다.
   function ruleChatAndChips() {
     keepLastOnly(".ce-transcript", DATA.chatLogScreens);
     keepLastOnly(".ce-chip-grid", DATA.chipGridScreens);
+    keepLastOnly(".ce-mic-bar", DATA.micBarScreens);
   }
 
   function sweep() {
     ruleScreenContainers();
     ruleAudioFrames();
+    ruleStaleAudio();
     ruleTextFallback();
     ruleFallbackButtons();
+    ruleSingleOwnerWidgets();
     ruleLoginSignup();
     ruleStaleMarkers();
     ruleChatAndChips();
@@ -1901,12 +2097,57 @@ def render_screen_cleanup(current_screen: str) -> None:
     """
     payload = {
         "current": current_screen,
+        # 2026-08-28 — 매 rerun마다 값이 달라지는 nonce. 없으면 같은 화면에 머무는 동안
+        # (start의 마이크 idle 폴링 등으로 초당 수 회 rerun) 이 payload JSON이 완전히
+        # 동일해서 Streamlit이 st.html()의 스크립트를 재실행하지 않는다 — sweep()이 화면
+        # 전환 직후 딱 한 번만 돌고, 그 뒤 Streamlit이 비동기로 이전 화면 위젯을 새
+        # 컨테이너 밑에 재부모화하는 잔상(#8360)은 아무도 안 쓸어낸다. 스크립트 안의
+        # 감시장치도 유한하다(setInterval 20틱=2초, MutationObserver는 60초 뒤 self-
+        # disconnect) — 그게 만료된 뒤 도착한 잔재는 영영 안 지워졌다("처음"으로 start에
+        # 온 뒤 cooking_step 채팅/마이크바/버튼이 계속 남는 실측 리포트). nonce로 매 rerun
+        # 스크립트가 다시 돌게 해서 sweep() 1회 실행 + 감시장치 재장전이 항상 이뤄지게
+        # 한다(render_audio_player()의 src 프래그먼트 nonce와 같은 취지 — st.html()은
+        # 내용이 바이트 단위로 같으면 재실행 안 함). JS는 이 값을 안 읽어도 된다,
+        # 문자열을 바꾸는 것 자체가 목적.
+        "nonce": time.monotonic(),
         "audioFreeScreens": list(_AUDIO_FREE_SCREENS),
         "noTextFallbackScreens": list(_NO_TEXT_FALLBACK_SCREENS),
         "chatLogScreens": list(_CHAT_LOG_SCREENS),
         "chipGridScreens": list(_CHIP_GRID_SCREENS),
+        "micBarScreens": list(_MIC_BAR_SCREENS),
+        "singleOwnerWidgetKeys": dict(_SINGLE_OWNER_WIDGET_KEYS),
         "loginKeyPrefixes": list(LOGIN_KEY_PREFIXES),
         "staleMarkers": _STALE_CONTENT_MARKERS,
     }
-    html = _CE_SWEEP_JS.replace("__CE_SWEEP_DATA__", json.dumps(payload, ensure_ascii=False))
-    st.html(html, unsafe_allow_javascript=True)
+    js = _CE_SWEEP_JS.replace("__CE_SWEEP_DATA__", json.dumps(payload, ensure_ascii=False))
+    # _CE_SWEEP_JS는 <script>...</script> 래퍼로 감싸여 있다 — base64 로더가 다시
+    # <script>를 붙이므로 여기선 순수 JS 본문만 남긴다.
+    js = js.strip()
+    js = js.removeprefix("<script>").removesuffix("</script>").strip()
+
+    # 2026-08-28 — 이 스크립트를 st.html()에 <script> 그대로 넣으면 Streamlit의 DOMPurify
+    # 새니타이저(unsafe_allow_javascript=True여도 거침)가 통째로 제거한다는 걸 실측
+    # 확인했다: 렌더된 stHtml 엘리먼트 innerHTML이 길이 0. 작은 <script>는 통과하는데
+    # 이 15KB짜리(정규식·[class*=] 속성 선택자·`<` 비교연산자·MutationObserver 등이
+    # 섞임)는 어딘가가 새니타이저를 건드려 전량 삭제된다(이 파일 1052줄 주석이 이미
+    # "특정 줄에서 <script>가 통째로 사라짐"을 기록 — 그때는 주석의 꺾쇠만 뺐지만 코드
+    # 본문에도 트리거가 남아있었던 것). 그 결과 render_screen_cleanup()이 배포 내내 한
+    # 번도 실행된 적이 없어 화면 전환 잔상이 계속 남았다(사용자 반복 리포트의 진짜 원인).
+    #
+    # base64로 감싸서 "꺾쇠로 시작하는 토큰이 전혀 없는" 아주 단순한 로더만 통과시키고,
+    # 실제 코드는 atob() 후 간접 eval로 실행한다. 문자열은 우리가 이 파일에서 직접 만든
+    # 신뢰된 코드라 eval이 안전하다(사용자 입력 아님). 간접 eval `(0, eval)(...)`은 전역
+    # 스코프에서 실행돼 window.__ceSweepObserver 등 전역 상태가 정상 동작한다.
+    #
+    # 2026-08-28 재수정 — atob()만 쓰면 UTF-8이 깨진다: atob()는 base64를 "바이트당 1글자"
+    # Latin-1 문자열로 돌려줘서, 스크립트 안의 한글 리터럴(_STALE_CONTENT_MARKERS 마커들,
+    # showRetryToast()의 "잠시 후 재시도 해주시길 바랍니다." 등)이 전부 모지바케가 된다
+    # (실측: 그 문구가 mojibake로 화면 하단에 떴다 사라짐 — 깨진 리터럴이 JS 에러를 내고
+    # 스크립트 자신의 window.onerror 핸들러가 그 깨진 토스트를 띄운 것). atob() 결과를
+    # decodeURIComponent(escape(...))로 한 번 더 풀어 원래 UTF-8 문자열로 복원한다
+    # (base64→UTF-8의 표준 관용구). escape/unescape는 deprecated지만 전 브라우저 지원.
+    js_b64 = base64.b64encode(js.encode("utf-8")).decode("ascii")
+    st.html(
+        f'<script>(0,eval)(decodeURIComponent(escape(atob("{js_b64}"))))</script>',
+        unsafe_allow_javascript=True,
+    )
