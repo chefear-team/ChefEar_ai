@@ -144,9 +144,26 @@ def screen_my_recipes() -> None:
     # 2026-08-22 요청 - 레시피가 많아지면 목록이 화면 밖으로 길게 늘어나던 걸, 일정
     # 높이가 넘으면 그 안에서만 스크롤되게 감싼다(CSS는 theme.py의 st-key-my_recipes_list
     # 선택자 참고).
-    with st.container(key="my_recipes_list"):
+    #
+    # 2026-08-27 수정 — "삭제 버튼 누르면 잔상이 남는다" 리포트. app.py가 화면 전환
+    # 잔상(streamlit/streamlit#8360, "엘리먼트 개수가 줄어들면 위젯 ID가 재사용돼
+    # 이전 실행의 잔재가 안 지워짐")을 화면마다 다른 컨테이너 key로 피했던 것과 정확히
+    # 같은 원인인데, 이번엔 화면 이름 자체(my_recipes)는 안 바뀌는 채로 목록 안에서
+    # 카드 하나가 통째로 사라지는 경우라 그 방어가 안 닿는다 — 삭제 직후 rerun에서
+    # rows가 하나 줄어든 채로 다시 그려지는데, 이 리스트 컨테이너 key가 매번 고정
+    # ("my_recipes_list")이라 Streamlit이 "같은 컴포넌트가 계속 이어지는 것"으로 보고
+    # 안의 카드 엘리먼트 ID를 재사용하면서 방금 지워진 카드의 잔재가 남을 수 있다.
+    # key에 len(rows)를 넣어서, 개수가 바뀔 때마다(=삭제가 실제로 일어났을 때만) 완전히
+    # 새 컴포넌트 트리로 취급되게 한다 — 개수가 그대로인 경우(수정 후 돌아오기 등)는
+    # 이 key도 그대로라 불필요한 재마운트가 없다.
+    with st.container(key=f"my_recipes_list_{len(rows)}"):
         for row in rows:
-            with st.container(key=f"my_recipe_card_{row['id']}"):
+            # 2026-08-27 — 위와 같은 이유로, "삭제할까요?" 확인창이 뜨고/닫힐 때도 같은
+            # 카드 안에서 엘리먼트 개수가 늘었다 줄었다 한다("취소" 클릭 시 확인창+버튼
+            # 2개가 사라짐 — 감소 케이스). 카드 자체의 key에도 확인창 표시 여부를 넣어서
+            # 그 전환도 같은 방식으로 안전하게 만든다.
+            _card_mode = "confirm" if confirm_id == row["id"] else "normal"
+            with st.container(key=f"my_recipe_card_{row['id']}_{_card_mode}"):
                 c1, c_actions = st.columns([5, 2])
                 with c1:
                     st.markdown(

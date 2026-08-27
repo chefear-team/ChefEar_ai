@@ -21,7 +21,27 @@ EC-17 테스트가 그렇게 save_recipe()만 직접 부른다).
 """
 from __future__ import annotations
 
+import re
+
 from orchestration.db import get_client
+
+
+def _normalize_dish_name(value):
+    """등록/수정 양쪽에서 DB에 저장하기 직전 dish_name을 정리한다.
+
+    2026-08-26 수정 — trailing 문장부호(?!.,~) 제거(registration.py 기존 이력 참고).
+    2026-08-27 추가 — 요리명 안의 공백을 전부 없앤다. DB 표준 요리명(load_data.py로
+    적재된 60,282건)이 전부 공백 없이 저장돼 있는데, 사용자가 등록/수정 시 "고등어
+    라테"처럼 공백을 넣으면 이후 조회할 때 완전일치가 실패하는 문제가 실측 확인됨
+    (recipe_search.py::find_dish_name_ignoring_spaces() 안전망을 이미 만들어 우회
+    중이지만, 애초에 저장 시점에 공백 없이 정규화해두면 이 안전망 자체가 필요 없는
+    깨끗한 신규 등록이 늘어난다 — 기존 DB에 이미 있는 공백 포함 항목은 안전망이
+    계속 커버).
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip().rstrip("?!.,~ ")
+    return re.sub(r"\s+", "", text)
 
 
 def _ingredient_summary(ingredients: list[str]) -> str:
@@ -50,12 +70,8 @@ def register_recipe(session: dict, step: str, value=None, client=None) -> dict:
     if step == "dish_name":
         # 등록의 첫 턴. 이전에 진행 중이던 등록 정보가 있었더라도 새로 시작하면
         # 덮어쓴다(요리명, 재료, 순서를 담을 빈 상자를 새로 만드는 것).
-        # 2026-08-26 수정 — save_recipe()가 dish_name을 정규화 없이 그대로 저장해서
-        # STT/텍스트 입력에 붙은 trailing 문장부호(?!.,~)까지 DB에 그대로 박히는 버그
-        # 실측 확인(예: dish_name="고등어 아이스크림." 마침표 포함 저장). intent_classifier.py/
-        # entity_extract_llm.py가 이미 쓰는 것과 같은 정규화(.rstrip("?!.,~ "))를 등록
-        # 입구에서도 적용해 저장 전에 한 번만 정리한다.
-        dish_name = value.strip().rstrip("?!.,~ ") if isinstance(value, str) else value
+        # _normalize_dish_name() 문서 참고 — trailing 문장부호 제거 + 공백 전부 제거.
+        dish_name = _normalize_dish_name(value)
         session["registration"] = {"dish_name": dish_name, "ingredients": [], "instructions": []}
         return {"prompt": f"{dish_name}에 들어가는 재료를 알려주세요."}
 
@@ -169,10 +185,15 @@ def update_recipe(
     바뀔지 몰라서(늘거나 줄 수 있음) 행 단위로 하나씩 맞춰 UPDATE하는 것보다
     delete-then-insert가 훨씬 단순하고, on delete cascade와 달리 recipes 행 자체는
     안 건드리므로 recipe_id/created_at/owner_id 등은 그대로 유지된다.
+
+    2026-08-27 추가 — my_recipes.py::screen_edit_recipe()가 사용자가 직접 타이핑한
+    dish_name을 여기로 그대로 넘기는데(.strip()만 적용, 내부 공백은 그대로), 등록
+    경로(register_recipe())와 똑같은 공백 문제가 수정 경로에도 생길 수 있어
+    _normalize_dish_name()으로 똑같이 정리한다.
     """
     client = client or get_client()
     client.table("recipes").update(
-        {"dish_name": dish_name, "ingredients": ", ".join(ingredients)}
+        {"dish_name": _normalize_dish_name(dish_name), "ingredients": ", ".join(ingredients)}
     ).eq("id", recipe_id).execute()
 
     client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()

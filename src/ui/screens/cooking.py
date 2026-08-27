@@ -53,7 +53,16 @@ def screen_start() -> None:
     # (이 화면은 대화 기록을 화면에 안 보여주므로 비워도 다른 부작용 없음).
     chat_log = st.session_state.chat_log
     if chat_log and chat_log[-1][0] == "ai":
-        _render_cached_speech(chat_log[-1][1])
+        # 2026-08-27 수정 — "로그인 안 된 상태에서 '등록'을 반복해도 안내 음성이
+        # 계속 안 들린다" 실측 리포트. nonce 없이 부르면 recipe_confirm과 달리 이
+        # 화면만 매번 같은 문구("로그인 후 이용해 주세요.")를 똑같은 nonce=0으로
+        # 그려서, 브라우저가 "이미 로드된 오디오"로 보고 두 번째 시도부터 autoplay를
+        # 다시 실행하지 않았다(render_audio_player()/render_audio_autoplay() 문서
+        # 참고 — 같은 audio_src 문자열이면 iframe srcDoc이 안 바뀐 걸로 보고 리마운트
+        # 안 함). recipe_confirm이 이미 쓰는 것과 같은 패턴(_audio_replay_nonce)으로
+        # 맞춘다 — dispatch.py::_block_register_if_not_logged_in()이 매번 이 값을
+        # 올려주므로, 여기서 그 값을 읽기만 하면 반복해도 매번 새로 재생된다.
+        _render_cached_speech(chat_log[-1][1], nonce=st.session_state.get("_audio_replay_nonce", 0))
         st.session_state.chat_log = []
     # 2026-08-23 요청 — "준비됐는지 안 됐는지 모르겠다": 실제 연결 상태(mic_is_playing())를
     # 큰 마이크 아이콘 색으로 보여준다. 아래 listen("start")가 이 값을 이번 rerun에서

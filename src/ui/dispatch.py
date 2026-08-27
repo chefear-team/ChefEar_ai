@@ -14,7 +14,7 @@ from orchestration.entity_extract_llm import extract_intent_llm
 from orchestration.pipeline import handle_utterance, manual_fallback
 from ui.recipe_view import refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, get_owner_id, goto
-from ui.voice_io import _drain_mic_while, _EMBED_LOCK, _LLM_LOCK, speak
+from ui.voice_io import _drain_mic_while, _GPU_LOCK, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -79,8 +79,17 @@ def _block_register_if_not_logged_in() -> None:
     로그인 안 됐으면 안내 음성만 들려주고 st.rerun()으로 스크립트 실행을 그 자리에서
     멈춘다(반환하지 않음 — st.rerun()이 내부적으로 예외를 던져서 이 함수를 부른 코드의
     나머지 줄은 실행되지 않는다, 원래 _REGISTER_WORD 분기와 동일한 패턴).
+
+    2026-08-27 수정 — "로그인 안 된 상태에서 '등록'을 반복해도 안내 음성이 계속 안
+    들린다" 실측 리포트. 매번 똑같은 문구("로그인 후 이용해 주세요.")를 재생하는데,
+    도착 화면(screen_start(), goto() 없이 같은 화면에 머무름)이 nonce 없이
+    _render_cached_speech()를 불러서 두 번째 시도부터 브라우저가 재생을 건너뛰었다
+    (cooking.py::screen_start() 문서 참고). recipe_confirm 등이 이미 쓰는 것과 같은
+    패턴으로, 매번 이 함수를 호출할 때마다 nonce를 올려서 도착 화면이 항상 "새로
+    재생해야 할 오디오"로 인식하게 한다.
     """
     if st.session_state.current_user is None:
+        st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
         speak("로그인 후 이용해 주세요.", hidden=True)
         st.rerun()
 
@@ -244,7 +253,7 @@ def process_utterance(text: str) -> None:
                     # (로컬 LLM)과 handle_utterance() 안의 classify_intent()(임베딩 모델)가 STT/TTS와
                     # 같은 GPU를 쓰는데 서로 직렬화가 없었다 — 실사용 중 "STT는 됐는데 그 다음부터
                     # 터미널 로그까지 전부 멈춘다"는 리포트의 원인으로 지목됨(락 정의부 주석 참고).
-                    with _LLM_LOCK:
+                    with _GPU_LOCK:
                         job["llm_result"] = extract_intent_llm(text)
                 except Exception as exc:  # noqa: BLE001 — 아래 이유로 여기서만 넓게 잡음
                     # llm/infer.py generate_json() 문서에 "모델 로드/추론 자체가 실패하면
@@ -275,7 +284,7 @@ def process_utterance(text: str) -> None:
             if job["llm_result"]["wants_register"]:
                 return
             try:
-                with _EMBED_LOCK:  # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀
+                with _GPU_LOCK:  # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀
                     job["result"] = handle_utterance(
                         session,
                         text,

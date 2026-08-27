@@ -243,6 +243,57 @@ def find_dish_name_ignoring_repetition(dish_name: str, client=None) -> str | Non
     return None
 
 
+# entity_extract.py::_QUERY_SUFFIXES와 같은 문구 — 그 파일은 규칙 기반 v1 추출기(현재
+# 미사용, 로컬 LLM으로 대체됨)가 발화 원문에서 요리명을 잘라낼 때 쓰던 접미사 목록인데,
+# 여기서는 반대 방향 — 로컬 LLM이 dish_name에 이 문구를 실수로 안 떼고 그대로 남겨서
+# 돌려준 경우를 잡는다(find_dish_name_stripping_query_suffix() 문서 참고).
+_QUERY_SUFFIXES_TO_STRIP = (
+    "레시피 알려줘",
+    "레시피알려줘",
+    "만드는 법 알려줘",
+    "만드는법 알려줘",
+    "어떻게 만들어요",
+    "어떻게 만드나요",
+    "어떻게 만들어",
+    "어떻게 해요",
+    "어떻게 해",
+    "레시피",  # 가장 짧고 포괄적이라 마지막에 검사(다른 접미사가 먼저 걸리게)
+)
+
+
+def find_dish_name_stripping_query_suffix(dish_name: str, client=None) -> str | None:
+    """dish_name 끝에 "레시피"류 질의 접미사가 안 떼진 채 남아있어서 완전일치가
+    실패했을 때, 그 접미사를 떼면 DB에 정확히 있는 이름인 경우 그 원본을 돌려준다.
+    find_dish_name_ignoring_spaces()/find_dish_name_ignoring_repetition()와 같은
+    자리, 같은 성격의 안전망 — 편집거리/유사도를 전혀 안 쓰고 "접미사를 뗀 결과가
+    DB에 글자 그대로 있는가"만 본다. 그래서 사용자가 실제로 등록한 적 없는 새 요리를
+    말했을 때(예: 존재하지 않는 "OO레시피") 엉뚱한 기존 요리로 새는 오매칭은 구조적으로
+    없다 — 뗀 이름이 없으면 그냥 None, 호출부는 그대로 "없다"고 정직하게 답한다.
+
+    2026-08-27 실측 리포트 — "멸치볶음 레시피"라고 물었는데 "멸치볶음"(DB에 실제 있는
+    표준 레시피)을 못 찾고 통째로 실패하는 사례. entity_extract_llm.py의 few-shot이
+    "요리명레시피" 패턴을 대부분 잘 걸러내지만(예: "김치볶음밥레시피알려줘"->
+    "김치볶음밥"), 100% 보장은 아니라서 LLM이 가끔 "레시피"까지 dish_name에 그대로
+    남겨 돌려주면 `resolved_dish_name = dish_name or extract_dish_name(...)`의
+    `or` 단축 평가 때문에 정답을 이미 정확히 뽑아내는 extract_dish_name()의 원문
+    기반 로직 자체가 통째로 건너뛰어진다(원문 재시도 자체를 안전망으로 되살리는
+    방식은 "초코민트 된장찌개"->"토마토된장찌개" 오매칭 회귀 때문에 이미 되돌려져
+    있음, pipeline.py 조회 분기 주석 참고) — 그래서 원문 재시도 대신, LLM 출력 자체를
+    결정적 문자열 접미사 제거로만 정리하는 이 훨씬 좁고 안전한 방식을 택한다.
+    """
+    client = client or get_client()
+    text = dish_name.strip()
+    if not text:
+        return None
+    names = _all_dish_names(client)
+    for suffix in _QUERY_SUFFIXES_TO_STRIP:
+        if text.endswith(suffix):
+            candidate = text[: -len(suffix)].strip()
+            if candidate and candidate in names:
+                return candidate
+    return None
+
+
 def _max_view_count(rows: list[dict]) -> dict:
     """여러 후보 중 "표준"으로 뽑을 하나를 고른다. 6.1/EC-09/EC-19 규칙.
 

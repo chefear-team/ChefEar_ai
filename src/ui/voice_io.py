@@ -251,17 +251,18 @@ _AUDIO_DIR = PROJECT_ROOT / "ui" / "assets" / "audio"
 # 올라가게 했었다(_GPU_LOCK 단일 락, 2026-08-24~2026-08-26).
 #
 # 2026-08-26 실험적 완화 — 동시 여러 사용자 접속 시 전부 한 줄로 순서 대기하는 게
-# 너무 느리다는 요청으로, 모델 종류별로 락을 4개로 쪼갠다("같은 모델끼리만 순서대로,
-# 다른 모델끼리는 동시에"). 예: STT 처리 중에도 다른 사용자의 TTS 합성이 동시에
-# 시작될 수 있음 — 이게 바로 위 문서의 원래 장애("STT 되고 나서 화면이 조용히
-# 멈춘다")를 유발했던 정확히 그 조합이라, VRAM 여유가 실측상 500~800MB 수준으로
-# 빠듯한 이 GPU(12GB)에서 재현 위험이 있다는 걸 알고 하는 실험적 변경이다 — 실사용
-# 중 OOM/멈춤이 다시 나타나면 단일 _GPU_LOCK으로 즉시 되돌릴 것(git으로 이 커밋
-# 이전 상태 확인 가능).
-_STT_LOCK = threading.Lock()
-_TTS_LOCK = threading.Lock()
-_LLM_LOCK = threading.Lock()
-_EMBED_LOCK = threading.Lock()
+# 너무 느리다는 요청으로, 모델 종류별로 락을 4개(_STT_LOCK/_TTS_LOCK/_LLM_LOCK/
+# _EMBED_LOCK)로 쪼갰다가("같은 모델끼리만 순서대로, 다른 모델끼리는 동시에") **곧바로
+# 되돌렸다(2026-08-27)** — 실사용 중 "Queue overflow. Consider to set receiver size
+# bigger. Current size is 1024." 경고가 재현됐다. 이게 정확히 바로 위 문서가 설명하는
+# 원래 장애의 재현이다: 락을 쪼개면서 예를 들어 사용자 A의 STT 추론과 사용자 B의 TTS
+# 합성이 같은 GPU에서 동시에 돌 수 있게 됐는데, 그 GPU 호출들이 GIL을 오래 붙들고
+# 있는 동안 마이크 프레임 드레인 루프(_run_mic_loop())가 제때 못 돌아서 audio_receiver
+# 내부 큐가 못 비워지고 찼다 — 단일 _GPU_LOCK을 애초에 도입했던 바로 그 이유가
+# 그대로 재현된 것이므로, 실험은 여기서 접고 단일 락으로 되돌린다. 동시 사용자 처리
+# 속도 개선은 락 분리가 아닌 다른 방법(예: GPU 자체를 늘리는 인프라 변경)으로 풀어야
+# 한다는 게 이번 실험으로 확인됐다.
+_GPU_LOCK = threading.Lock()
 
 def _common_audio_path(message: str) -> Path:
     """조리 단계처럼 recipe_id/step_number가 없는 1회성 문구(확인 질문·안내 등)의
@@ -478,7 +479,7 @@ def speak(
 
             def _run_synthesis(job=job) -> None:
                 try:
-                    with _TTS_LOCK:
+                    with _GPU_LOCK:
                         if not audio_path.exists():
                             from tts.infer import tts_synthesize
 
@@ -525,7 +526,7 @@ def _synthesize_and_cache(text: str, audio_path: Path) -> None:
     if audio_path.exists():
         return
     try:
-        with _TTS_LOCK:
+        with _GPU_LOCK:
             if audio_path.exists():
                 return
             from tts.infer import tts_synthesize
@@ -931,7 +932,7 @@ def _run_mic_loop() -> str | None:
                     # 위 stt_transcribe() 문서 참고("이중 VAD로 조용한 실제 발화가 stt_text=''로
                     # 사라짐") — 이 되돌림은 그 문제를 다시 불러올 수 있다는 걸 알고 하는
                     # 요청이라 그대로 반영한다.
-                    with _STT_LOCK:
+                    with _GPU_LOCK:
                         job["text"] = stt_transcribe(audio, sample_rate=16000, vad_filter=True).strip()
                     print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — 실패해도 조용히 넘어감
