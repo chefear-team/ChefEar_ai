@@ -555,6 +555,7 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
    ChefEar 사이만 더 붙이고 싶어서 이 항목에만 음수 margin-bottom을 줘서 gap을 상쇄한다.
    flex 아이템 자체(stLayoutWrapper)에 준 margin이라 콘텐츠 내부 margin 미반영 버그와는
    무관하게 정상적으로 다음 형제와의 간격을 줄인다. */
+
 [data-testid="stLayoutWrapper"]:has([class*="st-key-ce_back_link"]) { order: -1; margin-bottom: -14px; }
 /* 2026-08-26 — 실제 DOM/computed style로 확인해보니 위 규칙의 :has()가 back-link의
    바로 안쪽 wrapper뿐 아니라, back-link를 자손으로 가진 *바깥* stLayoutWrapper까지
@@ -591,6 +592,7 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_my_recipes"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_edit_recipe"])
 { order: 0; }
+
 [class*="st-key-ce_back_link"] { position: relative; margin-bottom: 4px; display: inline-block; }
 [class*="st-key-ce_back_link"] [data-testid="stElementContainer"]:has(div.stButton) {
   position: absolute; inset: 0; z-index: 2;
