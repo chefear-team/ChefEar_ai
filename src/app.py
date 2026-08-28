@@ -186,10 +186,20 @@ def _start_model_warmup() -> None:
         from stt.infer import load_ct2_model
         from tts.infer import load_tts_model
 
+        # 2026-08-28 — 로드 순서를 STT -> TTS -> LLM -> 요리명 목록으로 조정("Queue
+        # overflow" 대응 C). 해피패스(조회 성공)에서 speak()의 첫 TTS 합성은 사용자가
+        # 첫 발화를 마치는 시점에 필요한데, 예전 순서(TTS가 3번째, 그것도 15~25초
+        # 걸리는 "요리명 목록" 앞)로는 첫 조회 때 TTS 모델(약 4GB)이 아직 로딩 중이라
+        # speak()가 그 콜드 로드를 백그라운드 스레드에서 물게 되고, 그동안 _drain_mic_while()
+        # 이 GIL을 제때 못 얻어 마이크 큐가 넘쳤다. TTS를 STT 바로 뒤로 당겨 첫 발화
+        # 전에 데워둔다. LLM(extract_intent_llm)은 조회 경로에서 TTS보다 먼저 쓰이지만
+        # 그 구간은 _compute()가 _drain_mic_while() 우산 안에서 돌려서 콜드 로드가
+        # overflow를 안 만든다 — 그래서 TTS 다음으로 뒀다. "요리명 목록"은 미등록/
+        # 퍼지 매칭 경로에서만 쓰여 해피패스 지연과 무관하고 제일 느려서 맨 뒤.
         for name, loader in (
             ("STT", load_ct2_model),
-            ("LLM", load_llm),
             ("TTS", load_tts_model),
+            ("LLM", load_llm),
             ("요리명 목록", _load_dish_names),
         ):
             try:
@@ -227,13 +237,18 @@ def main() -> None:
 
     init_state()
 
+    # 2026-08-28 — 디버그 진입로(?debug_screen / ?debug_panel)는 .env의 CHEFEAR_DEBUG가
+    # 설정된 경우에만 활성화한다. 예전엔 프로덕션에서도 항상 켜져 있어서(접근 게이트만
+    # 통과하면) 임의 화면 점프 + 가짜 recipe_view 주입이 가능했다(리뷰 지적). 배포
+    # .env엔 이 변수를 넣지 않는다 — 로컬 개발/QA에서만 켠다.
+    _debug_enabled = bool(os.environ.get("CHEFEAR_DEBUG"))
+
     # 2026-08-25 임시 디버그 진입로 — 화면 전환 잔상을 음성 없이(버튼/URL만으로) 재현해
     # 보기 위해 넣음. URL에 ?debug_screen=cooking_complete 같은 쿼리 파라미터를 붙이면
     # start/recipe_confirm(음성 전용, 버튼도 텍스트 입력도 없어서 우회 불가)을 건너뛰고
     # 바로 그 화면으로 점프한다 — cooking_complete로 렌더링되는 데 필요한 최소한의
-    # recipe_view/pipeline_session만 가짜로 채운다. 검증 끝나면 지울 것 — 실제 사용자는
-    # 이 파라미터를 몰라도(안 붙이면) 평소와 완전히 동일하게 동작한다.
-    _debug_screen = st.query_params.get("debug_screen")
+    # recipe_view/pipeline_session만 가짜로 채운다.
+    _debug_screen = st.query_params.get("debug_screen") if _debug_enabled else None
     # 2026-08-26 — /code-review 발견: SCREENS에 없는 값(오타 등)을 검증 없이 그대로
     # session_state.screen에 넣으면, 아래 SCREENS[screen]() 호출이 KeyError로 죽는다.
     # 게다가 바로 다음 줄에서 _debug_jumped를 이미 True로 찍어놔서, 다음 rerun부터는
@@ -281,7 +296,7 @@ def main() -> None:
     # 실제 stt_transcribe()에 태워서 나온 텍스트를 이번 턴의 발화로 취급한다(마이크만
     # 안 쓸 뿐 STT/의도분류/화면전환까지 실제 파이프라인 그대로 탄다). 검증 끝나면
     # _debug_screen과 함께 지울 것.
-    if st.query_params.get("debug_panel") == "1":
+    if _debug_enabled and st.query_params.get("debug_panel") == "1":
         _dump_dir = Path(__file__).resolve().parent.parent / "ui" / "assets" / "_mic_debug_dumps"
         _files = sorted(_dump_dir.glob("*.m4a")) if _dump_dir.exists() else []
         with st.expander(f"🎙️ 디버그 음성 주입 ({len(_files)}개)", expanded=True):
@@ -393,11 +408,14 @@ def main() -> None:
         if text:
             handle_register_dish_name(text)
     elif screen == "register_ingredients":
-        # 2026-08-26 재요청 — login 화면과 같은 이유(민감/집중 입력 화면이라 음성
-        # 오인식으로 갑자기 화면이 바뀌는 걸 원치 않음)로 "처음"/"취소"까지 포함해서
-        # 음성에 완전히 반응 안 하게 바꿨다. listen()은 그대로 불러서 마이크 연결은
-        # 살려두고(안 그러면 orphan-reset, 위 login 분기 문서 참고) 반환값만 버린다.
-        listen("register_ingredients", show_text_fallback=False)
+        # 2026-08-26 재요청 — 민감/집중 입력 화면이라 음성 오인식으로 갑자기 화면이
+        # 바뀌는 걸 원치 않아서 "처음"/"취소"까지 포함해 음성에 완전히 반응 안 하게 했다.
+        # 2026-08-28 요청 — 그동안은 listen()을 일반 모드로 불러서 마이크로 계속 듣고
+        # STT까지 돌린 뒤 반환값만 버렸는데(GPU 낭비 + "Queue overflow"), 이 화면은
+        # 애초에 음성으로 처리할 게 없다. listen_for_speech=False로 webrtc 연결(상시
+        # 마이크)은 그대로 살려두되(마이크 재협상은 절대 유발하지 않음) VAD/STT 루프만
+        # 건너뛴다 — 프레임은 계속 드레인해서 큐는 안 넘친다.
+        listen("register_ingredients", listen_for_speech=False, show_text_fallback=False)
     elif screen == "register_steps":
         # 2026-08-27 재요청 — register_ingredients와 같은 이유로 "처음"/"취소"까지
         # 포함해서 완전히 무시하도록 통일(기존엔 listen_background_only()로 그 두
@@ -437,7 +455,14 @@ def _exit_admin() -> None:
     for k in ("_admin_via_voice", "_admin_verified", "_admin_challenge", "_admin_warm_started"):
         st.session_state.pop(k, None)
     if _MAIN_PAGE is not None:
-        st.switch_page(_MAIN_PAGE)
+        # 2026-08-28 요청 — "← 메인으로"를 누르면 접근 URL 그대로,
+        # 즉 https://chefear.store/?key=<ACCESS_GATE_TOKEN> 로 돌아가야 한다.
+        # st.switch_page()는 기본적으로 모든 쿼리파라미터를 지우는데(query_params=None),
+        # 그러면 복귀한 메인 URL에 ?key=가 없어서 그 상태로 새로고침하면 세션 플래그
+        # (_access_ok)까지 날아가 소개페이지 안내로 막힌다(_access_gate_ok() 참고).
+        # 토큰을 다시 붙여 넘긴다 — 토큰 미설정 배포는 게이트가 fail-open이라 안 붙인다.
+        access_token = os.environ.get("ACCESS_GATE_TOKEN", "").strip()
+        st.switch_page(_MAIN_PAGE, query_params={"key": access_token} if access_token else None)
 
 
 def _run_admin_page() -> None:

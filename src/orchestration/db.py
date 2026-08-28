@@ -83,8 +83,19 @@ def _real_client_singleton(url: str, key: str):
     1회(여전히 12~18초)만 느리고 그 뒤로는 즉시 반환된다.
     """
     from supabase import create_client
+    from supabase.lib.client_options import SyncClientOptions
 
-    return create_client(url, key)
+    # 2026-08-28 — 타임아웃을 명시한다. 기본값으로는 Supabase가 느리거나 응답이 안 올 때
+    # 조회 호출이 무한정 매달려서(예외도 안 나므로 dispatch.py::_compute()의 network_error
+    # 폴백도 안 걸린다) "처리 중" 로딩이 영영 안 끝나는 상태가 된다. 8초를 넘기면 예외를
+    # 던지게 해서, 그 예외를 _compute()가 잡아 "일시적인 오류" 안내로 폴백하게 한다.
+    # (create_client는 SyncClientOptions를 요구한다 — base ClientOptions는 .storage 속성이
+    # 없어 AttributeError.)
+    return create_client(
+        url,
+        key,
+        options=SyncClientOptions(postgrest_client_timeout=8, storage_client_timeout=8),
+    )
 
 
 def get_client(allow_mock: bool = True):

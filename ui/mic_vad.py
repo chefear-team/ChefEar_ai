@@ -33,7 +33,12 @@ class MicVadSegmenter:
 
     def __init__(
         self,
-        min_silence_duration_ms: int = 600,
+        # 2026-08-28 — 600 -> 750. 600ms면 사람이 문장 중간에 숨 쉬는 멈춤("어... 된장찌개...
+        # 어떻게 만들어")을 "발화 끝"으로 잘라서, 요리명만 먼저 조회돼 recipe_confirm으로
+        # 점프하고 나머지 말이 씹히는 게 리뷰에서 지적됐다. 750ms면 자연스러운 문장 내
+        # 쉼은 더 흡수하고, 짧은 명령("다음")의 확정 지연은 150ms만 늘어난다. 값 자체는
+        # 여전히 실측 튜닝 전 임시값 — 명령 반응이 굼뜨게 느껴진다는 보고가 나오면 되돌릴 것.
+        min_silence_duration_ms: int = 750,
         threshold: float = 0.5,
         max_speech_duration_s: float = 10.0,
     ):
