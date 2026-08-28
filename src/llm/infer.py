@@ -58,9 +58,12 @@ MODEL_REVISION = os.environ.get("LLM_MODEL_REVISION") or "e949c91dec92095908d34e
 # repo id 대신 곧장 읽는다 — 이 경우 revision은 이미 폴더 자체에 고정돼 있으므로 넘기지 않는다.
 LLM_LOCAL_CACHE_DIR = os.environ.get("LLM_LOCAL_CACHE_DIR")
 
-# 요리명 JSON 한 줄({"dish_name": "..."})만 생성하면 되므로 짧게 잡는다 — tts_synthesize()의
-# DEFAULT_MAX_NEW_TOKENS(600, 문장 전체 음성 합성용)보다 훨씬 짧아도 충분한 태스크다.
-DEFAULT_MAX_NEW_TOKENS = 64
+# 요리명 JSON 한 줄({"dish_name": "...", "wants_register": ...})만 생성하면 되므로 짧게
+# 잡는다 — tts_synthesize()의 예산(문장 전체 음성 합성용)보다 훨씬 짧아도 충분한 태스크다.
+# 2026-08-28 — 64 -> 128. JSON 본문은 64로도 충분하지만, 모델이 지시를 어기고 JSON 앞에
+# 한두 문장을 붙이는 경우(few-shot로 억눌러도 드물게 발생) 64에서 잘려 파싱 실패 -> 유효한
+# 조회가 조용히 "요리명 없음"이 되던 여지를 없앤다(리뷰 지적). 그리디 디코딩이라 지연 영향 미미.
+DEFAULT_MAX_NEW_TOKENS = 128
 
 _model = None
 _tokenizer = None
@@ -190,7 +193,15 @@ def generate_json(prompt: str, *, max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS) 
     """
     raw_text = generate_response(prompt, max_new_tokens=max_new_tokens)
     try:
-        return json.loads(_strip_code_fence(raw_text))
+        parsed = json.loads(_strip_code_fence(raw_text))
     except json.JSONDecodeError:
         print(f"[LLM] 모델 응답이 JSON 형식이 아님: {raw_text!r}")
         return None
+    # 2026-08-28 — 모델이 JSON 리스트/문자열/숫자를 뱉으면 json.loads는 성공하지만 dict가
+    # 아니다. 그대로 돌려주면 호출부(entity_extract_llm.py)의 .get()에서 AttributeError가
+    # 난다(지금은 dispatch.py::_compute()의 broad except가 우연히 잡아 폴백). 계약(dict|None)
+    # 대로 dict가 아니면 None으로 정규화한다.
+    if not isinstance(parsed, dict):
+        print(f"[LLM] 모델 응답이 JSON 객체가 아님(dict 아님): {parsed!r}")
+        return None
+    return parsed

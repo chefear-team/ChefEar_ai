@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 
 import streamlit as st
 
 from orchestration.db import get_client
 from orchestration.entity_extract_llm import extract_intent_llm
 from orchestration.pipeline import handle_utterance, manual_fallback
-from ui.recipe_view import refresh_recipe_view
+from ui.recipe_view import _fetch_recipe_view, _view_cache_fresh, refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, goto
 from ui.voice_io import _drain_mic_while, _GPU_LOCK, speak
 
@@ -48,6 +49,12 @@ _HOME_WORDS = {
 # 판단을 거치지 않고도 이 단어 하나만으로 확정할 수 있는 가장 명확한 신호라 is_home_word()와
 # 같은 자리(파이프라인 진입 전)에서 먼저 잡는다.
 _REGISTER_WORD = "등록"
+
+# 2026-08-28 — 요리명 조회 캐시(_recipe_lookup_cache / _recipe_view_cache)의 TTL.
+# 예전엔 "만개레시피 실데이터는 세션 도중 안 바뀐다"는 전제로 무기한 유지했는데, 이제
+# 관리자 승인/삭제 워크플로우가 생겨서 user_custom 레시피는 세션 도중 바뀔 수 있다
+# (승인 취소/삭제 시 캐시된 사용자는 계속 옛 레시피로 조리). staleness를 5분으로 묶는다.
+_LOOKUP_CACHE_TTL_S = 300
 
 # 2026-08-26 요청 — 대화 기록(render_chat())의 "나: ..." 줄에 STT가 인식한 문장을
 # 그대로 보여주면, 같은 의도라도 사람마다 표현이 제각각이라("다음으로 넘어가주세요"/
@@ -190,11 +197,13 @@ def process_utterance(text: str) -> None:
     # 느낌)"는 실측 리포트 대응. recipe_view도 recipe_id별 세션 캐시(_recipe_view_cache,
     # ui/recipe_view.py)가 받쳐줘서 DB 왕복 0회. 조리 중(current_recipe_id 있음)에는 이
     # 캐시를 안 탄다 — 그땐 "다시"/"다음" 같은 진행 명령이라 조회 캐시가 방해만 된다.
-    # 캐시는 reset_to_start()가 안 지운다(만개레시피 실데이터는 세션 도중 안 바뀜).
+    # 캐시는 reset_to_start()가 안 지운다. staleness는 _LOOKUP_CACHE_TTL_S(5분)로 묶는다.
     lookup_key = _normalize_for_lookup(text)
     lookup_cache = st.session_state.setdefault("_recipe_lookup_cache", {})
-    if not session.get("current_recipe_id") and lookup_key in lookup_cache:
-        hit = lookup_cache[lookup_key]
+    _hit = lookup_cache.get(lookup_key)
+    _hit_fresh = _hit is not None and (time.monotonic() - _hit.get("_ts", 0.0)) < _LOOKUP_CACHE_TTL_S
+    if not session.get("current_recipe_id") and _hit_fresh:
+        hit = _hit
         st.session_state.chat_log.append(("user", hit["dish_name"]))
         session["current_recipe_id"] = hit["recipe_id"]
         session["step_number"] = 1
@@ -226,6 +235,10 @@ def process_utterance(text: str) -> None:
         if view and view.get("recipe_id") == session.get("current_recipe_id") and view.get("steps")
         else None
     )
+    # 2026-08-28 (A) — 배경 스레드가 조회 성공 시 recipe_view도 미리 가져올 수 있게
+    # _recipe_view_cache 참조를 지금(메인 스레드에서) 잡아 넘긴다. dict라 스레드에서 읽기만
+    # 하면 안전하고, 실제 쓰기(캐시 채우기)는 이 함수가 결과를 받은 뒤 메인에서 한다.
+    view_cache = st.session_state.setdefault("_recipe_view_cache", {})
 
     # 2026-08-23 — extract_intent_llm()/handle_utterance()를 배경 스레드로 돌리고, 메인
     # 스레드는 그동안 voice_io._drain_mic_while()로 마이크 큐를 계속 비운다. speak()의
@@ -243,6 +256,8 @@ def process_utterance(text: str) -> None:
         "result": None,
         "value_error": False,
         "network_error": False,
+        "recipe_view": None,  # 2026-08-28 (A) — 조회 성공 시 배경 스레드가 미리 채운다
+        "recipe_view_id": None,
     }
 
     def _compute(job=job) -> None:
@@ -310,6 +325,24 @@ def process_utterance(text: str) -> None:
                 # 폴백)으로 여기도 명시적으로 처리한다 — 무슨 예외인지도 콘솔에 남긴다.
                 print(f"[dispatch] handle_utterance 실패(네트워크/서버 오류 추정): {exc!r}")
                 job["network_error"] = True
+
+            # 2026-08-28 (A) — 조회 성공이면 recipe_view(재료 원문 + 전체 조리순서)도
+            # 여기 배경 스레드에서 미리 조회해 job에 담아둔다. 예전엔 메인 스레드가
+            # _drain_mic_while() 밖에서(handle_utterance 결과를 받은 뒤) refresh_recipe_view(
+            # force=True)로 했는데, 그 Supabase 왕복 2번(recipes by id + recipe_steps by
+            # recipe_id, _fetch_recipe_view() 참고) 동안 아무도 get_frames()를 안 불러 마이크
+            # 큐가 쌓였다("Queue overflow"). _fetch_recipe_view()는 순수 함수(client in ->
+            # dict out, st.* 안 씀)라 스레드에서 안전하고, 이미 이번 세션에서 조회한
+            # 레시피면(_recipe_view_cache 히트) DB를 아예 안 탄다.
+            res = job["result"]
+            if res and res.get("intent") == "조회" and res.get("recipe_id") and "message" not in res:
+                rid = res["recipe_id"]
+                try:
+                    _cv = view_cache.get(rid)
+                    job["recipe_view"] = _cv if _view_cache_fresh(_cv) else _fetch_recipe_view(rid, client)
+                    job["recipe_view_id"] = rid
+                except Exception as exc:  # noqa: BLE001 — 못 가져오면 메인이 refresh_recipe_view()로 폴백
+                    print(f"[dispatch] recipe_view 배경 조회 실패(메인에서 재시도): {exc!r}")
         finally:
             job["done"] = True
 
@@ -420,7 +453,18 @@ def process_utterance(text: str) -> None:
             # 분기가 이미 겪었던 것과 똑같은 문제가 재현된다(그쪽 2026-08-25 주석 참고) —
             # rerun이 안 걸리니 아무도 get_frames()를 안 불러 마이크 큐가 쌓이기만 하다
             # 넘친다. 화면은 그대로 두되(goto 아님) rerun만 걸어서 드레인 루프를 잇는다.
-            speak(result["message"])
+            #
+            # 2026-08-28 수정 — 같은 "없는 요리"를 두 번 연속 물으면 두 번째가 완전 무음이던
+            # 버그. DISH_NOT_FOUND_MESSAGE/PENDING_MESSAGE는 고정 문구라, screen_start()가
+            # _render_cached_speech(msg, nonce=_audio_replay_nonce)로 재생할 때 nonce가
+            # 안 바뀌면 브라우저가 "이미 로드된 오디오"로 보고 autoplay를 재실행하지 않는다
+            # (screen_start()가 chat_log도 안 그리므로 텍스트 피드백도 없음). nonce를 올려
+            # 매번 새로 재생되게 한다.
+            st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
+            # hidden=True — 도착 화면(현재 화면 그대로, 대개 start)이 _render_cached_speech()로
+            # 재생을 맡는다. 여기서 render_audio_player()를 그리면 바로 뒤 st.rerun()에 곧장
+            # 지워지는 "떴다 사라짐" 깜빡임만 남는다(이 파일 다른 분기들과 동일 패턴).
+            speak(result["message"], hidden=True)
             st.rerun()
             return
         # 2026-08-26 요청 — "제육복근"이라고 잘못 들려도 recipe_search.py::extract_dish_name()
@@ -432,8 +476,20 @@ def process_utterance(text: str) -> None:
         # 2026-08-28 — 이 발화 -> 이 레시피 매칭을 세션 캐시에 남긴다(위 process_utterance()
         # 상단 lookup_cache 주석 참고). 다음에 같은 발화를 다시 말하면 LLM/임베딩/DB를
         # 전부 건너뛴다. result["recipe_id"]는 handle_utterance()가 방금 DB에서 확정한 값.
-        lookup_cache[lookup_key] = {"recipe_id": result["recipe_id"], "dish_name": result["dish_name"]}
-        refresh_recipe_view(force=True)
+        lookup_cache[lookup_key] = {
+            "recipe_id": result["recipe_id"],
+            "dish_name": result["dish_name"],
+            "_ts": time.monotonic(),
+        }
+        # 2026-08-28 (A) — recipe_view의 DB 왕복은 위 _compute() 배경 스레드가
+        # _drain_mic_while() 우산 안에서 이미 끝냈다("Queue overflow" 대응). 그 결과를
+        # 그대로 반영하고 세션 캐시도 채운다. 배경 조회가 못 됐으면(스레드 예외 등)
+        # 기존대로 메인에서 refresh_recipe_view()로 폴백한다.
+        if job["recipe_view"] is not None:
+            st.session_state.recipe_view = job["recipe_view"]
+            view_cache[job["recipe_view_id"]] = job["recipe_view"]
+        else:
+            refresh_recipe_view(force=True)
         # 위와 같은 이유 — 도착 화면(recipe_confirm)이 chat_log의 마지막 ai 메시지를
         # _render_cached_speech()로 다시 들려준다.
         speak(f'{result["dish_name"]}, 조회수 1위 표준 레시피예요. 이걸로 시작할까요?', hidden=True)

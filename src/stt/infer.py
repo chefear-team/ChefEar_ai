@@ -774,6 +774,47 @@ def load_ct2_model():
         return _ct2_model
 
 
+# 2026-08-28 — whisper가 무음/잡음에서 흔히 지어내는 상투구(유튜브·방송 말미 인사 등).
+# 이 앱(음성 레시피 비서) 문맥에서는 사용자가 절대 말할 리 없는 문장들이라, 부분
+# 일치로 걸러도 오탐 위험이 사실상 0이다. faster-whisper 커뮤니티에 알려진 목록 중
+# 한국어권에서 자주 관측되는 것 위주 + 영어 몇 개.
+_HALLUCINATION_MARKERS: tuple[str, ...] = (
+    "시청해주셔서 감사합니다",
+    "시청해 주셔서 감사합니다",
+    "구독과 좋아요",
+    "구독", "좋아요 눌러",
+    "다음 영상에서 만나요",
+    "다음 시간에",
+    "영상 봐주셔서",
+    "한글자막",
+    "자막 제공",
+    "mbc 뉴스",
+    "kbs 뉴스",
+    "sbs 뉴스",
+    "뉴스룸",
+    "thank you for watching",
+    "thanks for watching",
+    "please subscribe",
+    "subscribe to",
+)
+
+
+def _looks_like_hallucination(text: str) -> bool:
+    """text가 whisper 환각 상투구를 포함하거나, 같은 짧은 조각이 비정상적으로 반복되면 True."""
+    low = text.lower()
+    if any(m in low for m in _HALLUCINATION_MARKERS):
+        return True
+    # 반복 아티팩트: 같은 토큰(공백 기준)이 전체의 절반 이상 + 4회 이상
+    parts = [p for p in text.split() if p]
+    if len(parts) >= 4:
+        from collections import Counter
+
+        top, cnt = Counter(parts).most_common(1)[0]
+        if cnt >= 4 and cnt / len(parts) >= 0.5:
+            return True
+    return False
+
+
 def stt_transcribe(
     audio: "str | Path | np.ndarray",
     *,
@@ -875,6 +916,25 @@ def stt_transcribe(
             )
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
+
+    # 2026-08-28 — 환각(hallucination) 방어. "여러 명이 마이크 주변에 있을 때 엉뚱한
+    # 텍스트가 실제 명령처럼 처리된다"는 리포트에 대해 예전엔 값만 찍고 아무것도 안
+    # 걸러냈다(위 [STT_CONF_DEBUG]). 상시 마이크 + 주방 잡음이라 실사용에서 계속 문제.
+    # 정식 임계값 튜닝용 로그 데이터는 아직 없어서 **보수적으로만** 막는다:
+    #  (a) faster-whisper 자신의 no_speech_prob가 0.85를 넘으면(모델의 기본 임계값 0.6보다
+    #      훨씬 높음 — 진짜 조용한 발화까지 버릴 위험을 줄이려 여유를 크게 뒀다) 버린다.
+    #  (b) 유튜브/방송 말미 상투구처럼 whisper가 무음에서 흔히 만들어내는 고정 문구는
+    #      이 앱 문맥상 절대 안 나올 말이라 오탐 위험 0으로 버린다.
+    # 둘 중 하나라도 걸리면 EC-01(인식 실패)과 동일하게 빈 문자열 -> 호출부가 "다시
+    # 말씀해주세요"로 안내한다.
+    if text and segments:
+        max_no_speech = max((s.no_speech_prob for s in segments), default=0.0)
+        if max_no_speech > 0.85:
+            print(f"[STT] 환각 방어: no_speech_prob={max_no_speech:.3f} > 0.85 — 버림 text={text!r}", flush=True)
+            text = ""
+    if text and _looks_like_hallucination(text):
+        print(f"[STT] 환각 방어: 상투구 매칭 — 버림 text={text!r}", flush=True)
+        text = ""
 
     # 2026-08-26 임시 진단 — "오징어볶음 레시피"처럼 vad_filter=False에서도, 큰소리로
     # 또박또박 말해도(max_amp 0.86까지) stt_text=''가 반복된다는 실측 리포트. vad_filter

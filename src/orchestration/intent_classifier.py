@@ -116,13 +116,12 @@ def _pick_intent(ranked: list[tuple[str, tuple[float, str]]], context_recipe_id:
     """
     top_intent, (top_score, top_example) = ranked[0]
 
-    # 2026-08-25 임시 진단 로그 — "메롱"처럼 의미 없는 발화가 실제로 어떤 의도/점수로
-    # 판정되는지 확인하기 위함(margin 미충족일 때만 찍히던 기존 print()로는 threshold
-    # 미달로 조용히 미분류된 건지, 아니면 threshold+margin을 둘 다 넘겨서 실제로
-    # 채택된 건지 구분이 안 됐다 — "말도 안 되는 발화인데 직전 명령이 반복 실행된다"는
-    # 실측 리포트, 2026-08-25). 원인 확인되면 지울 것.
-    second_str = f"{ranked[1][0]}={ranked[1][1][0]:.3f}" if len(ranked) > 1 else "N/A"
-    print(f"[classify_intent] 1위: {top_intent}={top_score:.3f} (2위: {second_str}) 문장='{top_example}'")
+    # 2026-08-25 진단 로그 — 1위/2위 의도·점수·매칭 예문. 2026-08-28: 매 발화마다
+    # 사용자 발화(간접적으로 top_example)와 점수가 stdout에 찍히는 게 부담이라
+    # CHEFEAR_DEBUG가 설정된 경우에만 남긴다(로컬 개발/QA용).
+    if os.environ.get("CHEFEAR_DEBUG"):
+        second_str = f"{ranked[1][0]}={ranked[1][1][0]:.3f}" if len(ranked) > 1 else "N/A"
+        print(f"[classify_intent] 1위: {top_intent}={top_score:.3f} (2위: {second_str}) 문장='{top_example}'")
 
     if top_score < THRESHOLD:
         # EC-01 / AC-02: 1등마저 threshold 미만 -> 아예 감이 안 잡히는 발화

@@ -579,12 +579,20 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
     active_recipe_box = st.session_state.setdefault("_active_recipe_box", {"recipe_id": recipe_id})
 
     def _run() -> None:
+        import time
+
         for step in remaining:
             if active_recipe_box.get("recipe_id") != recipe_id:
                 return  # 사용자가 이 레시피를 떠났음 — 남은 단계는 만들지 않고 중단
             step_num = step.get("step_number")
             audio_path = _AUDIO_DIR / str(recipe_id) / f"{step_num:02d}.wav"
             _synthesize_and_cache(step["text"], audio_path)
+            # 2026-08-28 — 한 단계 합성이 끝나면 다음 단계로 바로 안 넘어가고 잠깐 쉰다.
+            # _GPU_LOCK은 공정(fair)하지 않아서, 프리페치가 락을 놓자마자 다시 잡으면
+            # 그 사이 도착한 사용자 발화의 STT/실시간 speak()가 계속 뒤로 밀린다("다음"
+            # 이라고 했는데 전사부터 몇 초 걸리는 리뷰 지적). 이 유휴 구간 동안엔
+            # 프리페치가 락을 안 건드리므로 대기 중인 실시간 작업이 확실히 먼저 잡는다.
+            time.sleep(0.6)
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -698,6 +706,12 @@ def _recover_dead_mic() -> None:
     if st.session_state.get("_mic_ever_connected") and not signalling:
         st.session_state["_mic_gen"] = st.session_state.get("_mic_gen", 0) + 1
         st.session_state["_mic_ever_connected"] = False
+        # 2026-08-28 — 세대별 임시 타이밍 키(_mic_connect_start_<gen>/_mic_connect_logged_<gen>,
+        # _run_mic_loop() 참고)가 재연결마다 2개씩 session_state에 쌓이기만 하고 아무도 안
+        # 지웠다("화면 전환마다 재연결"이라 한 세션에 수십 개). 세대가 바뀌는 지금 옛 세대
+        # 키를 정리한다 — 현재/새 세대 키는 _run_mic_loop()가 필요할 때 다시 만든다.
+        for _k in [k for k in st.session_state if k.startswith(("_mic_connect_start_", "_mic_connect_logged_"))]:
+            del st.session_state[_k]
         # 2026-08-26 실측 리포트 — "된장찌개"라고 한 번만 말했는데 STT가 두 번(예: '단지게'
         # + '된장찌개') 잡히는 문제. _get_segmenter()의 MicVadSegmenter는 세션 전체에서
         # 하나만 재사용하는데(위 문서 — 화면 전환마다 새로 안 만드는 게 원래 목적), 마이크
@@ -725,10 +739,18 @@ def _mic_muted() -> bool:
     return time.monotonic() < st.session_state.get("_tts_mute_until", 0.0)
 
 
-def _run_mic_loop() -> str | None:
+def _run_mic_loop(*, drain_only: bool = False) -> str | None:
     """webrtc_streamer()를 딱 1번만 부르고, 연결돼 있는 동안 블로킹 루프를 돌며 프레임을
     계속 뽑아 VAD에 먹인다 — 발화 하나가 완성되면 그 텍스트를 반환하고 끝난다(마이크
     연결 자체는 끊지 않음 — 다음 listen() 호출 때 이 함수가 다시 불려서 이어서 듣는다).
+
+    drain_only=True (2026-08-28 추가) — webrtc_streamer() 렌더링(상시 연결 유지)과 프레임
+    드레인만 하고 VAD 세그멘테이션·STT·텍스트 반환은 전부 건너뛴다. register_ingredients
+    처럼 화면 자체가 텍스트 폼 전용이라 음성으로 처리할 게 없는 화면 전용
+    (listen(listen_for_speech=False)). 이 화면들도 예전엔 일반 모드로 이 함수를 불러서
+    마이크로 계속 듣고 STT까지 돌린 뒤 결과만 버렸는데(GPU 낭비 + "Queue overflow"),
+    이 플래그로 그 낭비만 없앤다 — webrtc_streamer() 호출/재협상 동작은 일반 모드와
+    100% 동일해서 마이크 재협상을 새로 유발하지 않는다(사용자 명시 요건).
 
     2026-08-23 리포트(실사용 + WEBRTC_DEBUG=1 로그로 원인 확정) — 처음엔 st.fragment
     (run_every=0.3)로 프레임만 폴링하고 웹RTC 연결 자체는 화면 흐름에서 정상 빈도로
@@ -877,6 +899,15 @@ def _run_mic_loop() -> str | None:
         except AttributeError:
             break  # 위 주석과 같은 레이스 — get_frames() 호출 순간 None이 된 경우
 
+        if drain_only:
+            # 2026-08-28 요청 — register_ingredients처럼 화면이 텍스트 폼 전용이라
+            # 음성으로 처리할 게 없는 화면. webrtc_streamer()는 위에서 이미 렌더링해
+            # 상시 마이크 연결은 그대로 살아있고(마이크 재협상을 절대 유발하지 않는다는
+            # 사용자 요건), 여기서는 VAD/STT를 아예 안 돌리고 방금 꺼낸 프레임을 그냥
+            # 버려서 receiver 내부 큐만 계속 비운다("Queue overflow" 경고 방지). 사용자가
+            # 이 화면에서 뭔가 조작하면(입력/버튼) 그 rerun이 이 실행을 대체하며 빠져나온다.
+            continue
+
         if _mic_muted():
             continue  # 프레임은 이미 꺼냈으니 밀리지 않음 — VAD엔 안 먹이고 버림
 
@@ -914,14 +945,17 @@ def _run_mic_loop() -> str | None:
                 try:
                     from stt.infer import stt_transcribe
 
-                    # 2026-08-23 임시 진단(마이크 인식 문제) — 실제로 넘어오는 오디오 크기/레벨과
-                    # STT 최종 결과를 눈으로 확인하기 위함. 원인 확인되면 지울 것.
-                    print(
-                        f"[MIC_DEBUG] samples={len(audio)} dur={len(audio) / 16000:.2f}s "
-                        f"max_amp={float(__import__('numpy').abs(audio).max()):.4f} "
-                        f"rms={float(__import__('numpy').sqrt((audio ** 2).mean())):.4f}",
-                        flush=True,
-                    )
+                    # 2026-08-23 진단(마이크 인식 문제) — 오디오 크기/레벨 + STT 결과.
+                    # 2026-08-28: 매 발화마다 stdout에 찍히고 stt_text는 사용자 발화 전문이라
+                    # CHEFEAR_DEBUG가 설정된 경우에만 남긴다.
+                    _mic_dbg = bool(os.environ.get("CHEFEAR_DEBUG"))
+                    if _mic_dbg:
+                        print(
+                            f"[MIC_DEBUG] samples={len(audio)} dur={len(audio) / 16000:.2f}s "
+                            f"max_amp={float(__import__('numpy').abs(audio).max()):.4f} "
+                            f"rms={float(__import__('numpy').sqrt((audio ** 2).mean())):.4f}",
+                            flush=True,
+                        )
                     # 2026-08-23 추가, 2026-08-25 제거 — 매 발화마다 STT 입력 오디오를
                     # ui/assets/_mic_debug_dumps/에 파일로 남기던 임시 진단 코드였다("녹음된
                     # 게 내 목소리가 아니다" 리포트 원인 파악용). 그 원인은 바로 위 채널
@@ -934,7 +968,8 @@ def _run_mic_loop() -> str | None:
                     # 요청이라 그대로 반영한다.
                     with _GPU_LOCK:
                         job["text"] = stt_transcribe(audio, sample_rate=16000, vad_filter=True).strip()
-                    print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)
+                    if _mic_dbg:
+                        print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — 실패해도 조용히 넘어감
                     print(f"[MIC_DEBUG] stt exception: {exc!r}", flush=True)
                     job["text"] = ""
@@ -981,6 +1016,7 @@ def listen(
     *,
     show_mic: bool = True,
     mic_enabled: bool = True,
+    listen_for_speech: bool = True,
     show_text_fallback: bool = True,
 ) -> str | None:
     """상시 마이크(실시간 스트리밍 인식) 또는 텍스트 입력으로 발화 하나를 받는다.
@@ -1002,6 +1038,14 @@ def listen(
     _run_mic_loop() 주석 참고) 연결이 자연히 끊긴다. start만 이걸로 마이크를 끄고, 그 외
     모든 화면은 기본값(True)으로 계속 같은 연결을 공유한다.
 
+    listen_for_speech=False (2026-08-28 추가) — mic_enabled=False와 달리 webrtc_streamer()는
+    그대로 렌더링해서 상시 마이크 연결을 유지하되(마이크 재협상 금지 요건), _run_mic_loop()
+    안의 VAD 세그멘테이션·STT만 건너뛴다(_run_mic_loop(drain_only=True), 프레임은 계속
+    드레인해서 "Queue overflow" 방지). register_ingredients처럼 화면이 텍스트 폼 전용이라
+    음성 입력이 필요 없는데, 예전엔 일반 listen()을 불러 마이크로 계속 듣고 STT까지 돌린 뒤
+    반환값만 버리고 있었다(불필요한 GPU 사용). 마이크 반환값은 항상 None이라 show_text_fallback
+    처리만 이어진다.
+
     show_text_fallback=False (2026-08-23 추가) — register_ingredients/register_steps처럼
     화면 자신이 이미 목적이 뚜렷한 텍스트 입력칸("재료 추가"/"순서 추가")을 갖고 있는
     화면에서, listen()이 덧붙이는 범용 "또는 텍스트로 입력" 칸까지 같이 뜨면 입력창이
@@ -1013,7 +1057,7 @@ def listen(
     """
     turn = st.session_state.input_turn
 
-    mic_text = _run_mic_loop() if mic_enabled else None
+    mic_text = _run_mic_loop(drain_only=not listen_for_speech) if mic_enabled else None
     if mic_text:
         st.session_state.input_turn += 1  # 다음 rerun에서 새 텍스트 위젯 키를 쓰게 함
         return mic_text

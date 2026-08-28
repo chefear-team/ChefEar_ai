@@ -105,7 +105,13 @@ footer { visibility: hidden; }
   max-width: 430px; background: var(--bg);
   padding: 20px 22px 44px;
   box-shadow: 0 20px 46px rgba(36, 28, 21, 0.14);
-  min-height: 100vh;
+  /* 2026-08-28 — 카드가 뷰포트 위아래에 꽉 붙어 배경사진이 좌우로 뚝 잘려 보이던 것 →
+     위아래 20px 여백 + 둥근 모서리로 "떠있는 카드"처럼, 상단 accent 4px 라인으로
+     브랜드컬러 확장. min-height는 그 40px 여백만큼 줄여 카드가 정확히 뷰포트에 맞게. */
+  margin: 20px auto;
+  border-radius: 28px;
+  border-top: 4px solid var(--accent);
+  min-height: calc(100vh - 40px);
   display: flex; flex-direction: column;
   /* block-container(stMainBlockContainer) 자신이 stMain(overflow:auto인 진짜 스크롤
      컨테이너)의 flex 자식이라, 기본값인 flex-shrink:1 때문에 콘텐츠가 길어지면(예: 대화
@@ -168,8 +174,10 @@ html, body, [class*="css"] { font-family: "Pretendard", -apple-system, "Apple SD
    그 감싸는 컨테이너(stElementContainer) 높이를 CSS margin을 반영하지 않고 먼저
    측정해버려서, 그 컴포넌트 자체에 위/아래 margin을 주면 다음 요소와 실제로 겹치는
    문제가 있었다("이전/다시/다음" 버튼 줄이 마이크 상태줄과 겹쳐 보인 원인).
-   그래서 요소 사이 간격은 개별 margin이 아니라 부모의 flex gap 하나로만 통일한다. */
-[data-testid="stVerticalBlock"] { gap: 1.35rem; }
+   그래서 요소 사이 간격은 개별 margin이 아니라 부모의 flex gap 하나로만 통일한다.
+   2026-08-28 — 콘텐츠 적은 화면에서 요소간 간격이 좁아 빈 공간이 리듬 없이 남아
+   1.35 -> 1.75rem. 조리 카드/footer/점 줄 등은 아래에서 자기 gap을 따로 덮어씀. */
+[data-testid="stVerticalBlock"] { gap: 1.75rem; }
 .block-container hr { border-color: var(--border); margin: 10px 0; }
 .block-container small, [data-testid="stCaptionContainer"] { color: var(--text-secondary) !important; font-size: 12.5px !important; }
 [data-testid="stAlert"] { border-radius: 16px; }
@@ -196,7 +204,7 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 
 .ce-back-link { display:inline-flex; align-items:center; gap:4px; font-size:13px; color: var(--text-secondary); font-weight:700; margin-bottom: 4px; }
 
-.ce-brand { display:flex; align-items:center; gap:8px; font-size:22px; font-weight:800; color:var(--text); margin-top: -35px; }  /* 2026-08-26: 로고 위로 15px -> 로그인 버튼과 별도로 20px 추가(-35px) 재요청 */
+.ce-brand { display:flex; align-items:center; gap:8px; font-size:22px; font-weight:800; color:var(--text); margin-top: -10px; }  /* 2026-08-26: -15 -> -35px 재요청. 2026-08-28: 카드 상단 accent 라인/둥근모서리 도입 후 로고가 그 위로 너무 떠 보여 -10px로 축소 재요청 */
 .ce-brand .icon { color: var(--accent); display:inline-flex; }
 /* 2026-08-26 — 로고 이미지 버전(.ce-brand-logo). 원본(1024x559)엔 "당신의 AI 요리
    파트너" 부제도 같이 그려져 있어서, 아이콘+글자 한 줄(22px)보다 세로로 더 크다 —
@@ -378,7 +386,10 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 .ce-row p { margin:4px 0 0; font-size:14.5px; line-height:1.65; }
 
 .ce-center { text-align:center; }
-.ce-center h1 { font-size:22px; font-weight:800; margin:6px 0 8px; }
+/* 2026-08-28 — 22 -> 30px, margin 하단 8 -> 10px. 제목/본문 크기 차이가 작아 타이포
+   위계가 약했음. .ce-center를 쓰는 큰 중앙 메시지 화면(start/complete/cooking_complete/
+   register_intro/unclassified)에만 적용됨(조리 단계 텍스트는 .ce-step-title로 별도). */
+.ce-center h1 { font-size:30px; font-weight:800; margin:6px 0 10px; }
 .ce-center p { font-size:14.5px; color: var(--text-secondary); line-height:1.6; margin:0; }
 
 .ce-lead-icon { width:56px; height:56px; border-radius:50%; display:grid; place-items:center; margin: 0 auto; }
@@ -1667,6 +1678,14 @@ _SINGLE_OWNER_WIDGET_KEYS = {
     # 구조적으로 숨긴다. ui/dispatch.py::fallback_buttons()의 st.container(key=...) 참고.
     "cooking_step_fallback": "cooking_step",
     "unclassified_fallback": "unclassified",
+    # 2026-08-28 — 완료 화면(cooking_complete/complete) 본문 전체를 감싼 컨테이너.
+    # 아이콘·제목·배지·완료음이 "처음 화면으로" 버튼(_STALE_CONTENT_MARKERS로 잡히는
+    # 유일한 요소, 맨 마지막이라 "꼬리 제거"가 자기 자신만 지움)보다 앞에 렌더링돼서
+    # "처음"으로 start 전환 시 잔상으로 남던 것(#8360). cooking.py::screen_cooking_complete()
+    # / register.py::screen_complete()의 st.container(key=...) 참고. render_spacer()는
+    # 수직 중앙정렬 유지를 위해 이 래퍼 밖에 둔다.
+    "cooking_complete_card": "cooking_complete",
+    "complete_card": "complete",
 }
 
 # 2026-08-25 — 로그인/회원가입 위젯(login_*/signup_* key)이 다른 화면으로 넘어간 뒤에도

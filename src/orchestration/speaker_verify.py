@@ -40,7 +40,24 @@ from orchestration.db import load_env
 load_env()
 
 _MODEL_ID = os.environ.get("ADMIN_SPEAKER_MODEL") or "speechbrain/spkrec-ecapa-voxceleb"
-_THRESHOLD = float(os.environ.get("ADMIN_VOICE_THRESHOLD", "0.55"))
+
+
+def _env_threshold(default: float = 0.55) -> float:
+    """2026-08-28 — 예전엔 float(os.environ[...])를 모듈 로드 시점에 바로 불러서, .env의
+    ADMIN_VOICE_THRESHOLD에 오타(숫자 아님)가 있으면 이 모듈 import 자체가 ValueError로
+    실패했다 → speaker_verify를 쓰는 관리자 인증 전체가 죽음(fail-closed라 안전하긴 하나
+    원인 파악이 어려운 잠금). 파싱 실패 시 기본값으로 폴백하고 경고만 남긴다."""
+    raw = os.environ.get("ADMIN_VOICE_THRESHOLD")
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[speaker_verify] ADMIN_VOICE_THRESHOLD={raw!r} 파싱 실패 — 기본값 {default} 사용", flush=True)
+        return default
+
+
+_THRESHOLD = _env_threshold()
 _SAMPLE_RATE = 16000
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -190,8 +207,10 @@ def enroll(name: str, audios: list, sample_rate: int | None = None) -> None:
     name = (name or "").strip()
     if not name:
         raise ValueError("이름이 비어 있습니다.")
-    if not audios:
-        raise ValueError("음성 샘플이 없습니다.")
+    # 2026-08-28 — 최소 2개(화면은 3개 강제하지만, 다른 호출부/테스트가 1개만 넘기면
+    # 성문이 그 한 녹음의 노이즈까지 그대로 학습해 오검증률이 나빠진다).
+    if not audios or len(audios) < 2:
+        raise ValueError("음성 샘플이 2개 이상 필요합니다.")
     embs = [embed(a, sample_rate) for a in audios]
     mean = np.mean(np.stack(embs, axis=0), axis=0)
     norm = float(np.linalg.norm(mean))
