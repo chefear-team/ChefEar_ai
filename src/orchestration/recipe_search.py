@@ -1,9 +1,8 @@
-"""7.3/7.6 — 표준 레시피 선정, 재료 대체 검색(6.4), 발화 속 요리명 추출.
+"""7.3/7.6 — 표준 레시피 선정, 발화 속 요리명 추출.
 
 이 파일의 함수들은 전부 "DB에서 조건에 맞는 레시피를 찾는다"는 공통점이
 있는데, 못 찾았을 때 절대로 답을 지어내지 않는다(1.5 원칙: 서비스 실행 중
-LLM 생성 fallback 없음). 못 찾으면 그냥 "없다"고 정직하게 답한다 — 이게 이
-프로젝트 재료 대체 기능의 핵심 설계다.
+LLM 생성 fallback 없음). 못 찾으면 그냥 "없다"고 정직하게 답한다.
 """
 from __future__ import annotations
 
@@ -13,8 +12,6 @@ import unicodedata
 from functools import lru_cache
 
 from orchestration.db import get_client
-
-NOT_FOUND_MESSAGE = "죄송해요, 이 조합의 레시피는 없어요."
 
 # extract_dish_name()의 3단계 중 편집거리 유사도(3번) 판정 기준값. intent_classifier.py의
 # THRESHOLD와 같은 성격 — 실측 튜닝 전 임시값이다. 0.75로 하면 "부대찌개"/"부대찌게"(글자
@@ -184,6 +181,22 @@ def extract_dish_name(utterance: str, client=None, fuzzy_cutoff: float = FUZZY_C
             if close:
                 candidates.append(name_map[close[0]])
 
+    # 2026-08-27 실측 리포트 — "10분잡채"(DB엔 공백 없이 저장)를 STT가 "10분 잡채"로
+    # 중간에 공백을 넣어 인식한 경우, 위 부분일치 단계가 "10분잡채"는 통째로 못 찾고
+    # (문자 그대로 비교라 공백 하나 차이도 실패) 그 안에 우연히 들어있는 더 짧은 다른
+    # 요리명("잡채")만 찾아서 그걸로 확정해버렸다 — "10분잡채 레시피 알려줘"라고
+    # 말했는데 "잡채"로 조회되는 버그(실측 확인). find_dish_name_ignoring_spaces()가
+    # 이미 비슷한 문제를 select_standard_recipe() 실패 후 안전망으로 처리하지만, 이
+    # 경우는 애초에 "잡채"라는 실제 존재하는 다른 이름으로 잘못 확정돼버려서
+    # (select_standard_recipe()가 None을 안 돌려줌) 그 안전망까지 갈 일이 없다 —
+    # 여기서 먼저 막아야 한다. 공백을 전부 지운 버전으로도 부분일치를 시도해서
+    # candidates에 추가한다 — "10분잡채"가 후보에 들어오면 "잡채"보다 길어서
+    # max(candidates, key=len)이 항상 이걸 우선 채택한다(위 "김치"/"김치찌개"와
+    # 같은 원리).
+    text_no_space = re.sub(r"\s+", "", text)
+    if text_no_space != text:
+        candidates.extend(name for name in names if name and len(name) >= 2 and name in text_no_space)
+
     if candidates:
         return max(candidates, key=len)
 
@@ -294,6 +307,37 @@ def find_dish_name_stripping_query_suffix(dish_name: str, client=None) -> str | 
     return None
 
 
+def find_more_specific_containing_name(dish_name: str, utterance: str, client=None) -> str | None:
+    """dish_name이 이미 DB에서 찾아졌지만, 발화 원문 안에 dish_name을 포함하면서 더
+    긴(더 구체적인) 다른 DB 요리명이 문자 그대로(공백만 무시) 들어있으면 그 이름을
+    돌려준다.
+
+    2026-08-27 실측 리포트 — "10분잡채"(DB에 실제 있음)를 로컬 LLM이 "잡채"(이것도
+    DB에 실제 있는 별개 요리)로만 추측해서 조회한 사례. "잡채"도 정직하게 존재하는
+    매칭이라 select_standard_recipe()가 None을 안 돌려주고, 그러면 handle_utterance()의
+    다른 안전망들(find_dish_name_ignoring_spaces() 등)은 애초에 "found is None"일
+    때만 발동하므로 전혀 도움이 안 된다 — 이미 성공한 매칭을 사후에 더 구체적인
+    것으로 승격해주는 이 함수가 따로 필요하다.
+
+    순수 substring 포함관계만 보고 편집거리/유사도는 전혀 안 쓴다 — "초코민트
+    된장찌개"(존재하지 않는 요리)가 "토마토된장찌개"(엉뚱한 실제 요리)에 편집거리로
+    잘못 매칭되던 문제(pipeline.py 조회 분기 주석 참고)와는 오매칭 위험의 성격이
+    다르다. 거기선 존재하지 않는 요리를 억지로 편집거리로 매칭시켰지만, 여긴 발화에
+    실제로 그 글자 그대로(공백 제외) 들어있는 이름만 인정하므로 구조적으로 안전하다.
+    """
+    client = client or get_client()
+    text_no_space = re.sub(r"\s+", "", utterance)
+    names = _all_dish_names(client)
+    candidates = [
+        name
+        for name in names
+        if name and len(name) > len(dish_name) and dish_name in name and name in text_no_space
+    ]
+    if candidates:
+        return max(candidates, key=len)
+    return None
+
+
 def _max_view_count(rows: list[dict]) -> dict:
     """여러 후보 중 "표준"으로 뽑을 하나를 고른다. 6.1/EC-09/EC-19 규칙.
 
@@ -307,28 +351,23 @@ def _max_view_count(rows: list[dict]) -> dict:
     return max(rows, key=lambda r: (r.get("view_count", 0), r.get("created_at", "")))
 
 
-def select_standard_recipe(dish_name: str, owner_id: str | None = None, client=None) -> dict | None:
-    """요리명 하나를 받아서, 이 사용자에게 보여줄 "그 요리의 대표 레시피" 하나를 고른다.
+def select_standard_recipe(dish_name: str, client=None) -> dict | None:
+    """요리명 하나를 받아서, 보여줄 "그 요리의 대표 레시피" 하나를 고른다.
 
     같은 요리명이 여러 개 있을 수 있는 이유는 두 가지다.
       1) api_standard 레시피가 조회수 기준으로 이미 여러 후보 중 1등만 골라
          DB에 들어가 있으므로(작업1의 load_data.py) 보통 1개뿐이다.
-      2) 사용자가 직접 등록/수정한 user_custom 버전이 추가로 있을 수 있다.
-         심지어 서로 다른 사용자가 각자 자기 버전을 등록했을 수도 있다.
+      2) 사용자가 직접 등록한 user_custom 버전이 추가로 있을 수 있다.
 
-    owner_id(작업3, 쿠키 UUID)가 주어지면 "이 사용자 소유의" user_custom만
-    후보로 본다 — 다른 사용자가 저장한 user_custom은 절대로 대신 보여주지
-    않는다(그 사람의 개인 레시피를 남에게 노출하면 안 되므로). 내 것이 없으면
-    api_standard로 폴백하고, 그마저 없으면(이색 요리를 남이 등록했는데 나는
-    등록한 적 없는 경우) None을 반환한다.
+    승인 여부(recipes.approved, 관리자 페이지 스펙 참고)로만 공개를 가른다 —
+    등록한 사람이 누구인지는 추적하지 않는다(2026-08-27, 계정/쿠키 시스템 제거
+    결정). api_standard는 항상 approved='Y'이고, 신규 user_custom은 관리자가
+    승인하기 전까지 approved='N'이라 아래 필터에서 제외된다.
 
-    owner_id가 아직 없으면(비로그인, 쿠키 실패 등으로 신원을 전혀 특정 못 하는
-    상태) api_standard만 후보로 본다 — EC-20/FR-08 스펙 문구가 "사용자가"
-    user_custom을 갖고 있는 경우라고 명시하므로(그 사용자 본인 것이라는 뜻),
-    누구 것인지 모르는 상태에서 아무나의 user_custom을 대신 보여주면 안 된다
-    (2026-08-24 수정 — 이전엔 "아무 user_custom이나 우선"하는 로그인 붙기 전
-    하위호환 코드가 남아 있어서, 비로그인 사용자에게 남이 등록한 개인 레시피가
-    표준보다 먼저 노출되는 문제가 있었다).
+    반환값 셋 중 하나:
+      - None: 이 요리명 자체가 DB에 아예 없음(6.5: 표준 데이터 밖 요리)
+      - {"pending": True}: 이 요리명으로 등록된 행은 있지만 전부 승인 대기 중
+      - 대표 레시피 dict: 승인된 후보 중 1등
     """
     client = client or get_client()
     # .eq("dish_name", ...) : dish_name이 정확히 일치하는 행만
@@ -344,16 +383,9 @@ def select_standard_recipe(dish_name: str, owner_id: str | None = None, client=N
     if not rows:
         return None  # 이 요리명 자체가 DB에 아예 없음 (6.5: 표준 데이터 밖 요리)
 
-    if owner_id:
-        my_custom_rows = [r for r in rows if r["source"] == "user_custom" and r.get("owner_id") == owner_id]
-        api_rows = [r for r in rows if r["source"] == "api_standard"]
-        candidates = my_custom_rows or api_rows  # 파이썬에서 "or"는 앞이 빈 리스트면 뒤를 씀
-        if not candidates:
-            return None  # 있는 건 남의 user_custom뿐 -> 노출하지 않음
-    else:
-        candidates = [r for r in rows if r["source"] == "api_standard"]
-        if not candidates:
-            return None  # 표준 레시피가 없고 남의 user_custom만 있음 -> 노출하지 않음
+    candidates = [r for r in rows if r.get("approved") == "Y"]
+    if not candidates:
+        return {"pending": True}  # 있지만 전부 관리자 승인 대기 중
 
     winner = _max_view_count(candidates)
 
@@ -375,98 +407,3 @@ def select_standard_recipe(dish_name: str, owner_id: str | None = None, client=N
         # (예: result["recipe_id"]) 딕셔너리에 키가 하나 늘어나는 건 하위 호환에 안전하다.
         "ingredients": winner.get("ingredients", ""),
     }
-
-
-def _build_variant_name(base_dish_name: str, requested_ingredient: list[str]) -> str | None:
-    """"바지락" + "된장찌개" -> "바지락된장찌개"처럼, 요청 재료를 붙인 요리명을 만든다.
-
-    이 규칙은 6.4 문서에 나온 실제 테스트 사례("새우"+"바지락"+"된장찌개" ->
-    "새우바지락된장찌개")를 그대로 따른 것이다. 재료가 하나도 없으면(빼기만
-    요청한 EC-08 케이스) 만들 이름 자체가 없으니 None을 돌려주고, 호출하는 쪽은
-    그러면 이름 매칭 단계를 건너뛰고 바로 재료 내용 검색으로 넘어간다.
-    """
-    if not requested_ingredient:
-        return None
-    return "".join(requested_ingredient) + base_dish_name
-
-
-def search_variant_recipe(
-    base_recipe_id: str,
-    requested_ingredient: list[str],
-    excluded_ingredient: str | None = None,
-    client=None,
-) -> dict:
-    """재료 대체 검색의 1단계: 요리명이 정확히 일치하는 레시피가 있는지 먼저 본다(6.4①).
-
-    예: "된장찌개"를 진행 중에 "바지락 넣어도 돼?"라고 물으면, 먼저
-    "바지락된장찌개"라는 이름의 레시피가 DB에 그대로 있는지 찾아본다. 있으면
-    그게 제일 확실한 매칭이라 바로 반환하고, 없으면(match_type=none이 아니라
-    함수 자체가) 2단계인 search_by_ingredient_content()로 넘어간다 — 이름은
-    달라도 재료 구성이 맞는 레시피가 있을 수 있어서다(6.4 문서의 "새우바지락된장찌개"
-    이름으로는 0건이었지만 "해물된장찌개" 재료 내용으로는 매칭됐던 실측 사례 참고).
-    """
-    client = client or get_client()
-    # .single() : 결과가 정확히 1건이라고 가정하고, res.data를 리스트가 아니라
-    # 딕셔너리 하나로 바로 돌려준다(id로 조회하니 1건 아니면 이상한 상황).
-    base = client.table("recipes").select("dish_name").eq("id", base_recipe_id).single().execute().data
-    variant_name = _build_variant_name(base["dish_name"], requested_ingredient)
-
-    if variant_name:
-        res = client.table("recipes").select("*").eq("dish_name", variant_name).execute()
-        if res.data:
-            winner = _max_view_count(res.data)  # 같은 이름이 여러 건이면 EC-09 규칙대로 1등 선택
-            return {
-                "match_type": "exact_name",
-                "result_recipe_id": winner["id"],
-                "result_dish_name": winner["dish_name"],
-                "source": winner["source"],
-            }
-
-    # 이름 매칭 실패 -> 2단계(재료 내용 검색)로 넘긴다. AND/제외 필터는
-    # search_by_ingredient_content() 안에서 처리된다.
-    return search_by_ingredient_content(base_recipe_id, requested_ingredient, excluded_ingredient, client=client)
-
-
-def search_by_ingredient_content(
-    base_recipe_id: str,
-    requested_ingredient: list[str],
-    excluded_ingredient: str | None = None,
-    client=None,
-) -> dict:
-    """재료 대체 검색의 2단계: 이름이 아니라 "재료 목록에 이게 들어있는가"로 찾는다(6.4②).
-
-    EC-06(부분 문자열 매칭)/EC-07(여러 재료 AND 조건)/EC-08(재료 제외) 전부
-    여기서 처리한다.
-    """
-    client = client or get_client()
-    query = client.table("recipes").select("*").eq("source", "api_standard")
-
-    # .ilike(컬럼, "%문자열%") 은 SQL의 LIKE '%문자열%' 와 같다 — 대소문자 구분
-    # 없이 부분 문자열이 포함돼 있으면 매칭된다. 그래서 사용자가 "바지락"이라고만
-    # 말해도 재료란에 "바지락조개"라고 적힌 레시피가 걸린다(EC-06).
-    #
-    # requested_ingredient가 ["새우", "바지락"] 처럼 여러 개면 .ilike()를 그만큼
-    # 여러 번 체이닝(연쇄 호출)한다. supabase-py는 필터를 여러 개 걸면 전부
-    # AND로 합쳐지므로(SQL의 WHERE a AND b AND c와 동일), 결과적으로 "새우도
-    # 있고 바지락도 있는" 레시피만 남는다(EC-07의 AND 조건).
-    for ing in requested_ingredient:
-        query = query.ilike("ingredients", f"%{ing}%")
-
-    if excluded_ingredient:
-        # .not_.ilike(...) 는 위와 반대로 "이 문자열이 없는" 행만 남긴다(EC-08).
-        # 예: "애호박 빼고 새우 넣어도 돼?" -> 새우는 있고 애호박은 없는 레시피만.
-        query = query.not_.ilike("ingredients", f"%{excluded_ingredient}%")
-
-    res = query.execute()
-    if res.data:
-        winner = _max_view_count(res.data)  # 여러 건 매칭되면 EC-09 규칙대로 1등 선택
-        return {
-            "match_type": "ingredient_content",
-            "result_recipe_id": winner["id"],
-            "result_dish_name": winner["dish_name"],
-            "source": winner["source"],
-        }
-
-    # 이름 매칭도, 재료 내용 매칭도 다 실패 -> AC-05. LLM으로 그럴싸한 답을
-    # 지어내지 않고 정직하게 "없다"고만 답한다(1.5 원칙).
-    return {"match_type": "none", "message": NOT_FOUND_MESSAGE}

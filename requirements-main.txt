@@ -12,6 +12,13 @@ tokenizers==0.22.2
 
 qwen-tts==0.1.1
 
+# 관리자 페이지 2FA 화자검증(docs/specs/admin_voice_2fa.md) — ECAPA-TDNN
+# (speechbrain/spkrec-ecapa-voxceleb). CPU 추론(VRAM 여유 없음). torchaudio 2.9+에서
+# 제거된 list_audio_backends()를 speechbrain이 부르므로 src/orchestration/speaker_verify.py
+# 에서 import 전에 심(shim)을 넣는다. requirements.txt(HF Spaces 배포용 최소)에는
+# 안 넣는다 — 관리자 페이지는 팀 GPU 데스크탑 배포에만 노출한다.
+speechbrain==1.0.2
+
 huggingface_hub==0.36.2
 python-dotenv==1.2.3
 jiwer==4.0.0

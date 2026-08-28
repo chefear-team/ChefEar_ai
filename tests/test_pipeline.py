@@ -4,6 +4,7 @@ from fake_supabase import FakeSupabaseClient
 from orchestration.pipeline import (
     DISH_NOT_FOUND_MESSAGE,
     NOT_AVAILABLE_MESSAGE,
+    PENDING_MESSAGE,
     advance_step,
     get_precomputed_steps,
     handle_utterance,
@@ -98,7 +99,7 @@ def test_handle_utterance_progress_advances_step():
 def test_handle_utterance_progress_without_active_recipe_is_honest_not_a_crash():
     """실측 회귀 테스트(2026-08-20): 레시피를 고른 적 없는 상태(session 비어있음)에서
     "다음"이 오면 advance_step()이 session["current_recipe_id"]를 못 찾아 KeyError로
-    죽던 실제 버그. 재료대체의 EC-05와 같은 방식으로 정직하게 되물어야 한다."""
+    죽던 실제 버그. 정직하게 되물어야 한다."""
     client = FakeSupabaseClient()
     session: dict = {}
 
@@ -129,40 +130,6 @@ def test_handle_utterance_previous_at_step_one_flags_no_previous():
 
     assert result["intent"] == "이전"
     assert result["no_previous"] is True
-
-
-# 2026-08-26 요청 — 재료대체를 기준예문.csv에서 빼서 비활성화했다. handle_utterance()
-# 자체의 "재료대체" 분기(및 substitution.py의 search_variant_recipe()/apply_substitution())
-# 코드는 그대로 남아있지만, classify_intent()가 다시는 "재료대체"를 top_intent로 안
-# 돌려주므로(예문이 하나도 없음) 음성/텍스트를 통해서는 이제 이 분기에 도달할 방법이
-# 없다 — 아래 두 테스트는 예전엔 "재료대체" 관련 시나리오였는데, 지금은 같은 발화가
-# 그냥 미분류로 떨어진다는(=기능이 실제로 꺼져 있다는) 걸 확인한다.
-def test_handle_utterance_substitution_phrase_now_falls_to_unclassified():
-    client = FakeSupabaseClient()
-    base = _seed_recipe_with_steps(client)
-    client.table("recipes").seed({"dish_name": "새우된장찌개", "ingredients": "새우", "source": "api_standard"})
-    session = {"current_recipe_id": base["id"], "step_number": 2}
-
-    result = handle_utterance(session, "새우도 넣어도 될까?", requested_ingredient=["새우"], client=client)
-
-    assert result["intent"] == "미분류"
-    assert session["current_recipe_id"] == base["id"]  # 세션도 안 바뀜(재료대체 자체가 발동 안 함)
-
-
-def test_handle_utterance_substitution_no_match_phrase_now_falls_to_unclassified():
-    """예전엔 이슈 #8(tests/integration_issues_2026-08-18.md, match_type=="none")을
-    검증하던 테스트 — 재료대체 비활성화로 그 코드 경로 자체에 이제 안 닿아서, 같은
-    발화가 미분류로 떨어지는지만 확인하는 테스트로 바꿨다."""
-    client = FakeSupabaseClient()
-    base = _seed_recipe_with_steps(client)
-    session = {"current_recipe_id": base["id"], "step_number": 2}
-
-    result = handle_utterance(
-        session, "문어랑 성게 같이 넣어도 돼?", requested_ingredient=["문어", "성게"], client=client
-    )
-
-    assert result["intent"] == "미분류"
-    assert session["current_recipe_id"] == base["id"]  # 매칭 실패 시 세션은 그대로 유지
 
 
 def test_handle_utterance_search_sets_current_recipe():
@@ -210,6 +177,23 @@ def test_handle_utterance_search_dish_not_found_is_honest_about_it():
 
     assert result["intent"] == "조회"
     assert result["message"] == DISH_NOT_FOUND_MESSAGE
+    assert "current_recipe_id" not in session
+
+
+def test_handle_utterance_search_pending_approval_gets_distinct_message():
+    """admin_recipe_approval.md — 등록은 됐지만 아직 관리자 승인 전(approved='N')이면
+    "아예 없음"과는 다른 메시지가 나와야 하고, 세션도 안 바뀌어야 함."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed(
+        {"dish_name": "고등어라테", "ingredients": "고등어, 우유", "source": "user_custom", "approved": "N"}
+    )
+    session: dict = {}
+
+    result = handle_utterance(session, "고등어라테 어떻게 만들어?", dish_name="고등어라테", client=client)
+
+    assert result["intent"] == "조회"
+    assert result["message"] == PENDING_MESSAGE
+    assert result["message"] != DISH_NOT_FOUND_MESSAGE
     assert "current_recipe_id" not in session
 
 

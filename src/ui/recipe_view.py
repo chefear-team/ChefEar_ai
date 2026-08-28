@@ -29,7 +29,18 @@ def refresh_recipe_view(force: bool = False) -> None:
     cached = st.session_state.recipe_view
     if not force and cached and cached.get("recipe_id") == recipe_id:
         return
-    st.session_state.recipe_view = _fetch_recipe_view(recipe_id, get_client())
+    # 2026-08-28 — recipe_id별 세션 캐시(_recipe_view_cache). 이번 세션에서 한 번이라도
+    # 조회한 레시피면 force=True로 불려도 DB 왕복(recipes by id + recipe_steps by
+    # recipe_id, _fetch_recipe_view() 참고) 없이 캐시에서 돌려준다. "같은 메뉴를 반복
+    # 조회할 때마다 매번 DB를 들른다"는 실측 리포트 대응(ui/dispatch.py의 요리명 조회
+    # 캐시와 한 쌍) — 만개레시피 실데이터는 세션 도중 안 바뀌므로 안전하다. 캐시는
+    # reset_to_start()가 안 지운다(세션 수명 내내 유지).
+    view_cache = st.session_state.setdefault("_recipe_view_cache", {})
+    view = view_cache.get(recipe_id)
+    if view is None:
+        view = _fetch_recipe_view(recipe_id, get_client())
+        view_cache[recipe_id] = view
+    st.session_state.recipe_view = view
 
 
 def _ingredients_to_chips(raw: str) -> list[dict]:

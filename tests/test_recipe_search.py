@@ -1,79 +1,16 @@
-"""recipe_search.py 테스트 — 문서 7.3/7.6 AC-03~05, EC-06~09, EC-18~20.
+"""recipe_search.py 테스트 — 문서 7.3/7.6 AC-03~05, EC-18~19, 승인(approved) 워크플로우.
 
 FakeSupabaseClient(인메모리)로 필터링/선정 로직만 검증한다. 실제 Supabase(PostgREST)
 연동 자체는 자격증명 확보 후 별도 확인이 필요하다(작업1 보고 참고).
+
+2026-08-27 — 재료대체 기능 삭제(remove_ingredient_substitution.md)로 search_variant_recipe()/
+search_by_ingredient_content() 테스트를 걷어냈다. 계정/쿠키 시스템 삭제(remove_user_accounts.md)로
+owner_id 기반 개인화 테스트도 걷어내고, 대신 관리자 승인(approved) 워크플로우
+(admin_recipe_approval.md) 테스트로 교체했다.
 """
 from fake_supabase import FakeSupabaseClient
 
-from orchestration.recipe_search import (
-    NOT_FOUND_MESSAGE,
-    extract_dish_name,
-    search_by_ingredient_content,
-    search_variant_recipe,
-    select_standard_recipe,
-)
-
-
-def test_ac03_exact_name_match():
-    client = FakeSupabaseClient()
-    base = client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부, 감자", "source": "api_standard"})
-    client.table("recipes").seed({"dish_name": "바지락된장찌개", "ingredients": "바지락, 두부", "source": "api_standard"})
-
-    result = search_variant_recipe(base["id"], ["바지락"], client=client)
-
-    assert result["match_type"] == "exact_name"
-    assert result["result_dish_name"] == "바지락된장찌개"
-
-
-def test_ac04_ingredient_content_match_with_and_condition():
-    """EC-07(AND 조건) 동시 검증: 새우만 있거나 바지락만 있는 레시피는 안 걸려야 함."""
-    client = FakeSupabaseClient()
-    base = client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부, 감자", "source": "api_standard"})
-    client.table("recipes").seed({"dish_name": "새우된장찌개", "ingredients": "새우, 두부", "source": "api_standard"})
-    client.table("recipes").seed(
-        {"dish_name": "해물된장찌개", "ingredients": "새우, 바지락조개, 두부", "source": "api_standard"}
-    )  # EC-06: "바지락"이 "바지락조개"에 부분 매칭돼야 함
-
-    result = search_variant_recipe(base["id"], ["새우", "바지락"], client=client)
-
-    assert result["match_type"] == "ingredient_content"
-    assert result["result_dish_name"] == "해물된장찌개"
-
-
-def test_ac05_no_match_returns_honest_none_message():
-    client = FakeSupabaseClient()
-    base = client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부, 감자", "source": "api_standard"})
-
-    result = search_variant_recipe(base["id"], ["문어", "성게"], client=client)
-
-    assert result == {"match_type": "none", "message": NOT_FOUND_MESSAGE}
-
-
-def test_ec08_excluded_ingredient_filters_out_matches_that_contain_it():
-    client = FakeSupabaseClient()
-    client.table("recipes").seed(
-        {"dish_name": "해물된장찌개", "ingredients": "새우, 애호박, 두부", "source": "api_standard"}
-    )
-    ok = client.table("recipes").seed({"dish_name": "새우된장찌개", "ingredients": "새우, 두부", "source": "api_standard"})
-
-    result = search_by_ingredient_content("base-id", ["새우"], excluded_ingredient="애호박", client=client)
-
-    assert result["match_type"] == "ingredient_content"
-    assert result["result_recipe_id"] == ok["id"]
-
-
-def test_ec09_multiple_matches_picks_highest_view_count():
-    client = FakeSupabaseClient()
-    client.table("recipes").seed(
-        {"dish_name": "새우된장찌개", "ingredients": "새우, 두부", "source": "api_standard", "view_count": 10}
-    )
-    best = client.table("recipes").seed(
-        {"dish_name": "새우된장찌개2", "ingredients": "새우, 대파", "source": "api_standard", "view_count": 999}
-    )
-
-    result = search_by_ingredient_content("base-id", ["새우"], client=client)
-
-    assert result["result_recipe_id"] == best["id"]
+from orchestration.recipe_search import extract_dish_name, select_standard_recipe
 
 
 def test_ec18_single_candidate_full_representativeness():
@@ -115,98 +52,51 @@ def test_ec19_all_zero_view_count_uses_latest_created_at():
     assert result["recipe_id"] == newest["id"]
 
 
-def test_ec20_own_user_custom_preferred_over_api_standard():
-    """EC-20/FR-08: "사용자가" user_custom을 갖고 있으면 표준보다 우선 — 본인 소유일 때만."""
-    client = FakeSupabaseClient()
-    client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "표준 재료", "source": "api_standard", "view_count": 1403370}
-    )
-    mine = client.table("recipes").seed(
-        {
-            "dish_name": "된장찌개",
-            "ingredients": "내 맘대로 재료",
-            "source": "user_custom",
-            "view_count": 0,
-            "owner_id": "user-A",
-        }
-    )
-
-    result = select_standard_recipe("된장찌개", owner_id="user-A", client=client)
-
-    assert result["recipe_id"] == mine["id"]
-
-
-def test_no_owner_id_returns_api_standard_even_if_someone_elses_custom_exists():
-    """비로그인(owner_id 없음)일 때는 표준 레시피가 나와야 한다 — 남의 user_custom을 대신
-    보여주면 안 됨(2026-08-24 수정 — 이전엔 "아무 user_custom이나 우선"하는 로그인 붙기 전
-    하위호환 코드가 남아 있어서, 비로그인 사용자에게 남이 등록한 개인 레시피가 표준보다
-    먼저 노출되는 문제가 있었다)."""
-    client = FakeSupabaseClient()
-    standard = client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "표준 재료", "source": "api_standard", "view_count": 1403370}
-    )
-    client.table("recipes").seed(
-        {
-            "dish_name": "된장찌개",
-            "ingredients": "남의 맘대로 재료",
-            "source": "user_custom",
-            "view_count": 0,
-            "owner_id": "user-B",
-        }
-    )
-
-    result = select_standard_recipe("된장찌개", client=client)
-
-    assert result["recipe_id"] == standard["id"]
-
-
 def test_not_found_dish_name_returns_none():
     client = FakeSupabaseClient()
     assert select_standard_recipe("존재하지않는요리", client=client) is None
 
 
-def test_owner_id_scoping_prefers_own_user_custom_over_others_and_standard():
-    """작업3(FR-08): 여러 사용자의 user_custom이 섞여 있어도 내 것만 우선해야 함."""
+def test_pending_when_only_unapproved_user_custom_exists():
+    """admin_recipe_approval.md — 등록은 됐지만(approved='N') 아직 관리자 승인 전이면
+    등록한 사람 포함 아무도 조회하면 안 되고, "아예 없음"과 구분되는 신호를 받아야 함."""
     client = FakeSupabaseClient()
     client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "표준", "source": "api_standard", "view_count": 100}
-    )
-    others = client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "남의 것", "source": "user_custom", "owner_id": "user-B"}
-    )
-    mine = client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "내 것", "source": "user_custom", "owner_id": "user-A"}
+        {"dish_name": "고등어라테", "ingredients": "고등어, 우유", "source": "user_custom", "approved": "N"}
     )
 
-    result = select_standard_recipe("된장찌개", owner_id="user-A", client=client)
+    result = select_standard_recipe("고등어라테", client=client)
 
-    assert result["recipe_id"] == mine["id"]
-    assert result["recipe_id"] != others["id"]
+    assert result == {"pending": True}
 
 
-def test_owner_id_scoping_falls_back_to_standard_when_only_others_custom_exists():
+def test_approved_user_custom_is_visible_to_everyone():
+    """승인(approved='Y')되면 등록한 사람이 누구인지와 무관하게 전체 공개된다 —
+    더 이상 owner_id로 소유자를 가리지 않는다(2026-08-27 결정)."""
     client = FakeSupabaseClient()
-    standard = client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "표준", "source": "api_standard", "view_count": 100}
-    )
-    client.table("recipes").seed(
-        {"dish_name": "된장찌개", "ingredients": "남의 것", "source": "user_custom", "owner_id": "user-B"}
+    row = client.table("recipes").seed(
+        {"dish_name": "고등어라테", "ingredients": "고등어, 우유", "source": "user_custom", "approved": "Y"}
     )
 
-    result = select_standard_recipe("된장찌개", owner_id="user-A", client=client)
+    result = select_standard_recipe("고등어라테", client=client)
 
-    assert result["recipe_id"] == standard["id"]
+    assert result["recipe_id"] == row["id"]
 
 
-def test_owner_id_scoping_never_leaks_others_custom_when_no_standard_exists():
+def test_approved_candidate_preferred_over_pending_ones():
+    """같은 이름으로 승인 대기 중인 것과 승인된 것이 섞여 있으면, 승인된 것만 후보로 본다."""
     client = FakeSupabaseClient()
     client.table("recipes").seed(
-        {"dish_name": "이색요리", "ingredients": "남의 것", "source": "user_custom", "owner_id": "user-B"}
+        {"dish_name": "된장찌개", "ingredients": "누군가의 초안", "source": "user_custom", "approved": "N"}
+    )
+    approved = client.table("recipes").seed(
+        {"dish_name": "된장찌개", "ingredients": "표준", "source": "api_standard", "approved": "Y", "view_count": 10}
     )
 
-    result = select_standard_recipe("이색요리", owner_id="user-A", client=client)
+    result = select_standard_recipe("된장찌개", client=client)
 
-    assert result is None
+    assert result["recipe_id"] == approved["id"]
+    assert result["total_candidates"] == 1
 
 
 def test_extract_dish_name_exact_match():
@@ -257,6 +147,19 @@ def test_extract_dish_name_returns_none_when_nothing_close():
     client.table("recipes").seed({"dish_name": "부대찌개", "ingredients": "김치, 스팸", "source": "api_standard"})
 
     assert extract_dish_name("완전히 다른 이야기입니다", client=client) is None
+
+
+def test_extract_dish_name_ignores_stt_inserted_space_over_shorter_real_dish():
+    """2026-08-27 실측 리포트 — "10분잡채"(DB엔 공백 없이 저장)를 STT가 "10분 잡채"로
+    중간에 공백을 넣어 인식하면, 그 안에 우연히 들어있는 더 짧은 다른 요리명("잡채",
+    이것도 실제 DB에 있음)만 부분일치로 잡혀서 "10분잡채" 대신 "잡채"로 조회되는
+    버그였다. 공백을 지운 버전으로도 부분일치를 시도해서 더 긴(구체적인) 이름을
+    우선 채택해야 한다."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed({"dish_name": "10분잡채", "ingredients": "당면, 채소", "source": "api_standard"})
+    client.table("recipes").seed({"dish_name": "잡채", "ingredients": "당면, 채소", "source": "api_standard"})
+
+    assert extract_dish_name("10분 잡채 레시피", client=client) == "10분잡채"
 
 
 def test_extract_dish_name_empty_utterance_returns_none():

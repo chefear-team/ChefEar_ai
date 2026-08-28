@@ -75,44 +75,10 @@ def run_scenario_a(handle_utterance, get_current_step, client):
         check("A-6 예외 없이 진행", False, f"{count}회째 예외 발생: {e}")
 
 
-def run_scenario_b(handle_utterance, client):
-    print("\n=== 시나리오 B — 진행 중 재료 대체 ===")
-    session = {}
-    handle_utterance(session, "된장찌개 어떻게 만들어?", dish_name="된장찌개", client=client)
-    original_id = session.get("current_recipe_id")
-    if not original_id:
-        print("  -> 된장찌개 조회 실패, 시나리오 B 건너뜀")
-        return
-
-    r = handle_utterance(session, "바지락 넣어도 돼?", requested_ingredient=["바지락"], client=client)
-    check("B-1 intent == 재료대체", r.get("intent") == "재료대체", r)
-    check("B-1 result_dish_name == 바지락된장찌개", r.get("result_dish_name") == "바지락된장찌개", r.get("result_dish_name"))
-    check("B-1 match_type == exact_name", r.get("match_type") == "exact_name", r.get("match_type"))
-    check("B-1 current_recipe_id 바뀜", session.get("current_recipe_id") != original_id)
-
-    r = handle_utterance(session, "다음", client=client)
-    check("B-2 에러 없이 진행", r is not None, r)
-
-    r = handle_utterance(session, "취소해줘", client=client)
-    check("B-3 intent == 취소", r.get("intent") == "취소", r)
-    check("B-3 rolled_back == True", r.get("rolled_back") is True, r)
-    check("B-3 current_recipe_id 복원됨", session.get("current_recipe_id") == original_id)
-
-
-def run_scenario_c(handle_utterance, client):
-    print("\n=== 시나리오 C — 재료대체 매칭 완전 실패 ===")
-    session = {}
-    handle_utterance(session, "된장찌개 어떻게 만들어?", dish_name="된장찌개", client=client)
-    if not session.get("current_recipe_id"):
-        print("  -> 된장찌개 조회 실패, 시나리오 C 건너뜀")
-        return
-
-    r = handle_utterance(
-        session, "문어랑 성게 같이 넣어도 돼?", requested_ingredient=["문어", "성게"], client=client
-    )
-    check("C-1 intent == 재료대체", r.get("intent") == "재료대체", r)
-    check("C-1 match_type == none", r.get("match_type") == "none", r.get("match_type"))
-    check("C-1 정직한 안내 문구", "없어요" in (r.get("message") or ""), r.get("message"))
+# 2026-08-27 — 시나리오 B/C(진행 중 재료 대체)는 재료대체 기능 자체가 삭제되면서
+# (remove_ingredient_substitution.md) 없앴다. handle_utterance()가 더 이상
+# requested_ingredient 인자를 받지 않고, classify_intent()도 "재료대체"를 절대
+# 돌려주지 않는다.
 
 
 def run_scenario_d(handle_utterance, client):
@@ -121,7 +87,11 @@ def run_scenario_d(handle_utterance, client):
 
     r = handle_utterance(session, "은하수비빔밥 어떻게 만들어?", dish_name="은하수비빔밥", client=client)
     check("D-1 intent == 조회", r.get("intent") == "조회", r)
-    check("D-1 없다고 정직 안내", r.get("message") == "죄송해요, 그 요리는 아직 없어요.", r.get("message"))
+    check(
+        "D-1 없다고 정직 안내",
+        r.get("message") == "등록되지 않은 레시피에요. 새로 등록을 원하시면 '레시피 등록'이라고 말씀해 주세요.",
+        r.get("message"),
+    )
     check("D-1 current_recipe_id 안 생김", "current_recipe_id" not in session)
 
     r = handle_utterance(
@@ -146,16 +116,6 @@ def run_ac15(handle_utterance, client, n=15):
         a1_ids.add(session.get("current_recipe_id"))
     check(f"A-1 반복 {n}회 모두 동일 recipe_id", len(a1_ids) == 1, a1_ids)
 
-    b1_names = set()
-    for _ in range(n):
-        session = {}
-        handle_utterance(session, "된장찌개 어떻게 만들어?", dish_name="된장찌개", client=client)
-        if not session.get("current_recipe_id"):
-            continue
-        r = handle_utterance(session, "바지락 넣어도 돼?", requested_ingredient=["바지락"], client=client)
-        b1_names.add(r.get("result_dish_name"))
-    check(f"B-1 반복 {n}회 모두 동일 result_dish_name", len(b1_names) == 1, b1_names)
-
 
 def main():
     from orchestration.db import get_client
@@ -165,8 +125,6 @@ def main():
 
     for scenario in (
         lambda: run_scenario_a(handle_utterance, get_current_step, client),
-        lambda: run_scenario_b(handle_utterance, client),
-        lambda: run_scenario_c(handle_utterance, client),
         lambda: run_scenario_d(handle_utterance, client),
         lambda: run_ac15(handle_utterance, client),
     ):

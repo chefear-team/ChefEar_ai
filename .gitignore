@@ -5,6 +5,10 @@
 *.pem
 *.key
 
+# 관리자 화자검증 성문(docs/specs/admin_voice_2fa.md) — 음성 생체 임베딩이라 커밋 금지.
+# 각 배포 환경에서 /enroll 로 직접 등록한다.
+data/admin_voiceprints.json
+
 # Python
 __pycache__/
 *.pyc

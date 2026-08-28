@@ -23,10 +23,10 @@ def test_ec04_empty_utterance_skips_classification():
     }
 
 
-# 2026-08-26 요청 — 재료대체 기능을 기준예문.csv에서 빼서 비활성화했다("재료대체"
-# VALID_INTENTS 자체는 intent_classifier.py에 남아있지만 예문이 하나도 없어서 다시는
-# top_intent가 될 수 없다 — 아래 두 테스트는 그 결과 EC-05 분기 자체가 도달 불가능한
-# 죽은 코드가 됐다는 것과, "바지락 넣어도 돼?" 같은 발화가 이제 항상 일반
+# 2026-08-27 — 재료대체 기능 자체를 삭제했다(remove_ingredient_substitution.md).
+# "재료대체"가 VALID_INTENTS에서 완전히 빠져서 기준예문.csv에 그 카테고리 행이
+# 있어도 _load_examples()가 걸러내므로, "바지락 넣어도 돼?" 같은 발화는 구조적으로
+# 다시는 "재료대체"로 분류될 수 없다 — 아래 두 테스트는 항상 일반
 # 미분류(FALLBACK_UNCLASSIFIED)로 떨어진다는 걸 확인한다 — context_recipe_id 유무와
 # 무관하게 동일하다(예전엔 있고 없고에 따라 다른 메시지가 나갔음).
 def test_ec05_substitution_intent_without_context_falls_to_unclassified():
@@ -72,8 +72,7 @@ def test_ec03_ambiguous_resume_phrase_prioritized_as_progress():
 
 
 # 2026-08-26 요청 — "등록"은 조리 중(context_recipe_id 있음)엔 무시하고, 아직
-# 레시피를 안 고른 첫 화면(context_recipe_id 없음)에서만 인정한다. 재료대체의
-# EC-05와 반대 방향 조건이라는 점만 다르다(_pick_intent() 새 분기 참고).
+# 레시피를 안 고른 첫 화면(context_recipe_id 없음)에서만 인정한다.
 def test_register_intent_with_context_is_ignored_mid_cooking():
     result = classify_intent("이 레시피 등록해줘", context_recipe_id="recipe-123")
     assert result["intent"] == "미분류"

@@ -117,6 +117,10 @@ class FakeQuery:
                 row.setdefault("view_count", 0)
                 row.setdefault("created_at", "")
                 row.setdefault("origin_id", None)
+                # 2026-08-27 추가 — 실제 스키마(db/schema.sql)의 approved 컬럼
+                # `default 'Y'`와 맞춘다. registration.py::save_recipe()는 매번
+                # "approved": "N"을 명시적으로 넣으므로 이 기본값을 덮어쓴다.
+                row.setdefault("approved", "Y")
                 self.table.rows[row["id"]] = row
                 inserted.append(row)
             return FakeResult(inserted)
@@ -149,6 +153,10 @@ class FakeTable:
         row.setdefault("view_count", 0)
         row.setdefault("created_at", "")
         row.setdefault("origin_id", None)
+        # db/schema.sql의 approved 컬럼 default 'Y'와 맞춘다 — 테스트/데모 시드
+        # 데이터는 검수된 것으로 취급(승인 대기 케이스를 테스트하려면 명시적으로
+        # "approved": "N"을 넘기면 됨).
+        row.setdefault("approved", "Y")
         self.rows[row["id"]] = row
         return row
 

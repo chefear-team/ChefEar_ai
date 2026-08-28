@@ -9,7 +9,7 @@ import pytest
 
 from orchestration import db
 from orchestration.mock_client import FakeSupabaseClient
-from orchestration.recipe_search import search_by_ingredient_content, search_variant_recipe, select_standard_recipe
+from orchestration.recipe_search import select_standard_recipe
 
 
 @pytest.fixture(autouse=True)
@@ -41,19 +41,3 @@ def test_scenario_a_select_standard_recipe_returns_seeded_doenjang():
     result = select_standard_recipe("된장찌개")
     assert result is not None
     assert result["dish_name"] == "된장찌개"
-
-
-def test_scenario_b_ingredient_substitution_exact_name_match():
-    """문서 5장 시나리오 B: 된장찌개 진행 중 "바지락 넣어도 돼?" -> 바지락된장찌개."""
-    base = select_standard_recipe("된장찌개")
-    result = search_variant_recipe(base["recipe_id"], ["바지락"])
-    assert result["match_type"] == "exact_name"
-    assert result["result_dish_name"] == "바지락된장찌개"
-
-
-def test_6_4_ingredient_content_match_when_no_exact_name_exists():
-    """문서 6.4 실측 사례: "새우+바지락 둘 다" -> 이름 매칭 실패 -> 해물된장찌개로 재료 내용 매칭."""
-    base = select_standard_recipe("된장찌개")
-    result = search_by_ingredient_content(base["recipe_id"], ["새우", "바지락"])
-    assert result["match_type"] == "ingredient_content"
-    assert result["result_dish_name"] == "해물된장찌개"
