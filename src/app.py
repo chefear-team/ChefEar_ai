@@ -60,7 +60,7 @@ from ui.screens.register import (
     screen_register_steps,
     screen_unclassified,
 )
-from ui.session import goto, init_state
+from ui.session import _DEFAULT_PIPELINE_SESSION, goto, init_state
 from ui.voice_io import listen
 
 load_env()
@@ -77,6 +77,12 @@ SCREENS = {
     "register_steps": screen_register_steps,
     "complete": screen_complete,
 }
+
+# 화면 본문 뒤에 붙이는 빈 슬롯 개수(main()의 st.empty() 스왑 안, #8360 꼬리 패딩).
+# 화면 중 본문이 가장 긴 것(cooking_step: 대화기록+칩+마이크바+fallback 버튼)과 가장
+# 짧은 것(start)의 top-level 엘리먼트 수 차이를 넉넉히 덮을 만큼. 빈 st.empty()라 렌더
+# 비용·시각 영향 없음.
+_SCREEN_TRAILING_PAD = 25
 
 # 음성 트리거로 관리자 페이지↔메인을 전환할 때 st.switch_page()에 넘길 st.Page 객체.
 # __main__ 블록이 Page를 실제로 만들 때 여기에 채운다(main()/_exit_admin()은 읽기만).
@@ -210,6 +216,62 @@ def _start_model_warmup() -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+# 2026-08-28 — ?debug_screen 쿼리파라미터 경로와 디버그 패널의 "화면 점프" 버튼이
+# 공유하는 가짜 세션 상태 채우기(중복 제거). CHEFEAR_DEBUG일 때만 도달한다.
+_DEBUG_FAKE_RECIPE_ID = "00000000-0000-0000-0000-000000000001"
+
+
+def _debug_fill_fake_state(screen: str) -> None:
+    st.session_state.screen = screen
+    if screen == "start":
+        # 깨끗한 초기 상태로(잔상 테스트의 도착 화면) — 가짜 값 안 채운다.
+        st.session_state.pipeline_session = dict(_DEFAULT_PIPELINE_SESSION)
+        st.session_state.recipe_view = None
+        st.session_state.chat_log = []
+        st.session_state.pending_dish_name = None
+        return
+    # recipe_id는 실제 UUID 형식이어야 한다 — 임의 문자열이면 manual_fallback()/
+    # advance_step()의 Supabase 쿼리가 "invalid input syntax for type uuid"로 크래시.
+    # _ts를 채워야 recipe_view.py::_view_cache_fresh()가 이 가짜 view를 신선한 걸로
+    # 보고 refresh_recipe_view()가 존재하지 않는 UUID로 DB 재조회(.single() -> PGRST116
+    # 크래시)를 안 한다.
+    import time as _t
+
+    st.session_state.recipe_view = {
+        "recipe_id": _DEBUG_FAKE_RECIPE_ID,
+        "dish_name": "디버그용 테스트 요리",
+        "ingredients_raw": "테스트 재료 1개",
+        "steps": [{"step_number": 1, "text": "테스트 1단계"}],
+        "_ts": _t.monotonic(),
+    }
+    st.session_state.pipeline_session["current_recipe_id"] = _DEBUG_FAKE_RECIPE_ID
+    st.session_state.pipeline_session["step_number"] = 1
+    # register_ingredients/register_steps는 pipeline_session["registration"]이 없으면
+    # 곧장 register_intro로 튕겨나간다(screen_register_ingredients() 상단 가드).
+    if screen in ("register_ingredients", "register_steps"):
+        st.session_state.pipeline_session["registration"] = {
+            "dish_name": "디버그용 테스트 요리",
+            "ingredients": ["테스트 재료 1개"],
+            "instructions": ["테스트 1단계"],
+        }
+    st.session_state.pending_dish_name = "디버그용 테스트 요리"
+
+
+# 디버그 패널 "화면 점프" 버튼 목록 (라벨, 화면키).
+_DEBUG_JUMP_SCREENS = (
+    ("등록 안내", "register_intro"),
+    ("등록 1·요리명", "register_dish_name"),
+    ("등록 2·재료", "register_ingredients"),
+    ("등록 3·순서", "register_steps"),
+    ("저장 완료", "complete"),
+    ("조리 확인", "recipe_confirm"),
+    ("조리 단계", "cooking_step"),
+    ("조리 완료", "cooking_complete"),
+    ("미분류", "unclassified"),
+    ("처음(start)", "start"),
+)
+
+
 def main() -> None:
     # 2026-08-27 — st.set_page_config()는 st.navigation()으로 멀티페이지 구조가 되면서
     # 스크립트 진입점(`if __name__ == "__main__":` 블록)으로 옮겼다 — Streamlit은 이
@@ -259,31 +321,7 @@ def main() -> None:
         print(f"[app] 잘못된 ?debug_screen={_debug_screen!r} 무시(SCREENS에 없음)", flush=True)
     elif _debug_screen and not st.session_state.get("_debug_jumped"):
         st.session_state["_debug_jumped"] = True
-        st.session_state.screen = _debug_screen
-        # recipe_id는 실제 UUID 형식이어야 한다 — "debug-recipe" 같은 임의 문자열을
-        # 쓰면 manual_fallback()/advance_step()이 부르는 Supabase 쿼리가
-        # "invalid input syntax for type uuid"로 그대로 크래시한다(2026-08-25 실측,
-        # cooking_step에서 "다음" 버튼 클릭 시 재현). 존재하지 않는 UUID는 쿼리 자체는
-        # 통과하고 결과만 없는(None) 정상 흐름으로 처리된다.
-        st.session_state.recipe_view = {
-            "recipe_id": "00000000-0000-0000-0000-000000000001",
-            "dish_name": "디버그용 테스트 요리",
-            "ingredients_raw": "테스트 재료 1개",
-            "steps": [{"step_number": 1, "text": "테스트 1단계"}],
-        }
-        st.session_state.pipeline_session["current_recipe_id"] = "00000000-0000-0000-0000-000000000001"
-        st.session_state.pipeline_session["step_number"] = 1
-        # register_ingredients/register_steps는 pipeline_session["registration"]이 없으면
-        # 곧장 register_intro로 튕겨나간다(screen_register_ingredients() 상단 가드) — 그
-        # 화면으로 바로 점프해서 잔상을 테스트하려면 이것도 최소한으로 채워둬야 한다
-        # (registration.py::register_recipe()가 만드는 것과 같은 구조).
-        if _debug_screen in ("register_ingredients", "register_steps"):
-            st.session_state.pipeline_session["registration"] = {
-                "dish_name": "디버그용 테스트 요리",
-                "ingredients": ["테스트 재료 1개"],
-                "instructions": ["테스트 1단계"],
-            }
-        st.session_state.pending_dish_name = "디버그용 테스트 요리"
+        _debug_fill_fake_state(_debug_screen)
 
     # 2026-08-25 임시 디버그 음성 패널 — 처음엔 ?debug_voice=<파일명>을 URL에 붙이는
     # 방식으로 만들었는데, 페이지를 새로고침(URL 이동)할 때마다 마이크(WebRTC) 협상
@@ -309,6 +347,16 @@ def main() -> None:
                         _text = stt_transcribe(str(_f))
                         st.session_state["_debug_voice_pending_text"] = _text
                         print(f"[DEBUG_VOICE] button {_f.stem!r} -> STT: {_text!r}", flush=True)
+
+        with st.expander("🧭 화면 점프 (가짜 데이터)", expanded=True):
+            st.caption("등록/조리 화면으로 바로 이동. 가짜 recipe_view/registration을 채워 렌더링만 확인용.")
+            _jcols = st.columns(3)
+            for _j, (_label, _scr) in enumerate(_DEBUG_JUMP_SCREENS):
+                with _jcols[_j % 3]:
+                    if st.button(_label, key=f"debug_jump_{_scr}", use_container_width=True):
+                        _debug_fill_fake_state(_scr)
+                        print(f"[DEBUG_JUMP] -> {_scr}", flush=True)
+                        st.rerun()
 
     # voice_io.prefetch_remaining_steps_audio()의 백그라운드 스레드가 참조하는
     # "지금 활성 레시피" 표시를 매 rerun마다 최신 상태로 맞춘다(2026-08-22 요청) — 사용자가
@@ -360,14 +408,32 @@ def main() -> None:
     # 옮겼다(각 screen_*() 함수 상단 주석 참고) — 이제서야 진짜로 이 컨테이너 변경과
     # 무관해졌다.
     screen = st.session_state.screen
-    with st.container(key=f"screen_{screen}"):
+    # 2026-08-28 — 화면 전환 잔상(#8360)의 근본 대응: SCREENS[screen]()를 재사용
+    # st.empty() 슬롯 하나에 넣는다. st.empty()는 자식이 항상 정확히 1개라(화면이
+    # 바뀌면 그 1개가 통째로 교체됨) "이 위치의 엘리먼트 개수가 줄어들면 잔상"이라는
+    # #8360 트리거 조건 자체를 회피한다 — 그동안 render_screen_cleanup()의 마커/구조
+    # 규칙으로 하던 whack-a-mole(_STALE_CONTENT_MARKERS / _SINGLE_OWNER_WIDGET_KEYS /
+    # *_card 컨테이너)을 대체한다. 2026-08-24에 한 번 시도했다 되돌렸으나(그땐 마이크
+    # webrtc_streamer()가 SCREENS() 트리 안에서 그려져 st.empty() 교체마다 재마운트됨),
+    # 2026-08-25에 listen() 호출을 이 트리 *밖*(아래 _next_text)으로 뺐으므로 그 블로커는
+    # 없다. 안쪽 st.container(key=f"screen_{screen}")는 CSS/render_screen_cleanup이 쓰는
+    # st-key-screen_<X> 클래스를 위해 유지한다.
+    _screen_slot = st.empty()
+    with _screen_slot.container(key=f"screen_{screen}"):
         SCREENS[screen]()
+        # 2026-08-28 — st.empty() 스왑으로도 "맨 마지막 버튼 1~2개"가 도착 화면 컨테이너의
+        # 직계 자식으로 orphan되는 게 라이브 재현됐다(register_steps -> complete에서
+        # "단계 추가"/"네, 저장할게요"가 번갈아 남음). #8360은 "이 BlockNode의 자식 수가
+        # 줄어들 때" 남는 엘리먼트가 안 지워지는 버그다 — 그래서 화면 본문 뒤에 항상
+        # 넉넉한 빈 슬롯을 붙여두면, 자식 수가 줄어도 "남는" 건 이 빈 슬롯들(보이지 않음)
+        # 이 되고 실제 버튼은 그 앞이라 안 남는다. 화면마다 본문 길이가 달라도 이 꼬리
+        # 패딩이 충분히 크면 두 화면의 "차이"가 전부 패딩 구간 안에서 흡수된다.
+        for _ in range(_SCREEN_TRAILING_PAD):
+            st.empty()
 
-    # 2026-08-25 — 위 컨테이너 key 픽스로도 못 잡는 잔상(버튼/텍스트 잔상, 심지어
-    # cooking_complete의 완료 멘트가 start로 넘어간 뒤에도 다시 재생되는 경우까지 실측
-    # 확인)에 대한 최후 수단 — 브라우저에서 직접 이전 화면의 컨테이너를 찾아 지운다.
-    # theme.py::render_screen_cleanup() 문서 참고. 마이크(webrtc_streamer)는 완전히
-    # 격리된 별도 iframe에 살아서 이 스크립트가 절대 못 건드린다.
+    # render_screen_cleanup()은 이제 보조 역할 — 시각 잔상은 위 st.empty()가 막고,
+    # 여기서는 다른 화면 소속 <audio> 정지(ruleStaleAudio)와 브라우저 수준 에러 토스트만
+    # 담당한다. theme.py::render_screen_cleanup() 문서 참고.
     render_screen_cleanup(screen)
 
     def _next_text(*args, **kwargs) -> str | None:

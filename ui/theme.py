@@ -1558,6 +1558,14 @@ _STALE_CONTENT_MARKERS = {
     "재료 추가(쉼표로 여러 개 가능)": ["register_ingredients"],
     "순서 추가": ["register_steps"],
     "짐작한 이름": ["register_dish_name"],
+    # 2026-08-28 — st.empty() 스왑(app.py::main())이 화면 전환 잔상 대부분을 흡수했는데,
+    # register 폼의 "맨 마지막 primary 버튼" 하나만 도착 화면 컨테이너의 직계 자식으로
+    # 남는 게 라이브 재현됐다(register_steps -> complete: "네, 저장할게요"가 complete의
+    # "처음 화면으로" 바로 뒤 index로 남음). 이 버튼들은 각 화면 고유 문구라 마커로
+    # 안전하게 잡힌다("순서 추가"/"재료 추가" 마커는 폼 입력칸 기준이라 그 뒤 confirm
+    # 버튼이 별도 시점에 도착하면 못 잡을 때가 있어 독립 마커로 추가).
+    "네, 저장할게요": ["register_steps"],
+    "네, 맞아요": ["register_ingredients"],
     # 2026-08-25 사용자 실사용 재현 보고 — cooking_step -> start(음성 "처음") 전환에서
     # 4번 규칙(fallback_buttons 버튼 3개, CSS key 기반)은 버튼만 지우고, 그 버튼들
     # 바로 위에 있는 마이크바 캡션("듣는 중"/"이전"·"다시"·"다음")과 fallback_buttons()
@@ -1678,14 +1686,6 @@ _SINGLE_OWNER_WIDGET_KEYS = {
     # 구조적으로 숨긴다. ui/dispatch.py::fallback_buttons()의 st.container(key=...) 참고.
     "cooking_step_fallback": "cooking_step",
     "unclassified_fallback": "unclassified",
-    # 2026-08-28 — 완료 화면(cooking_complete/complete) 본문 전체를 감싼 컨테이너.
-    # 아이콘·제목·배지·완료음이 "처음 화면으로" 버튼(_STALE_CONTENT_MARKERS로 잡히는
-    # 유일한 요소, 맨 마지막이라 "꼬리 제거"가 자기 자신만 지움)보다 앞에 렌더링돼서
-    # "처음"으로 start 전환 시 잔상으로 남던 것(#8360). cooking.py::screen_cooking_complete()
-    # / register.py::screen_complete()의 st.container(key=...) 참고. render_spacer()는
-    # 수직 중앙정렬 유지를 위해 이 래퍼 밖에 둔다.
-    "cooking_complete_card": "cooking_complete",
-    "complete_card": "complete",
 }
 
 # 2026-08-25 — 로그인/회원가입 위젯(login_*/signup_* key)이 다른 화면으로 넘어간 뒤에도

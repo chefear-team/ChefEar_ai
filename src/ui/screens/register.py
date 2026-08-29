@@ -341,29 +341,22 @@ def screen_complete() -> None:
     # 없다(admin_recipe_approval.md 참고) — 그 사실을 정직하게 안내한다.
     dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
     render_spacer()
-    # 2026-08-28 — 화면 본문 전체를 화면 전용 key 컨테이너로 감싼다. "처음으로" 발화로
-    # start로 넘어갈 때, 이 화면의 아이콘·제목·배지·오디오가 st.button("처음 화면으로")
-    # (유일하게 _STALE_CONTENT_MARKERS로 잡히는 요소, 그런데 맨 마지막이라 "꼬리 제거"가
-    # 자기 자신만 지움)보다 앞에 그려져서 잔상으로 남았다(Streamlit #8360). theme.py의
-    # _SINGLE_OWNER_WIDGET_KEYS("complete_card": "complete")에 등록해 ruleSingleOwnerWidgets()
-    # 가 이 컨테이너 전체를 구조적으로(텍스트 무관) 숨기게 한다. render_spacer()는 수직
-    # 중앙정렬(flex:1)을 유지하려고 래퍼 밖에 둔다. cooking_complete도 동일 패턴.
-    with st.container(key="complete_card"):
-        st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="ce-center"><h1>저장이 완료됐어요!</h1>'
-            f"<p>{dish_name}, 관리자 승인 후에 검색할 수 있어요.</p></div>",
-            unsafe_allow_html=True,
-        )
-        _render_cached_speech(_REGISTER_SAVED_MESSAGE)
-        st.markdown(
-            '<div style="text-align:center;">'
-            f'<span class="ce-status-badge">{ICON_CHECK_SMALL} 심사 대기 중</span></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("처음 화면으로", type="primary", use_container_width=True):
-            reset_to_start()
+    st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="ce-center"><h1>저장이 완료됐어요!</h1>'
+        f"<p>{dish_name}, 관리자 승인 후에 검색할 수 있어요.</p></div>",
+        unsafe_allow_html=True,
+    )
+    _render_cached_speech(_REGISTER_SAVED_MESSAGE)
+    st.markdown(
+        '<div style="text-align:center;">'
+        f'<span class="ce-status-badge">{ICON_CHECK_SMALL} 심사 대기 중</span></div>',
+        unsafe_allow_html=True,
+    )
     render_spacer()
+
+    if st.button("처음 화면으로", type="primary", use_container_width=True):
+        reset_to_start()
 
     # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 process_utterance()에 그대로
     # 넘긴다 — 이 화면은 별도 핸들러가 없다(위 파일 docstring 참고).

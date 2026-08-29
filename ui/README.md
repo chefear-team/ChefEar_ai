@@ -1,8 +1,12 @@
-# ui/ — 화면 디자인 프로토타입
+# ui/ — 화면 디자인 프로토타입 (2026-08-13 초기 작성, 실서비스 아님)
+
+> ⚠️ **2026-08-28 주의**: 이 폴더의 화면 목록·시나리오는 프로젝트 초기(재료 대체·계정 로그인이 아직 Must였던 시점) 기준으로 멈춰 있다. `no_match`/`substitution_confirm`/`login` 같은 화면이 아래 목록에 여전히 등장하지만, **실제 서비스(`src/app.py`)에는 이 화면들이 없다** — 재료 대체와 계정 시스템 자체가 2026-08-27 제거됐다(`docs/specs/remove_ingredient_substitution.md`, `docs/specs/remove_user_accounts.md`). 실제 서비스가 지금 어떤 화면으로 구성되는지는 `docs/ChefEar_PRD_SDD_v0.8.md` 3.3과 `src/ui/README.md`를 봐야 한다. 이 폴더는 화면 시안을 처음 검증할 때 쓴 **일회성 프로토타입 산출물**로 남겨두는 것이지, 계속 업데이트하는 문서가 아니다 — 지우지 않은 이유는 아래 참고.
+>
+> 다만 이 폴더가 통째로 죽은 코드는 아니다 — `ui/theme.py`(CSS·아이콘·카드 등 공용 컴포넌트)와 `ui/mic_vad.py`(VAD 세그먼터)는 **실제 서비스가 지금도 그대로 import해서 쓴다**(`src/app.py`가 `sys.path.insert(0, PROJECT_ROOT/"ui")`로 얹음). `ui/app.py`/`ui/streamlit_screens/*.py`/`ui/mock_data.py`만 프로토타입 전용이고 실서비스 경로가 아니다.
 
 `docs/ChefEar_PRD_SDD_v0.8.md` 3.3(화면 UI 구성)과 5장 시나리오 A~D, 그리고 전달받은
 목업 이미지(된장찌개 조리 진행 화면)를 기준으로 만든 화면 프로토타입이다. 같은 화면 흐름을
-**HTML**과 **Streamlit(.py)** 두 형식으로 구현했다.
+**HTML**과 **Streamlit(.py)** 두 형식으로 구현했다. (아래 화면 목록은 작성 당시 기준이며 위 경고 참고.)
 
 `src/ui/`(팀 문서상 정식 위치, Streamlit 컴포넌트)와는 다르다 — 이 폴더는 `orchestration.pipeline`·
 `stt/infer.py`·`tts/infer.py`가 아직 미완성이라 실제 백엔드에 연결할 수 없는 상태에서, 화면

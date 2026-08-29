@@ -26,8 +26,10 @@ create table if not exists recipes (
     -- EC-19(조회수 0일 때 등록일 최신순 대체 정렬)를 충족하려면 필요해서 추가함
     view_count integer not null default 0,
     created_at timestamptz not null default now(),  -- default now(): insert할 때 안 넣으면 현재 시각이 자동으로 들어감
-    -- 작업3(쿠키 UUID 개인화, FR-08): user_custom 레시피를 발급한 익명 사용자 식별.
-    -- api_standard 행은 항상 null(특정 개인 소유가 아니므로). 로그인 없이 쿠키 UUID만 저장한다.
+    -- 원래는 작업3(쿠키 UUID 개인화, ~~FR-08~~)이 익명 사용자를 식별하려고 쓰던 컬럼이었으나,
+    -- 2026-08-27 계정/쿠키 개인화 기능이 전면 제거되면서 지금은 신규 행에 항상 null이 들어간다
+    -- (registration.py::save_recipe() 참고). 컬럼 자체는 나중에 다른 식별자로 재사용할 수
+    -- 있게 스키마엔 남겨뒀다.
     owner_id text
 );
 
@@ -87,14 +89,11 @@ create unique index if not exists uq_recipes_dish_name_standard
     on recipes (dish_name) where source = 'api_standard';
 
 -- ── users(2026-08-22 추가): 마이 레시피 로그인용 실제 계정 ──────────────────
--- 작업3(위 recipes.owner_id, FR-08)의 쿠키 익명 UUID와는 별개 개념이다. 쿠키는
--- "회원가입 없이 같은 브라우저면 내 레시피를 기억"하는 용도로 조리 흐름(자유발화
--- 등록)에 계속 쓰고, 이 테이블은 그 위에 "로그인해서 기기와 무관하게 내 레시피를
--- 관리"하는 진짜 계정을 추가한 것 — 로그인 상태면 recipes.owner_id에 쿠키 UUID
--- 대신 이 테이블의 id를 저장한다(src/ui/session.py의 get_owner_id() 참고).
--- recipes.owner_id 컬럼 타입(text)은 안 바꾼다 — 이미 있는 쿠키 UUID 값들과
--- 형식이 같아서(둘 다 uuid 문자열) 그대로 재사용 가능하고, 로그인 없이 등록된
--- 기존 데이터도 깨지지 않는다.
+-- 원래는 작업3(위 recipes.owner_id, ~~FR-08~~)의 쿠키 익명 UUID 위에 "로그인해서
+-- 기기와 무관하게 내 레시피를 관리"하는 진짜 계정을 얹으려고 만든 테이블이었다.
+-- 2026-08-27 계정/쿠키 개인화 기능이 코드에서 전부 삭제되면서(auth.py 삭제,
+-- recipes.owner_id는 항상 null) 이 테이블도 지금은 스키마만 남아있고 아무 코드도
+-- 안 쓴다 — DROP은 되돌리기 어려운 조작이라 지금 안 쓴다고 굳이 지우지 않았다.
 create table if not exists users (
     id uuid primary key default gen_random_uuid(),
     username text not null unique,

@@ -390,38 +390,21 @@ def screen_cooking_complete() -> None:
         goto("start")
 
     render_spacer()
-    # 2026-08-28 — screen_complete()와 같은 이유(그쪽 주석 참고). 아이콘·제목·오디오가
-    # "처음 화면으로" 버튼(_STALE_CONTENT_MARKERS로 잡히는 유일한 요소, 맨 마지막이라
-    # 꼬리 제거가 자기 자신만 지움)보다 앞에 그려져서 start로 넘어간 뒤 잔상으로 남는다.
-    # _SINGLE_OWNER_WIDGET_KEYS("cooking_complete_card": "cooking_complete")로 구조적으로
-    # 숨긴다. render_back_link(key="ce_back_link")는 여러 화면 공유 key라 래퍼에 넣으면
-    # 안 되고(다른 화면 back link까지 숨겨짐 + order:-1 CSS가 래퍼 전체에 번짐) 밖에 둔다.
-    with st.container(key="cooking_complete_card"):
-        st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="ce-center"><h1>요리가 완성됐어요!</h1>'
-            f"<p>{dish_name}, 수고하셨어요.</p></div>",
-            unsafe_allow_html=True,
-        )
-        # 2026-08-25 리포트 실측 확인 — "처음"으로 이 화면을 벗어나 start로 넘어간 직후,
-        # 방금 그린 완료 멘트 오디오 iframe이 브라우저에서 처음부터 다시(4.05초 전체) 재생되는
-        # 문제를 window.performance.now() 타임스탬프 로거로 확인했다. _render_cached_speech()가
-        # 매 rerun마다 조건 없이 호출되는데, 평소엔 같은 오디오 파일이면 브라우저가 "이미 로드된
-        # 오디오"로 보고 autoplay를 다시 안 트는 것에 기대고 있었지만(nonce 문서 참고), 이
-        # 화면->start 전환 rerun에서는 Streamlit 프론트엔드가 이 iframe을 완전히 새 DOM
-        # 엘리먼트로 다시 만들어버려 그 방어가 안 먹히는 것으로 실측됐다(정확한 React
-        # reconciliation 내부 동작까지는 확정 못함, 화면 전환 잔상 조사와 같은 부류).
-        # 브라우저/Streamlit이 엘리먼트를 재사용해줄 거라는 가정에 기대는 대신, "이 완료
-        # 화면에 진입한 뒤 정확히 한 번만 재생"을 세션 플래그로 파이썬 쪽에서 명시적으로
-        # 강제한다 — 이미 한 번 그렸으면 이후 재실행에서는 아예 호출 자체를 건너뛴다(내용이
-        # 같으니 다시 그려봐야 방금 확인한 재생 이슈만 반복될 위험이 있다).
-        if not st.session_state.get("_cooking_complete_audio_played"):
-            _render_cached_speech(COOKING_COMPLETE_MESSAGE)
-            st.session_state["_cooking_complete_audio_played"] = True
-
-        # 2026-08-25 — listen() 호출은 app.py::main()이 화면별 key 컨테이너 밖에서 직접
-        # 부른다(cooking.py 상단 주석 참고). "처음"이라고 말하면 process_utterance()가 맨
-        # 앞에서 먼저 걸러내 reset_to_start()로 처리된다(아래 버튼과 동일 효과).
-        if st.button("처음 화면으로", type="primary", use_container_width=True):
-            reset_to_start()
+    st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="ce-center"><h1>요리가 완성됐어요!</h1>'
+        f"<p>{dish_name}, 수고하셨어요.</p></div>",
+        unsafe_allow_html=True,
+    )
+    # 2026-08-25 리포트 실측 확인 — "처음"으로 이 화면을 벗어나 start로 넘어간 직후, 방금
+    # 그린 완료 멘트 오디오가 브라우저에서 처음부터 다시 재생되는 문제. "이 완료 화면에
+    # 진입한 뒤 정확히 한 번만 재생"을 세션 플래그로 파이썬 쪽에서 명시적으로 강제한다.
+    if not st.session_state.get("_cooking_complete_audio_played"):
+        _render_cached_speech(COOKING_COMPLETE_MESSAGE)
+        st.session_state["_cooking_complete_audio_played"] = True
     render_spacer()
+
+    # 2026-08-25 — listen() 호출은 app.py::main()이 화면별 key 컨테이너 밖에서 직접 부른다.
+    # "처음"이라고 말하면 process_utterance()가 맨 앞에서 걸러내 reset_to_start()로 처리한다.
+    if st.button("처음 화면으로", type="primary", use_container_width=True):
+        reset_to_start()

@@ -13,4 +13,5 @@ streamlit-webrtc==0.77.0
 silero-vad==6.2.1
 aiortc==1.15.0
 
-# Qwen3-TTS 추론 의존성 버전 미정 — docs/decisions.md 참고
+# Qwen3-TTS 추론 의존성(qwen-tts==0.1.1)은 requirements-main.txt에 확정 반영됨 —
+# 이 파일(HF Spaces 배포용 최소 의존성)에는 안 넣는다.
