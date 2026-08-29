@@ -10,7 +10,7 @@
 
 | 패키지 | 버전 | 용도 |
 |---|---|---|
-| Python | 3.11 | 실행 환경 |
+| Python | 3.11.9 | 실행 환경 |
 | PyTorch | 2.5.1+cu124 | 모델 학습 / GPU 연산 |
 | transformers | 4.46.3 | Whisper 모델 및 Processor |
 | peft | 0.20.0 | LoRA / QLoRA Adapter |

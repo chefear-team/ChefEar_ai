@@ -64,9 +64,12 @@ ChefEar: (현재 단계 재청취)
 
 - **화면 없이 음성만으로 진행** — 상시 마이크(streamlit-webrtc + silero-vad)가 세션당 한 번만 연결되어 화면이 전환돼도 유지되고, 발화 구간을 자동으로 분리해 STT로 넘긴다.
 - **자연스러운 진행/재청취** — "다음", "다시", "이전" 등 정해진 명령어 없이 자유발화로 조리 단계를 오가고, 1단계에서 "이전"을 말해도 현재 단계를 유지하는 등 예외를 처리한다.
-- **계정 기반 마이 레시피** — 로그인 후 직접 등록하거나 변경한 레시피를 `user_custom`으로 저장해 다음 조회 때 개인 버전을 우선 제공한다.
+- **로그인 없는 신규 레시피 등록 + 관리자 승인** — 누구나 발화만으로 요리명·재료·순서를 등록할 수 있고, 등록된 레시피는 관리자가 승인(Y/N)해야 조회에 노출된다(악의적/저품질 등록으로부터 표준 데이터를 보호).
+- **관리자 페이지 2단계 인증** — 접근 토큰(1차) + 랜덤 한글 단어 3개를 읽는 화자검증(ECAPA-TDNN, 2차)으로만 승인/삭제 화면에 들어갈 수 있다.
 - **요리 도메인 파인튜닝 STT·TTS** — Whisper·Qwen3-TTS 모두 요리명·재료명·계량단위·진행 표현으로 파인튜닝되어 일반 모델보다 정확히 인식하고 자연스럽게 안내한다.
 - **60,282개 요리명 실데이터 커버리지** — 만개의레시피(KADX) 조리순서 전량을 조회 대상으로 하며, 동일 요리명이 여럿이면 조회수 1위를 되묻지 않고 표준으로 채택한다.
+
+계정 로그인/회원가입/개인화 저장, 재료 대체 기능은 팀 결정으로 범위에서 제거했다(`docs/specs/remove_user_accounts.md`, `docs/specs/remove_ingredient_substitution.md`).
 
 ## 아키텍처 / 파이프라인
 
@@ -82,17 +85,18 @@ flowchart TD
     G --> H{"의도 라우팅"}
     H --> H1["레시피 조회"]
     H --> H2["진행 / 재청취 / 이전"]
-    H --> H3["신규 등록"]
-    H1 --> I[("Supabase<br/>recipes / recipe_steps")]
+    H --> H3["신규 등록(로그인 불필요)"]
+    H1 --> I[("Supabase<br/>recipes(approved='Y') / recipe_steps")]
     H2 --> I
-    H3 --> J[("user_custom 저장")]
+    H3 --> J[("user_custom 저장<br/>approved='N', 승인 대기")]
     I --> K["현재 조리 단계 결정"]
     J --> L
     K --> L["TTS: Qwen3-TTS-1.7B<br/>KSS LoRA 파인튜닝, voice-clone"]
     L --> M["오디오 자동 재생 +<br/>화면(단계·재료·대화기록) 갱신"]
+    N["관리자(/admin)<br/>토큰+화자검증 2FA"] -.승인 Y/N.-> J
 ```
 
-의도분류(임베딩 유사도)와 로컬 LLM(EXAONE) 모두 서비스 실행 중 외부 서버로 텍스트를 보내지 않는다 — 전자는 API 자체가 아니고, 후자는 팀 GPU에 직접 올려 완전히 로컬로 추론한다. 조리순서 제공은 실데이터 검색으로만 처리하며, STT·임베딩·로컬 LLM·TTS 넷이 한 GPU를 공유해 모델 종류별 락으로 동시 추론을 직렬화한다.
+의도분류(임베딩 유사도)와 로컬 LLM(EXAONE) 모두 서비스 실행 중 외부 서버로 텍스트를 보내지 않는다 — 전자는 API 자체가 아니고, 후자는 팀 GPU에 직접 올려 완전히 로컬로 추론한다. 조리순서 제공은 실데이터 검색으로만 처리하며, STT·임베딩·로컬 LLM·TTS 넷이 한 GPU를 공유해 단일 락(`_GPU_LOCK`)으로 동시 추론을 직렬화한다(한때 모델별로 락을 4개로 쪼갰다가 "Queue overflow"가 재현돼 되돌렸다). 사용자 등록 레시피는 관리자가 별도 페이지(`/admin`, 토큰+음성 화자검증 2FA)에서 승인해야 일반 조회에 노출된다.
 
 ## 모델 · 기술 스택
 
@@ -102,7 +106,8 @@ flowchart TD
 | TTS | `Qwen3-TTS-12Hz-1.7B` (KSS 데이터셋 LoRA 파인튜닝 후 merge) | qwen-tts 0.1.1, GPU(bfloat16) voice-clone 방식 추론 |
 | 의도분류 | `jhgan/ko-sroberta-multitask` (sentence-transformers 5.6.1) | LLM 아님 — 코사인 유사도, threshold 0.5 + margin 0.05 |
 | 요리명 추정·등록의도 보조 | `LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct` | 팀 GPU에 `transformers.AutoModelForCausalLM`으로 직접 로드, 외부 API 아님 |
-| DB | Supabase 2.31.0 | `recipes` / `recipe_steps` / `users`, SQL RPC 대신 Python 필터(`.eq()`/`.ilike()`/`.range()`) |
+| 관리자 화자검증 | `speechbrain/spkrec-ecapa-voxceleb` (ECAPA-TDNN) | CPU 추론 — GPU 4종이 이미 VRAM을 거의 다 써서 분리, `/admin` 2FA 전용 |
+| DB | Supabase 2.31.0 | `recipes`(`approved` 컬럼으로 승인 여부) / `recipe_steps`, SQL RPC 대신 Python 필터(`.eq()`/`.ilike()`/`.range()`) |
 | UI/배포 | Streamlit 1.61.1 (`src/app.py`) | 팀 GPU 데스크탑(RTX 5070, 12GB VRAM) 상시 구동 + Cloudflare Tunnel |
 | 상시 마이크 | streamlit-webrtc 0.77.0 + silero-vad 6.2.1 + aiortc 1.15.0 | 세션당 1회 연결, 화면 전환에도 유지 |
 | 평가 | jiwer 4.0.0 | STT/TTS 파인튜닝 전/후 WER/CER 비교 |
@@ -222,9 +227,9 @@ cp .env.example .env   # 아래 표의 값을 채운다
 | `SUPABASE_URL` / `SUPABASE_KEY` | 필수 (없으면 mock 데이터로 폴백) | 레시피 DB |
 | `HF_STT_CT2_REPO` | 필수 (`kimseunguk/chefear-stt-ct2-int8`) | 배포용 STT(faster-whisper) 모델 저장소. 코드에 기본값이 없어서, 로컬에 `models/stt_finetuned/ct2_int8/` 변환본이 이미 있는 게 아니라면 반드시 설정해야 앱이 뜬다 |
 | `HF_TOKEN` | 필수 | 위 STT 저장소·TTS 저장소(`HF_TTS_MODEL_REPO`) 둘 다 private라 인증에 필요 |
-| `COOKIE_SECRET` | 권장 (없어도 앱은 죽지 않음) | 로그인 유지·익명 식별 쿠키 암호화 키. 없으면 로그인/식별이 새로고침·재접속 때마다 풀릴 뿐, 서비스 자체는 계속 동작한다(코드에 try/except로 감싸져 있음) |
 | `HF_STT_MODEL_REPO` / `HF_TTS_MODEL_REPO` | 선택 (코드 기본값 있음) | 팀 파인튜닝 모델을 다른 체크포인트로 바꿀 때만 |
 | `TURN_HOST` 등 / `ACCESS_GATE_TOKEN` | 선택 | 원격 기기에서 마이크 접속용 TURN 서버 / 접근 게이트 |
+| `ADMIN_ACCESS_TOKEN` / `ADMIN_ENROLL_TOKEN` / `ADMIN_VOICE_THRESHOLD` | 선택(관리자 페이지 쓸 때만) | `/admin` 1차 토큰 게이트 / `/enroll` 목소리 등록 게이트 / ECAPA 코사인 유사도 통과 기준(기본 0.55) |
 
 - **GPU(CUDA)가 필수다.** STT 배포 경로(`load_ct2_model()`)가 CUDA를 못 찾으면 바로 에러를 내며 죽도록 되어 있다(`docs/decisions.md` #2, GPU 전용으로 확정) — CPU 폴백이 없다. 팀은 RTX 5070(12GB VRAM)에서 상시 구동 중이다. TTS는 CPU에서도 로드는 되지만 응답이 목표(5초) 대비 크게 느리다(위 추론 속도 표 참고) — 다만 STT가 먼저 막히므로 실질적으로 GPU 없이는 앱을 못 쓴다.
 - Python은 반드시 3.13을 써야 한다(위 명령어에 이미 반영) — 핵심 기능인 상시 마이크(streamlit-webrtc)가 의존하는 aioice가 3.14를 아직 공식 지원하지 않아, 3.14에서는 마이크 연결이 끊기는 것을 실측으로 확인했다(`run_local.sh` 주석 참고). 오케스트레이션 자체는 3.12(팀 배포 기준)에서도 동작하지만, 마이크까지 쓰려면 3.13으로 통일하는 편이 안전하다.
@@ -244,4 +249,4 @@ cp .env.example .env   # 아래 표의 값을 채운다
 
 ---
 
-더 자세한 내용은 [`docs/ChefEar_PRD_SDD_v0.8.md`](docs/ChefEar_PRD_SDD_v0.8.md)(PRD+SDD), [`docs/ChefEar_팀_진행_가이드_v2.md`](docs/ChefEar_팀_진행_가이드_v2.md)(온보딩·디렉토리 구조), [`docs/decisions.md`](docs/decisions.md)(미확정 항목)를 참고하세요.
+더 자세한 내용은 [`docs/ChefEar_PRD_SDD_v0.8.md`](docs/ChefEar_PRD_SDD_v0.8.md)(PRD+SDD), [`docs/ChefEar_설계서.md`](docs/ChefEar_설계서.md)(배포용 시스템 설계서), [`docs/ChefEar_팀_진행_가이드_v2.md`](docs/ChefEar_팀_진행_가이드_v2.md)(온보딩·디렉토리 구조), [`docs/decisions.md`](docs/decisions.md)(미확정 항목)를 참고하세요.

@@ -35,6 +35,8 @@
 
 ## What
 
+> **주의 (2026-08-28, 소스 기준 갱신)**: 아래 Happy Path·Edge Case·AC의 "랜덤 6자리 숫자" 예시는 최초 설계 시점 기준이다. 실제 구현은 아래 "구현하며 확정된 것" #1에 따라 **랜덤 한글 단어 3개**(STT 결과에 3개 중 2개 이상 부분일치하면 통과)로 바뀌었다 — 판정 로직(일치 확인 → 화자 검증 순서, 실패 처리, IP 잠금)은 예시의 숫자를 한글 단어로 바꿔 읽으면 동일하다. `tests/test_speaker_verify.py`가 실제 구현 기준 테스트다.
+
 ### Happy Path — 운영자 접근 (2FA)
 
 1. 운영자가 `https://chefear.store/admin?admin_key=<ADMIN_ACCESS_TOKEN 값>`으로 접속한다.
