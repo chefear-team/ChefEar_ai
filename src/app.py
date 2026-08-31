@@ -144,20 +144,24 @@ def _enroll_gate_ok() -> bool:
 
 
 def _start_model_warmup() -> None:
-    """STT/LLM/TTS 모델을 백그라운드 스레드에서 미리 로드해둔다.
+    """gpu_worker_pool의 GPU 워커 프로세스들을 백그라운드 스레드에서 미리 띄워둔다.
 
     2026-08-25 재작성(원래는 `_warm_up_models()`라는 이름으로 main() 안에서 동기/블로킹으로
     세 모델을 다 로드한 뒤에야 화면(마이크 포함)을 그렸다 — "마이크 붙는 속도가 느리다"는
     지적으로 재구성). 상시 마이크(webrtc_streamer())도 이 함수 *뒤에* 있는 화면 렌더링
-    단계에서만 처음 호출되므로, 예전 구조에서는 마이크의 WebRTC 협상(SDP offer/answer,
-    ICE)이 모델 로딩(콜드 스타트 시 최대 30초+, LLM 최초 다운로드 시엔 수 분)이 다 끝날
-    때까지 아예 시작도 못 했다 — 첫 페이지 로드에서 마이크가 늦게 붙는 것처럼 보인
-    실제 원인. load_ct2_model()/load_llm()/load_tts_model() 셋 다 이미 자기 안에 이중
-    확인 잠금(`_LOAD_LOCK`)을 갖고 있어서(여러 스레드가 동시에 로딩을 시작해도 안전 —
-    각 infer.py 파일의 `_LOAD_LOCK` 정의부 주석 참고) 백그라운드에서 미리 불러도, 나중에
-    실제 발화 처리 스레드가 같은 함수를 또 불러도 안전하게 합쳐진다(먼저 끝난 쪽이 이김,
-    뒤에 온 호출은 곧장 캐시를 돌려받음). 세션당 한 번만 스레드를 띄운다
-    (`_warmup_thread_started` 플래그로 중복 시작 방지).
+    단계에서만 처음 호출되므로, 이 함수를 백그라운드 스레드로 빼두면 모델(콜드 스타트 시
+    최대 30초+, LLM 최초 다운로드 시엔 수 분) 로딩이 다 끝나기 전에도 마이크의 WebRTC
+    협상(SDP offer/answer, ICE)이 먼저 시작될 수 있다.
+
+    2026-09-01 — STT/TTS/LLM/임베딩 모델을 이 프로세스(Streamlit 서버) 안에 직접
+    로드하던 걸 gpu_worker_pool.warm_pool()로 바꿨다. 실제 추론은 이제 전부 그 풀의
+    별도 워커 프로세스에서 일어나므로, 이 메인 프로세스가 자기 것도 따로 로드해두는
+    건 아무 데도 안 쓰이는 GPU 메모리 낭비일 뿐이다(gpu_worker_pool.py의 _init_worker()가
+    STT -> TTS -> LLM -> 임베딩 -> 요리명 캐시 순서로 각 워커 안에서 데운다 — 옛
+    순서 조정 이유(TTS를 STT 바로 뒤로 당겨 첫 발화 전에 데움 등)를 그대로 이어받음).
+    세션당 한 번만 스레드를 띄운다(`_warmup_thread_started` 플래그로 중복 시작 방지) —
+    warm_pool() 자신도 이미 풀이 있으면 즉시 반환하는 이중 확인 락 구조라 여러 세션이
+    거의 동시에 이 스레드를 띄워도 실제 풀 생성/워밍업은 한 번만 일어난다.
 
     st.spinner()/st.warning() 같은 st.* API는 ScriptRunContext가 있는 메인 스레드에서만
     안전해서(voice_io.py의 `_synthesize_and_cache()` 등 다른 백그라운드 스레드들과 같은
@@ -171,47 +175,13 @@ def _start_model_warmup() -> None:
         return
     st.session_state["_warmup_thread_started"] = True
 
-    def _load_dish_names() -> None:
-        # 2026-08-26 추가 — "DB에 없는 메뉴를 말하면 로딩바가 엄청 오래 돈다" 리포트로
-        # orchestration/db.py::get_client()를 프로세스당 client 하나만 재사용하도록
-        # 고쳐서 recipe_search.py::_all_dish_names()/_decomposed_name_map()의
-        # @lru_cache가 실제로 히트하게 됐지만(그 전엔 client 객체가 매번 새로 만들어져
-        # 캐시가 항상 미스였음), 그래도 "이 프로세스에서 처음" 그 경로를 타는 발화는
-        # 여전히 60,282건 전체를 페이지네이션으로 끌어오는 15~25초를 그 자리에서
-        # 물고 있다(실측). 다른 모델들처럼 여기서 미리 한 번 데워두면, 실제 사용자가
-        # 처음 "없는 메뉴"를 물어봐도 이미 캐시가 채워져 있어 안 기다린다.
-        from orchestration.db import get_client
-        from orchestration.recipe_search import _all_dish_names, _decomposed_name_map
-
-        client = get_client()
-        _all_dish_names(client)
-        _decomposed_name_map(client)
-
     def _run() -> None:
-        from llm.infer import load_llm
-        from stt.infer import load_ct2_model
-        from tts.infer import load_tts_model
+        from orchestration.gpu_worker_pool import warm_pool
 
-        # 2026-08-28 — 로드 순서를 STT -> TTS -> LLM -> 요리명 목록으로 조정("Queue
-        # overflow" 대응 C). 해피패스(조회 성공)에서 speak()의 첫 TTS 합성은 사용자가
-        # 첫 발화를 마치는 시점에 필요한데, 예전 순서(TTS가 3번째, 그것도 15~25초
-        # 걸리는 "요리명 목록" 앞)로는 첫 조회 때 TTS 모델(약 4GB)이 아직 로딩 중이라
-        # speak()가 그 콜드 로드를 백그라운드 스레드에서 물게 되고, 그동안 _drain_mic_while()
-        # 이 GIL을 제때 못 얻어 마이크 큐가 넘쳤다. TTS를 STT 바로 뒤로 당겨 첫 발화
-        # 전에 데워둔다. LLM(extract_intent_llm)은 조회 경로에서 TTS보다 먼저 쓰이지만
-        # 그 구간은 _compute()가 _drain_mic_while() 우산 안에서 돌려서 콜드 로드가
-        # overflow를 안 만든다 — 그래서 TTS 다음으로 뒀다. "요리명 목록"은 미등록/
-        # 퍼지 매칭 경로에서만 쓰여 해피패스 지연과 무관하고 제일 느려서 맨 뒤.
-        for name, loader in (
-            ("STT", load_ct2_model),
-            ("TTS", load_tts_model),
-            ("LLM", load_llm),
-            ("요리명 목록", _load_dish_names),
-        ):
-            try:
-                loader()
-            except Exception as exc:  # noqa: BLE001 — 위 문서 참고, 조용히 넘어감
-                print(f"[app] {name} 모델 백그라운드 워밍업 실패: {exc!r}", flush=True)
+        try:
+            warm_pool()
+        except Exception as exc:  # noqa: BLE001 — 위 문서 참고, 조용히 넘어감
+            print(f"[app] gpu_worker_pool 워밍업 실패: {exc!r}", flush=True)
 
     threading.Thread(target=_run, daemon=True).start()
 

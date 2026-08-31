@@ -11,9 +11,17 @@ streamlit-webrtc가 브라우저 마이크에서 실시간으로 오디오 프�
 """
 from __future__ import annotations
 
+import os
 from collections import deque
 
 import numpy as np
+
+# 2026-09-01 — threshold/min_silence_duration_ms 둘 다 코드 주석에 스스로 "실측 튜닝
+# 전 임시값"이라고 밝혀둔 하드코딩 값이었다. 재배포(이미지 재빌드) 없이 RunPod Pod
+# 환경변수만 바꿔서 실사용 중에 튜닝할 수 있게 env로 오버라이드 가능하게 뺀다 — 안 주면
+# 기존 기본값(threshold=0.5, min_silence_duration_ms=750) 그대로다.
+_ENV_VAD_THRESHOLD = os.environ.get("VAD_THRESHOLD")
+_ENV_VAD_MIN_SILENCE_MS = os.environ.get("VAD_MIN_SILENCE_MS")
 
 
 class MicVadSegmenter:
@@ -38,8 +46,8 @@ class MicVadSegmenter:
         # 점프하고 나머지 말이 씹히는 게 리뷰에서 지적됐다. 750ms면 자연스러운 문장 내
         # 쉼은 더 흡수하고, 짧은 명령("다음")의 확정 지연은 150ms만 늘어난다. 값 자체는
         # 여전히 실측 튜닝 전 임시값 — 명령 반응이 굼뜨게 느껴진다는 보고가 나오면 되돌릴 것.
-        min_silence_duration_ms: int = 750,
-        threshold: float = 0.5,
+        min_silence_duration_ms: int = int(_ENV_VAD_MIN_SILENCE_MS) if _ENV_VAD_MIN_SILENCE_MS else 750,
+        threshold: float = float(_ENV_VAD_THRESHOLD) if _ENV_VAD_THRESHOLD else 0.5,
         max_speech_duration_s: float = 10.0,
     ):
         from silero_vad import VADIterator, load_silero_vad

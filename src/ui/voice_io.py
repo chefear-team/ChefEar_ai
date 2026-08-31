@@ -12,6 +12,7 @@ from pathlib import Path
 import soundfile as sf
 import streamlit as st
 
+from orchestration import gpu_worker_pool
 from orchestration.db import load_env
 from theme import render_audio_autoplay, render_audio_player, render_loading_overlay, render_processing_chime
 
@@ -242,27 +243,19 @@ _AUDIO_DIR = PROJECT_ROOT / "ui" / "assets" / "audio"
 # 됐는데 그 다음부터 터미널 로그(WRTCDBG 등 평소 계속 찍히는 것들)까지 전부 멈춘다"는
 # 리포트를 재현/분석한 결과 원인이 이 락의 범위 밖에 있었다 — STT(faster-whisper)·
 # 임베딩(sentence-transformers, classify_intent())·로컬 LLM(EXAONE, extract_intent_llm())
-# 이 셋 다 같은 GPU를 쓰는데 서로 간엔 아무 직렬화가 없었다. 평소엔 한 번에 하나씩만
-# 발화가 처리돼 우연히 안 겹쳤겠지만, 겹치는 순간(예: 이전 발화 처리가 아직 안 끝났는데
-# 새 발화의 STT/LLM 호출이 시작되는 경우) 같은 GPU에 동시에 여러 모델 추론이 들어가면서
-# 멈추는 것으로 보인다 — 프로세스 전체가 멈춘 것처럼 보이는 것도 이 GPU 호출이 자바스크립트
-# 스레드 GIL을 오래 붙들고 있어서일 가능성과 들어맞는다. TTS 전용이던 이 락을 GPU를
-# 쓰는 모든 추론 호출(STT/임베딩/LLM/TTS)로 넓혀서, 항상 한 번에 하나씩만 GPU에
-# 올라가게 했었다(_GPU_LOCK 단일 락, 2026-08-24~2026-08-26).
+# 이 셋 다 같은 GPU를 쓰는데 서로 간엔 아무 직렬화가 없었다. TTS 전용이던 이 락을 GPU를
+# 쓰는 모든 추론 호출(STT/임베딩/LLM/TTS)로 넓혀서 _GPU_LOCK(threading.Lock) 단일 락으로
+# 항상 한 번에 하나씩만 GPU에 올라가게 했었다(2026-08-24~2026-08-26).
 #
-# 2026-08-26 실험적 완화 — 동시 여러 사용자 접속 시 전부 한 줄로 순서 대기하는 게
-# 너무 느리다는 요청으로, 모델 종류별로 락을 4개(_STT_LOCK/_TTS_LOCK/_LLM_LOCK/
-# _EMBED_LOCK)로 쪼갰다가("같은 모델끼리만 순서대로, 다른 모델끼리는 동시에") **곧바로
-# 되돌렸다(2026-08-27)** — 실사용 중 "Queue overflow. Consider to set receiver size
-# bigger. Current size is 1024." 경고가 재현됐다. 이게 정확히 바로 위 문서가 설명하는
-# 원래 장애의 재현이다: 락을 쪼개면서 예를 들어 사용자 A의 STT 추론과 사용자 B의 TTS
-# 합성이 같은 GPU에서 동시에 돌 수 있게 됐는데, 그 GPU 호출들이 GIL을 오래 붙들고
-# 있는 동안 마이크 프레임 드레인 루프(_run_mic_loop())가 제때 못 돌아서 audio_receiver
-# 내부 큐가 못 비워지고 찼다 — 단일 _GPU_LOCK을 애초에 도입했던 바로 그 이유가
-# 그대로 재현된 것이므로, 실험은 여기서 접고 단일 락으로 되돌린다. 동시 사용자 처리
-# 속도 개선은 락 분리가 아닌 다른 방법(예: GPU 자체를 늘리는 인프라 변경)으로 풀어야
-# 한다는 게 이번 실험으로 확인됐다.
-_GPU_LOCK = threading.Lock()
+# 2026-08-26 실험적 완화 — 모델 종류별로 락을 4개로 쪼개 동시 사용자를 처리해보려
+# 했다가 "Queue overflow" 경고가 재현돼 다음날 되돌렸다: 파이썬 스레드는 전부 같은
+# GIL을 공유해서, GPU 호출 여러 개가 겹치면 그 GIL 경합 때문에 상시 마이크 오디오
+# 드레인 루프가 제때 못 돌았다.
+#
+# 2026-09-01 — 그래서 "스레드 락을 어떻게 쪼개느냐" 자체를 그만두고, 별도 프로세스
+# 여러 개(각자 자기 GIL)로 바꿨다. 이 파일의 GPU 호출 지점들은 이제 _GPU_LOCK 대신
+# orchestration.gpu_worker_pool의 submit_*()가 돌려주는 Future를 기다린다 — 자세한
+# 설계 배경은 그 모듈의 docstring 참고.
 
 def _common_audio_path(message: str) -> Path:
     """조리 단계처럼 recipe_id/step_number가 없는 1회성 문구(확인 질문·안내 등)의
@@ -473,19 +466,18 @@ def speak(
             # 2026-08-23 — GPU 합성(3~9초) 자체는 백그라운드 스레드로 돌리고, 메인
             # 스레드는 그동안 _drain_mic_while()로 마이크 큐를 계속 비운다(위 함수
             # 문서 참고 — 안 그러면 이 블로킹 구간 동안 상시 마이크 연결이 브라우저
-            # 쪽에서 스스로 끊긴다). 락(_GPU_LOCK)으로 prefetch_remaining_steps_audio()의
-            # 백그라운드 스레드와 동시에 GPU 모델을 호출하지 않게 직렬화하는 건 그대로.
+            # 쪽에서 스스로 끊긴다). 2026-09-01 — 실제 GPU 호출은 gpu_worker_pool의
+            # 별도 프로세스로 보내고 이 스레드는 그 Future가 끝나길 기다리기만 한다
+            # (gpu_worker_pool.py 문서 참고 — prefetch_remaining_steps_audio()와의
+            # 직렬화는 이제 프로세스 풀 자체의 워커 수만큼만 자연히 제한됨).
             job: dict = {"done": False, "error": None}
 
             def _run_synthesis(job=job) -> None:
                 try:
-                    with _GPU_LOCK:
-                        if not audio_path.exists():
-                            from tts.infer import tts_synthesize
-
-                            waveform, sample_rate = tts_synthesize(message)
-                            audio_path.parent.mkdir(parents=True, exist_ok=True)
-                            sf.write(audio_path, waveform, sample_rate)
+                    if not audio_path.exists():
+                        waveform, sample_rate = gpu_worker_pool.submit_tts(message).result()
+                        audio_path.parent.mkdir(parents=True, exist_ok=True)
+                        sf.write(audio_path, waveform, sample_rate)
                 except Exception as exc:  # noqa: BLE001 — 아래에서 다시 던져서 기존 except가 처리
                     job["error"] = exc
                 finally:
@@ -526,14 +518,11 @@ def _synthesize_and_cache(text: str, audio_path: Path) -> None:
     if audio_path.exists():
         return
     try:
-        with _GPU_LOCK:
-            if audio_path.exists():
-                return
-            from tts.infer import tts_synthesize
-
-            waveform, sample_rate = tts_synthesize(text)
-            audio_path.parent.mkdir(parents=True, exist_ok=True)
-            sf.write(audio_path, waveform, sample_rate)
+        if audio_path.exists():
+            return
+        waveform, sample_rate = gpu_worker_pool.submit_tts(text).result()
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(audio_path, waveform, sample_rate)
     except Exception:  # noqa: BLE001 — 프리페치 실패는 speak()가 다시 시도하므로 조용히 넘어감
         pass
 
@@ -547,9 +536,12 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
     사용자가 화면을 보고 있는 시간 동안 쉬지 않고 뒷단계들을 계속 만들어둬서, 뒤로 갈수록
     "다음"이라고 말했을 때 기다리는 시간이 거의 사라지게 한다.
 
-    한 번에 여러 스레드를 띄우는 대신 스레드 하나가 남은 단계를 순서대로 도는 구조다 —
-    _GPU_LOCK이 어차피 GPU 호출을 한 번에 하나씩만 허용하므로(speak()의 실시간 합성과
-    직렬화), 스레드를 단계 수만큼 따로 만들어봐야 서로 락을 기다리기만 할 뿐이다.
+    한 번에 여러 스레드를 띄우는 대신 스레드 하나가 남은 단계를 순서대로 도는 구조다.
+    2026-09-01 — GPU 호출 자체는 이제 gpu_worker_pool의 프로세스 풀로 가지만, 이
+    프리페치는 여전히 "지금 당장 필요 없는 낮은 우선순위 작업"이라 일부러 순차로
+    돈다 — 한꺼번에 여러 단계를 동시에 던지면 워커를 다 차지해버려서, 그 사이
+    들어오는 실시간 사용자 요청(speak()의 실시간 합성, STT 등)이 워커 풀에서
+    대기해야 하는 역효과가 생긴다.
 
     레시피 하나당(recipe_id 기준) 세션에서 딱 한 번만 이 백그라운드 작업을 시작한다
     (st.session_state의 "_full_prefetch_started" 집합으로 추적) — screen_cooking_step()이
@@ -588,10 +580,12 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
             audio_path = _AUDIO_DIR / str(recipe_id) / f"{step_num:02d}.wav"
             _synthesize_and_cache(step["text"], audio_path)
             # 2026-08-28 — 한 단계 합성이 끝나면 다음 단계로 바로 안 넘어가고 잠깐 쉰다.
-            # _GPU_LOCK은 공정(fair)하지 않아서, 프리페치가 락을 놓자마자 다시 잡으면
-            # 그 사이 도착한 사용자 발화의 STT/실시간 speak()가 계속 뒤로 밀린다("다음"
-            # 이라고 했는데 전사부터 몇 초 걸리는 리뷰 지적). 이 유휴 구간 동안엔
-            # 프리페치가 락을 안 건드리므로 대기 중인 실시간 작업이 확실히 먼저 잡는다.
+            # 2026-09-01 — 이제 GPU 호출은 gpu_worker_pool의 프로세스 풀로 가지만, 워커
+            # 개수는 유한하다(GPU_WORKER_COUNT). 이 프리페치가 쉬지 않고 계속 다음
+            # submit_tts()를 던지면 워커를 계속 붙잡아서, 그 사이 도착한 사용자 발화의
+            # STT/실시간 speak()가 빈 워커를 못 찾고 대기열에서 밀릴 수 있다("다음"이라고
+            # 했는데 전사부터 몇 초 걸리는 리뷰 지적). 이 유휴 구간 동안엔 프리페치가
+            # 워커를 안 건드리므로 대기 중인 실시간 작업이 확실히 먼저 잡는다.
             time.sleep(0.6)
 
     threading.Thread(target=_run, daemon=True).start()
@@ -817,7 +811,23 @@ def _run_mic_loop(*, drain_only: bool = False) -> str | None:
             # 나빠짐(실측: "지게버지게 알려줘" 등 이전보다 더 심하게 깨짐). noiseSuppression
             # 단독으로 껐을 때 도움이 되는지는 아직 따로 검증 안 됐음 — 다음에 바꿀 땐 한
             # 번에 하나씩만 바꿔서 확인할 것.
-            media_stream_constraints={"video": False, "audio": True},
+            #
+            # 2026-09-01 — "noiseSuppression만 단독으로" 실험하려면 실제 마이크로 들어보며
+            # 판단해야 해서(코드만 보고 여기서 값을 정할 수 없음, 위 AGC 사례처럼 잘못
+            # 짐작하면 오히려 인식이 나빠질 위험), 브라우저 기본값(True, 암묵적으로 on)에
+            # 기대는 대신 명시적인 constraints로 바꾸고 env로 토글 가능하게 했다 — 재배포
+            # 없이 RunPod Pod 환경변수만 바꿔서 켜고 끄며 실측 비교할 수 있다.
+            # WEBRTC_NOISE_SUPPRESSION을 "false"로 주면 끔(AGC/에코제거는 절대 안 건드림 —
+            # 위 AGC 사례 재현 방지). 기본값은 지금과 동일하게 켜짐(noiseSuppression=True).
+            media_stream_constraints={
+                "video": False,
+                "audio": {
+                    "noiseSuppression": os.environ.get("WEBRTC_NOISE_SUPPRESSION", "true").lower()
+                    != "false",
+                    "autoGainControl": True,  # 위 2026-08-23 실측 때문에 항상 True로 고정, 건드리지 말 것
+                    "echoCancellation": True,
+                },
+            },
             # 2026-08-25 — iceTransportPolicy="relay" 강제를 시도했다가 되돌렸었다(그때
             # TURN이 Tailscale 전용 IP라 안 닿는 방문자에겐 후보가 하나도 안 남았음).
             # 2026-08-26 — Cloudflare Realtime TURN으로 바꾸면서 그 이유가 해소돼 다시
@@ -943,8 +953,6 @@ def _run_mic_loop(*, drain_only: bool = False) -> str | None:
                 # 백그라운드 스레드 — voice_io._synthesize_and_cache()와 같은 이유로
                 # st.* API를 전혀 안 쓴다.
                 try:
-                    from stt.infer import stt_transcribe
-
                     # 2026-08-23 진단(마이크 인식 문제) — 오디오 크기/레벨 + STT 결과.
                     # 2026-08-28: 매 발화마다 stdout에 찍히고 stt_text는 사용자 발화 전문이라
                     # CHEFEAR_DEBUG가 설정된 경우에만 남긴다.
@@ -966,8 +974,11 @@ def _run_mic_loop(*, drain_only: bool = False) -> str | None:
                     # 위 stt_transcribe() 문서 참고("이중 VAD로 조용한 실제 발화가 stt_text=''로
                     # 사라짐") — 이 되돌림은 그 문제를 다시 불러올 수 있다는 걸 알고 하는
                     # 요청이라 그대로 반영한다.
-                    with _GPU_LOCK:
-                        job["text"] = stt_transcribe(audio, sample_rate=16000, vad_filter=True).strip()
+                    job["text"] = (
+                        gpu_worker_pool.submit_stt(audio, sample_rate=16000, vad_filter=True)
+                        .result()
+                        .strip()
+                    )
                     if _mic_dbg:
                         print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — 실패해도 조용히 넘어감

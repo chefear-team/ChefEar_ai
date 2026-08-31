@@ -181,12 +181,11 @@ def render_voice_challenge() -> None:
     transcript, word_ok, hits, speaker_ok, name, score = "", False, 0, False, None, 0.0
     try:
         wav, sr = _decode_audio(uploaded)
-        from orchestration import speaker_verify
-        from stt.infer import stt_transcribe
-        from ui.voice_io import _GPU_LOCK
+        from orchestration import gpu_worker_pool, speaker_verify
 
-        with _GPU_LOCK:  # STT만 GPU. speaker_verify는 CPU라 락 밖.
-            transcript = stt_transcribe(wav, sample_rate=sr)
+        # STT만 GPU(gpu_worker_pool 워커 프로세스에서 처리). speaker_verify는 CPU라 그대로
+        # 이 프로세스(메인)에서 바로 돈다 — 2026-09-01, 예전 _GPU_LOCK 자리를 대체.
+        transcript = gpu_worker_pool.submit_stt(wav, sample_rate=sr).result()
         word_ok, hits = _transcript_matches(transcript, challenge)
         speaker_ok, name, score = speaker_verify.verify(wav, sample_rate=sr)
     except Exception as exc:  # noqa: BLE001 — 인증 인프라 실패는 fail-closed(spec EC-11)

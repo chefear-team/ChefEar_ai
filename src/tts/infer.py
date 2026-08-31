@@ -244,14 +244,54 @@ DEFAULT_MAX_NEW_TOKENS = 400  # 아주 짧은 문장(예: "다음 단계로 가�
 # 천장에 눌리지 않게 함께 맞췄다. 정식 토크나이저 기반 실측은 아직 없음(1.5 원칙 —
 # 지어내지 않되 잠정치임을 밝힘) — 이번에도 청취/로그 기반 잠정 조정이라, 다음에도
 # 잘린다는 보고가 나오면 이 배수를 더 올리기보다 정식 토큰 카운트 로깅으로 전환할 것.
-_TOKENS_PER_CHAR = 20  # 글자당 예상 생성 토큰 수(잠정치, 위 문서 참고)
+_TOKENS_PER_CHAR = 20  # 글자당 예상 생성 토큰 수(잠정치, 위 문서 참고) — 아래 토크나이저
+# 기반 추정이 실패할 때만 쓰는 폴백으로 강등(2026-09-01, 아래 문서 참고).
 _MAX_NEW_TOKENS_CEILING = 1500  # do_sample=True에서 운 나쁘게 못 멈추는 경우의 상한선
 # (2026-08-19 실측: 2048 하드 디폴트에서 20배 이상 느려지는 사례가 있었음 — 상한 없이
 # 문장 길이만 따라가게 두면 같은 위험이 재현될 수 있어 안전장치로 둔다.)
 
+# 2026-09-01 — "글자수 x 20"은 처음부터 "정식 토크나이저 기반 실측이 아님"이라고 위에
+# 스스로 밝혀둔 잠정치였다(청취 보고로 20까지 올라간 것). 텍스트를 실제 토크나이저로
+# 인코딩해서 진짜 토큰 수를 재면 더 정확한 추정이 가능하다 — 다만 qwen_tts 라이브러리가
+# Qwen3TTSModel 래퍼(model.generate_voice_clone() 등) 뒤에 정확히 어떤 토크나이저
+# 객체를 어떤 속성으로 노출하는지 이 저장소에서 검증할 방법이 없다(로컬 환경엔 GPU가
+# 없어 qwen_tts 자체가 설치 안 됨). 그 래퍼 내부를 추측해서 건드리는 대신, MODEL_ID의
+# HF 토크나이저를 transformers.AutoTokenizer로 **독립적으로** 로드해서 길이 추정에만
+# 쓴다 — generate_voice_clone()/generate_custom_voice() 호출 자체에는 아무 변경이
+# 없으므로, 바로 위 2026-08-27 문서에 적힌 것과 같은 "검증 안 된 파라미터로 TTS 전체가
+# 조용히 죽는" 위험이 없다(최악의 경우에도 로딩 실패 -> 아래 except가 잡아서 기존
+# 글자수 추정으로 조용히 폴백할 뿐, 실제 합성 경로는 항상 그대로 동작한다).
+_tts_tokenizer = None
+_tts_tokenizer_load_failed = False
+
+
+def _get_tts_tokenizer():
+    global _tts_tokenizer, _tts_tokenizer_load_failed
+    if _tts_tokenizer is not None or _tts_tokenizer_load_failed:
+        return _tts_tokenizer
+    try:
+        from transformers import AutoTokenizer
+
+        _tts_tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    except Exception as exc:  # noqa: BLE001 — 실패하면 그냥 폴백, TTS 자체는 안 죽어야 함
+        print(f"[TTS] 토크나이저 기반 길이 추정용 AutoTokenizer 로드 실패(글자수 추정으로 폴백): {exc!r}")
+        _tts_tokenizer_load_failed = True
+    return _tts_tokenizer
+
 
 def _dynamic_max_new_tokens(text: str) -> int:
     """문장 길이에 비례해서 생성 예산을 계산한다 — 위 DEFAULT_MAX_NEW_TOKENS 문서 참고."""
+    tokenizer = _get_tts_tokenizer()
+    if tokenizer is not None:
+        try:
+            # 실제 생성은 텍스트 토큰 수보다 더 걸릴 수 있어(운율/화자 임베딩 등 TTS 특유의
+            # 프레임 확장) 안전 여유를 곱해서 잡는다 — 1.3배는 정식 실측치가 아니라 보수적인
+            # 잠정 배수다(위 글자수x20 배수들의 잠정치 원칙과 동일하게 여기도 명시).
+            token_count = len(tokenizer(text).input_ids)
+            estimated = int(token_count * 1.3)
+            return min(_MAX_NEW_TOKENS_CEILING, max(DEFAULT_MAX_NEW_TOKENS, estimated))
+        except Exception as exc:  # noqa: BLE001 — 인코딩 실패해도 폴백으로 계속 진행
+            print(f"[TTS] 토크나이저 기반 길이 추정 실패(글자수 추정으로 폴백): {exc!r}")
     estimated = len(text) * _TOKENS_PER_CHAR
     return min(_MAX_NEW_TOKENS_CEILING, max(DEFAULT_MAX_NEW_TOKENS, estimated))
 

@@ -10,12 +10,12 @@ import time
 
 import streamlit as st
 
+from orchestration import gpu_worker_pool
 from orchestration.db import get_client
-from orchestration.entity_extract_llm import extract_intent_llm
-from orchestration.pipeline import handle_utterance, manual_fallback
+from orchestration.pipeline import manual_fallback
 from ui.recipe_view import _fetch_recipe_view, _view_cache_fresh, refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, goto
-from ui.voice_io import _drain_mic_while, _GPU_LOCK, speak
+from ui.voice_io import _drain_mic_while, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -281,12 +281,10 @@ def process_utterance(text: str) -> None:
                 job["llm_result"] = {"dish_name": None, "wants_register": False}
             else:
                 try:
-                    # 2026-08-24 — _GPU_LOCK(voice_io.py, 원래 _TTS_LOCK)으로 감쌈. extract_intent_llm()
-                    # (로컬 LLM)과 handle_utterance() 안의 classify_intent()(임베딩 모델)가 STT/TTS와
-                    # 같은 GPU를 쓰는데 서로 직렬화가 없었다 — 실사용 중 "STT는 됐는데 그 다음부터
-                    # 터미널 로그까지 전부 멈춘다"는 리포트의 원인으로 지목됨(락 정의부 주석 참고).
-                    with _GPU_LOCK:
-                        job["llm_result"] = extract_intent_llm(text)
+                    # 2026-08-24 — 원래 _GPU_LOCK(threading.Lock)으로 감쌌던 자리. 2026-09-01 —
+                    # gpu_worker_pool의 별도 프로세스로 보내고 그 Future를 기다리는 것으로
+                    # 바뀜(voice_io.py 옛 _GPU_LOCK 정의부 주석, gpu_worker_pool.py 문서 참고).
+                    job["llm_result"] = gpu_worker_pool.submit_llm_extract(text).result()
                 except Exception as exc:  # noqa: BLE001 — 아래 이유로 여기서만 넓게 잡음
                     # llm/infer.py generate_json() 문서에 "모델 로드/추론 자체가 실패하면
                     # 예외를 그대로 올린다"고 명시돼 있다. 이 GPU 데스크탑은 STT(faster-whisper)
@@ -303,14 +301,17 @@ def process_utterance(text: str) -> None:
             if job["llm_result"]["wants_register"]:
                 return
             try:
-                with _GPU_LOCK:  # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀
-                    job["result"] = handle_utterance(
-                        session,
-                        text,
-                        dish_name=job["llm_result"]["dish_name"],
-                        client=client,
-                        steps=steps_cache,
-                    )
+                # handle_utterance() -> classify_intent()가 임베딩 모델(GPU)을 씀. 2026-09-01 —
+                # gpu_worker_pool 워커 프로세스 안에서 실행되고, client는 안 넘긴다(그 워커
+                # 프로세스 자신의 get_client() 싱글턴을 쓰게 함 — gpu_worker_pool.py의
+                # _worker_handle_utterance() 문서 참고). 이 함수의 client 인자(위쪽 매개변수)는
+                # 더 이상 handle_utterance()로 전달되지 않는다.
+                job["result"] = gpu_worker_pool.submit_handle_utterance(
+                    session,
+                    text,
+                    dish_name=job["llm_result"]["dish_name"],
+                    steps=steps_cache,
+                ).result()
             except ValueError:
                 job["value_error"] = True
             except Exception as exc:  # noqa: BLE001 — 2026-08-26 추가, 아래 문서 참고

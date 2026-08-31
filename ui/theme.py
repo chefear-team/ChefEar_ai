@@ -1435,15 +1435,17 @@ def render_big_mic(ready: bool = False):
 # src/app.py::SCREENS의 각 screen_*() 함수 본문을 직접 확인해서 정함(speak()/
 # _render_cached_speech()/render_step_card(audio_path=...) 호출이 하나도 없는 화면만).
 # 화면을 새로 추가하거나 기존 화면에 오디오 호출을 새로 넣을 땐 이 목록도 같이 검토할 것.
+#
+# 2026-09-01 재감사 — src/app.py::SCREENS(줄 68)와 대조해서 login/my_recipes/
+# edit_recipe 세 화면을 뺐다. 계정 시스템 자체가 2026-08-27에 제거되면서 이 화면들의
+# screen_*() 함수도 같이 삭제됐다(ui/README.md 참고) — 이제 SCREENS 딕셔너리에 없는
+# 화면이라 CURRENT가 될 일이 없으므로, 여기 남겨둬도 해도 없지만 죽은 항목이라 지운다.
 _AUDIO_FREE_SCREENS = (
     "start",
     "register_ingredients",
     "register_steps",
     "register_dish_name",
     "register_intro",
-    "login",
-    "my_recipes",
-    "edit_recipe",
 )
 
 # 2026-08-25 — render_screen_cleanup()이 쓰는, "텍스트 대체 입력칸을 절대 안 만드는
@@ -1464,15 +1466,14 @@ _AUDIO_FREE_SCREENS = (
 # 입력칸("또는 텍스트로 입력") 잔상을 못 잡고 오히려 되살렸을 것 — 아직 실사용
 # 재현 리포트로 확인된 건 아니라(다른 마커들처럼 "재현됨"이 아니라 코드 대조로 찾은
 # 것), 배포 전 실제 화면 전환으로 재검증할 것.
+#
+# 2026-09-01 재감사 — no_match/login/my_recipes/edit_recipe 네 화면을 뺐다(위
+# _AUDIO_FREE_SCREENS와 같은 이유 — SCREENS 딕셔너리에서 이미 삭제된 화면들).
 _NO_TEXT_FALLBACK_SCREENS = (
     "start",
     "recipe_confirm",
-    "no_match",
     "register_ingredients",
     "register_steps",
-    "login",
-    "my_recipes",
-    "edit_recipe",
 )
 
 # 2026-08-25 — fallback_buttons()와 같은 부류의 잔상을 no_match 화면에서도 실측 확인:
@@ -1509,22 +1510,12 @@ _NO_TEXT_FALLBACK_SCREENS = (
 # 있었다(cooking_complete "처음 화면으로" 버튼 자체가 실사용 전체 플로우 테스트에서
 # 잔상으로 남는 것 확인, 2026-08-25). **앞으로 잔상 테스트는 반드시 음성(또는 음성과
 # 동등한 debug_panel 경로)으로 할 것 — 버튼 클릭만으로는 과소평가된다.**
+# 2026-09-01 재감사 — no_match 화면 전용이었던 마커 4개("원래 레시피로 계속하기"/
+# "새 레시피로 등록할래요"/"실데이터 검색만으로 판단해요"/"로그인을 하시면 레시피를
+# 등록할 수 있어요")를 지웠다. no_match 화면 자체가 2026-08-27에 삭제돼서(ui/dispatch.py
+# 447번 줄 주석 — 아이러니하게도 이 잔상 문제가 잦았던 게 삭제 이유 중 하나) 이 문구를
+# 만드는 코드 자체가 이제 없다 — 죽은 마커.
 _STALE_CONTENT_MARKERS = {
-    "원래 레시피로 계속하기": ["no_match"],
-    "새 레시피로 등록할래요": ["no_match"],
-    # 2026-08-25(같은 날 밤) 사용자 실사용 재현 보고 — no_match 화면의 st.caption()
-    # 안내문(register.py, EC-05/1.5 원칙 문구)이 "새 레시피로 등록할래요" 버튼 마커보다
-    # *앞쪽*에 렌더링돼서, 그 버튼만 잡는 기존 마커로는 이 캡션까지는 못 잡았다(꼬리
-    # 제거는 마커를 찾은 지점부터 뒤만 지우므로, 이 캡션은 그 버튼 마커보다 앞에 있어서
-    # 버튼 마커의 "꼬리"에 포함이 안 됨) — 실측: "처음"으로 start 전환한 뒤에도 이
-    # 캡션 문구만 혼자 남아있었음. 독립 마커로 추가.
-    "실데이터 검색만으로 판단해요": ["no_match"],
-    # 2026-08-26 추가 — no_match의 "새 레시피로 등록할래요" 버튼 바로 아래 로그인
-    # 유도 배지(render_badge(), 2026-08-25에 st.caption()에서 바꾼 것)도 "실데이터
-    # 검색만으로..." 마커의 꼬리에 원래 포함되긴 하지만, 이 잔상 부류가 조각마다
-    # 비동기로 따로 새는 사례가 반복 확인돼서(위 "다른 레시피 찾을래요"/"비밀번호"
-    # 마커들과 같은 이유) 이것도 독립 마커로 예방 추가.
-    "로그인을 하시면 레시피를 등록할 수 있어요": ["no_match"],
     # 2026-08-25(같은 날 밤) 사용자 실사용 재현 보고 — register_intro(표준 레시피에
     # 없는 요리라 새로 등록할지 묻는 화면)의 마이크바 캡션('"네" 또는 "등록할래요"라고
     # 말해보세요', render_mic_bar() 호출부)과 그 아래 "네, 등록할래요"/"괜찮아요" 버튼
@@ -1533,20 +1524,9 @@ _STALE_CONTENT_MARKERS = {
     # register_intro 본문에서 맨 앞쪽 위젯이라, 이 마커 하나의 꼬리 제거로 뒤따르는
     # 버튼 행+register_ingredients 잔여물까지 한 번에 같이 잡힌다.
     '"네" 또는 "등록할래요"라고 말해보세요': ["register_intro"],
-    # 2026-08-26 사용자 실사용 재현 보고 — login 화면(아이디/비밀번호 입력 폼)에서
-    # "처음으로 가기"로 나간 뒤 start에서 로그인 폼 전체(아이디/비밀번호 입력칸+
-    # 로그인/회원가입 버튼)가 그대로 남는 잔상 확인. "아이디" text_input 라벨이
-    # screen_login()의 login/signup 두 뷰 모두에서 공통으로 맨 앞에 오는 위젯이라
-    # (my_recipes.py 확인), 이 마커 하나로 두 뷰 다 커버되고 꼬리 제거로 뒤따르는
-    # 버튼들도 같이 잡힌다.
-    "아이디": ["login"],
-    # 2026-08-26 재현 추가 — "아이디" 마커로도 부족했다(실측!). 같은 login 잔상인데
-    # 이번엔 "아이디" 입력칸은 안 남고 "비밀번호"부터 그 뒤(로그인/회원가입 버튼)만
-    # 독립적으로 남는 경우가 확인됐다 — recipe_confirm의 배지+"다른 레시피 찾을래요"
-    # 버튼이 따로 늦게 도착해 하나의 마커로 못 잡혔던 것과 같은 패턴(위 "다른 레시피
-    # 찾을래요" 마커 주석 참고, 이 잔상 부류는 조각마다 비동기로 따로 도착해서 앞쪽
-    # 마커 하나로는 못 잡을 때가 있다). "비밀번호"도 독립 마커로 추가.
-    "비밀번호": ["login"],
+    # 2026-09-01 재감사 — login 화면 전용이던 "아이디"/"비밀번호" 마커 2개를 지웠다.
+    # my_recipes.py::screen_login()이 2026-08-27에 계정 시스템과 함께 통째로 삭제돼서
+    # (ui/README.md 참고) 이 문구를 만드는 화면 자체가 이제 없다 — 죽은 마커.
     # 2026-08-25(같은 날 밤, 위와 같은 리포트 — 등록 플로우를 register_ingredients까지
     # 더 진행한 뒤 "처음") — register_intro 마커의 꼬리 제거로는 register_ingredients
     # 자체의 잔상(재료 칩은 이미 구조적 규칙 7로 잡히지만, 그 아래 텍스트 입력칸+
@@ -1625,13 +1605,15 @@ _STALE_CONTENT_MARKERS = {
     # 전체) 숨겨버렸다 — 음성 응답(TTS)은 정상 재생되는데 화면만 완전히 비어 보이는
     # 증상으로 실측 재현됨. no_match를 owner에 추가해서 자기 자신의 뒤로가기 링크를
     # 잔상으로 오판하지 않게 한다.
+    # 2026-09-01 재감사 — no_match 화면 자체가 2026-08-27에 삭제돼서 위 항목을 owner
+    # 목록에서 뺐다(SCREENS에 없는 이름이라 CURRENT가 될 일이 없어 남겨둬도 무해하긴
+    # 했지만, 바로 위 주석이 이미 없는 화면을 설명하고 있어 혼란스러워서 정리).
     "처음 화면으로": [
         "cooking_complete",
         "register_dish_name",
         "register_ingredients",
         "register_steps",
         "complete",
-        "no_match",
     ],
 }
 
@@ -1640,7 +1622,7 @@ _STALE_CONTENT_MARKERS = {
 # 출력하는 고정 wrapper `<div class="ce-transcript">`)까지 통째로 남아있었다. 대화
 # 내용은 매번 달라서 텍스트 마커로 못 잡지만, 감싸는 클래스는 항상 같아서 그걸로
 # 구조적으로 잡는다 — _STALE_CONTENT_MARKERS(텍스트 앵커 기반)와 별개의 규칙.
-# render_chat()을 쓰는 화면 = cooking_step(cooking.py)·no_match(register.py)·
+# render_chat()을 쓰는 화면 = cooking_step(cooking.py)·
 # recipe_confirm(cooking.py, 2026-08-26 추가 — render_typewriter_message() 대신
 # render_chat()을 쓰도록 바뀜, cooking.py::screen_recipe_confirm() 참고). 이 목록에
 # 추가를 빠뜨리면 keepLastOnly()가 "허용 안 된 화면"으로 보고 .ce-transcript를 전부
@@ -1648,7 +1630,8 @@ _STALE_CONTENT_MARKERS = {
 # 되는데 챗 박스(조회 확인 문구)가 안 보인다"로 정확히 이 증상이 재현됐다(위 docstring
 # 경고 "새 화면/새 위젯을 추가할 때 여기 쓰는 상수들도 같이 검토할 것"이 실제로 걸린
 # 사례).
-_CHAT_LOG_SCREENS = ("cooking_step", "no_match", "recipe_confirm")
+# 2026-09-01 재감사 — no_match(register.py) 화면이 2026-08-27에 삭제돼서 뺐다.
+_CHAT_LOG_SCREENS = ("cooking_step", "recipe_confirm")
 
 # 2026-08-25 사용자 실사용 재현 보고(버그.png, st.iframe() 교체 이후에도 재현) —
 # render_chips()가 그리는 재료 칩 목록(고정 wrapper `<div class="ce-chip-grid">`)도
@@ -1693,6 +1676,16 @@ _SINGLE_OWNER_WIDGET_KEYS = {
 # 문구가 화면마다 다른 위치에 비동기로 나뉘어 도착해 위 마커 방식만으론 불안정했다),
 # 이 화면들의 위젯을 공유하는 key 접두사로 구조적으로 잡는 규칙을 추가했다. login/signup
 # 두 뷰(_login_view) 다 이 접두사를 쓴다(my_recipes.py::screen_login() 참고).
+#
+# 2026-09-01 재감사 — my_recipes.py::screen_login()이 2026-08-27에 계정 시스템과 함께
+# 삭제돼서, login_*/signup_* key를 가진 위젯을 만드는 코드가 이제 없다 — 이 상수와
+# JS 쪽 ruleLoginSignup()(_CE_SWEEP_JS 안)은 사실상 완전히 죽은 규칙이다(매 sweep마다
+# 절대 안 걸릴 조건 검사만 하나 더 도는 정도). 다른 화이트리스트들과 달리 여기선 값만
+# 지우지 않고 남겨뒀다 — 지우려면 render_screen_cleanup()이 st.html()에 base64+eval로
+# 밀어 넣는 15KB짜리 JS 본문(DOMPurify 새니타이저에 걸려 통째로 사라진 전례, UTF-8
+# mojibake 전례 등 최근에도 두 번 깨졌던 곳)까지 같이 고쳐야 해서, 무해한 죽은 코드
+# 하나 지우자고 그 위험을 감수할 이유가 없다고 판단했다. JS 쪽을 다른 이유로 손댈
+# 일이 생기면 그때 ruleLoginSignup() 호출부까지 같이 지울 것.
 LOGIN_KEY_PREFIXES = ("login_", "signup_")
 
 # ⚠️ 2026-08-26 재구성 — 이 아래 render_screen_cleanup()은 2026-08-25 새벽 세션에서 여러
