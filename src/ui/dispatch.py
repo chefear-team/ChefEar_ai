@@ -202,6 +202,14 @@ def process_utterance(text: str) -> None:
     lookup_cache = st.session_state.setdefault("_recipe_lookup_cache", {})
     _hit = lookup_cache.get(lookup_key)
     _hit_fresh = _hit is not None and (time.monotonic() - _hit.get("_ts", 0.0)) < _LOOKUP_CACHE_TTL_S
+    # [PERF] — 이 캐시는 "조리 중 아님" + "같은 발화를 이 세션에서 이미 조회한 적
+    # 있음" 두 조건이 다 맞을 때만 히트한다(위 문서 참고) — 처음 묻는 요리명이나
+    # 진행/재청취 명령("다시"/"다음")은 이 캐시 자체를 안 타는 게 정상 설계다.
+    print(
+        f"[PERF] recipe_lookup_cache "
+        f"{'HIT' if (_hit_fresh and not session.get('current_recipe_id')) else 'MISS'} key={lookup_key!r}",
+        flush=True,
+    )
     if not session.get("current_recipe_id") and _hit_fresh:
         hit = _hit
         st.session_state.chat_log.append(("user", hit["dish_name"]))
@@ -284,7 +292,11 @@ def process_utterance(text: str) -> None:
                     # 2026-08-24 — 원래 _GPU_LOCK(threading.Lock)으로 감쌌던 자리. 2026-09-01 —
                     # gpu_worker_pool의 별도 프로세스로 보내고 그 Future를 기다리는 것으로
                     # 바뀜(voice_io.py 옛 _GPU_LOCK 정의부 주석, gpu_worker_pool.py 문서 참고).
+                    # [PERF] 태그는 voice_io.py::_run_stt() 문서 참고 — 전체 왕복 병목
+                    # 진단용, 항상 켜둠.
+                    _llm_t0 = time.monotonic()
                     job["llm_result"] = gpu_worker_pool.submit_llm_extract(text).result()
+                    print(f"[PERF] LLM(extract) {time.monotonic() - _llm_t0:.2f}s", flush=True)
                 except Exception as exc:  # noqa: BLE001 — 아래 이유로 여기서만 넓게 잡음
                     # llm/infer.py generate_json() 문서에 "모델 로드/추론 자체가 실패하면
                     # 예외를 그대로 올린다"고 명시돼 있다. 이 GPU 데스크탑은 STT(faster-whisper)
@@ -306,12 +318,14 @@ def process_utterance(text: str) -> None:
                 # 프로세스 자신의 get_client() 싱글턴을 쓰게 함 — gpu_worker_pool.py의
                 # _worker_handle_utterance() 문서 참고). 이 함수의 client 인자(위쪽 매개변수)는
                 # 더 이상 handle_utterance()로 전달되지 않는다.
+                _hu_t0 = time.monotonic()
                 job["result"] = gpu_worker_pool.submit_handle_utterance(
                     session,
                     text,
                     dish_name=job["llm_result"]["dish_name"],
                     steps=steps_cache,
                 ).result()
+                print(f"[PERF] handle_utterance(intent+DB) {time.monotonic() - _hu_t0:.2f}s", flush=True)
             except ValueError:
                 job["value_error"] = True
             except Exception as exc:  # noqa: BLE001 — 2026-08-26 추가, 아래 문서 참고

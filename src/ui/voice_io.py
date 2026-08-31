@@ -462,6 +462,10 @@ def speak(
         else:
             audio_path = _common_audio_path(message)
 
+        # [PERF] — speak() 호출마다 캐시 히트/미스를 한 줄로 남긴다(캐시 미스 쪽
+        # 실제 합성 시간은 아래 _run_synthesis()의 [PERF] TTS 로그가 별도로 남김).
+        print(f"[PERF] TTS cache {'HIT' if audio_path.exists() else 'MISS'} path={audio_path.name}", flush=True)
+
         if not audio_path.exists():
             # 2026-08-23 — GPU 합성(3~9초) 자체는 백그라운드 스레드로 돌리고, 메인
             # 스레드는 그동안 _drain_mic_while()로 마이크 큐를 계속 비운다(위 함수
@@ -473,9 +477,18 @@ def speak(
             job: dict = {"done": False, "error": None}
 
             def _run_synthesis(job=job) -> None:
+                import time
+
                 try:
                     if not audio_path.exists():
+                        # [PERF] 태그 설명은 _run_stt() 문서 참고. 캐시 히트면 이 분기
+                        # 자체를 안 타서(위 audio_path.exists() 검사) 로그가 안 찍히는데,
+                        # 그게 정상이다 — "찍혀야 하는데 안 찍힌다"면 캐시가 실제로 안
+                        # 먹고 있다는 신호이므로 이 로그의 유무 자체가 캐시 히트/미스
+                        # 판별에도 쓰인다.
+                        _tts_t0 = time.monotonic()
                         waveform, sample_rate = gpu_worker_pool.submit_tts(message).result()
+                        print(f"[PERF] TTS {time.monotonic() - _tts_t0:.2f}s (cache miss)", flush=True)
                         audio_path.parent.mkdir(parents=True, exist_ok=True)
                         sf.write(audio_path, waveform, sample_rate)
                 except Exception as exc:  # noqa: BLE001 — 아래에서 다시 던져서 기존 except가 처리
@@ -952,6 +965,8 @@ def _run_mic_loop(*, drain_only: bool = False) -> str | None:
             def _run_stt(audio=utterance_audio, job=job) -> None:
                 # 백그라운드 스레드 — voice_io._synthesize_and_cache()와 같은 이유로
                 # st.* API를 전혀 안 쓴다.
+                import time
+
                 try:
                     # 2026-08-23 진단(마이크 인식 문제) — 오디오 크기/레벨 + STT 결과.
                     # 2026-08-28: 매 발화마다 stdout에 찍히고 stt_text는 사용자 발화 전문이라
@@ -974,11 +989,19 @@ def _run_mic_loop(*, drain_only: bool = False) -> str | None:
                     # 위 stt_transcribe() 문서 참고("이중 VAD로 조용한 실제 발화가 stt_text=''로
                     # 사라짐") — 이 되돌림은 그 문제를 다시 불러올 수 있다는 걸 알고 하는
                     # 요청이라 그대로 반영한다.
+                    # 2026-09-01 — 승욱님 실측 리포트("전체 왕복이 어마무시하게 느리다")
+                    # 진단용 타이밍 로그. 각 단계(STT/LLM/handle_utterance/TTS)가 얼마나
+                    # 걸리는지 실측 없이는 어디가 병목인지 추측만 하게 되므로, 이 넷을
+                    # 전부 같은 [PERF] 태그로 남겨서 나중에 grep 한 번으로 비교할 수
+                    # 있게 한다. 상시로 켜둔다(CHEFEAR_DEBUG 게이트 없음) — 한 줄짜리라
+                    # 로그 스팸 우려가 적고, 지금 당장 진단이 필요한 값이라서다.
+                    _stt_t0 = time.monotonic()
                     job["text"] = (
                         gpu_worker_pool.submit_stt(audio, sample_rate=16000, vad_filter=True)
                         .result()
                         .strip()
                     )
+                    print(f"[PERF] STT {time.monotonic() - _stt_t0:.2f}s", flush=True)
                     if _mic_dbg:
                         print(f"[MIC_DEBUG] stt_text={job['text']!r}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — 실패해도 조용히 넘어감
