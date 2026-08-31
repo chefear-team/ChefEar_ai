@@ -30,6 +30,14 @@ textColor = "#241c15"
 # 이 파일 감시 오작동이 더 근본적인 원인일 가능성이 있어 테스트 중.
 [server]
 fileWatcherType = "none"
+# 2026-08-31 — RunPod Docker 배포용 추가. headless=true가 없으면 Streamlit이 비대화형
+# 컨테이너에서 이메일 입력 프롬프트를 기다리며 멈춘다. address="0.0.0.0"은 컨테이너 안의
+# cloudflared가 localhost:8501로 붙을 수 있게 모든 인터페이스에 바인딩한다(로컬 개발
+# 환경에서도 무해). 팀 데스크탑 로컬 실행(run_local.sh)에도 그대로 적용되지만 동작에
+# 영향 없음 — 기존에도 사실상 같은 값으로 떴었다.
+headless = true
+address = "0.0.0.0"
+port = 8501
 
 # 2026-08-26 요청 — "예방 차원으로 다른 에러들에 대해서도 셋팅"의 2차 방어선. app.py의
 # 최상위 try/except(render_error_notice())가 main() 안에서 나는 예외는 이미 다 잡지만,

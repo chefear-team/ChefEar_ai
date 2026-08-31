@@ -1,0 +1,48 @@
+# Docker 빌드 컨텍스트에서 걷어낼 것들 - RunPod 이미지에 들어갈 필요 없는 것들.
+# .gitignore와 대체로 겹치지만(어차피 git에도 없는 대용량 폴더들), 컨테이너
+# 런타임에도 안 쓰는 것까지 여기서 더 걷어낸다(docs/, tests/, 백업 폴더 등).
+
+# git / IDE / 캐시
+.git
+.github
+.claude
+.vscode
+.idea
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.audit
+
+# 로컬 가상환경 (이미지 안에서 새로 만듦)
+venv
+.venv
+env-main
+
+# 대용량 로컬 산출물 - HF Hub에서 런타임에 받아오거나(모델), 컨테이너에 아예 필요
+# 없음(테스트 결과물/백업). 어차피 .gitignore 대상이라 원격 레포엔 없지만, 혹시
+# 로컬에서 직접 `docker build`를 돌릴 경우까지 대비해 명시적으로 막아둔다.
+models/
+result_test/
+result_test_backup_ep13_working/
+results/tts/roundtrip_*/
+_work_backups/
+data/kss/
+data/synthesized/
+data/standard/*.csv
+data/kadx_raw/*.csv
+
+# 시크릿 - 이미지에 절대 포함 금지, RunPod 환경변수로만 주입
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 컨테이너 실행에 안 쓰는 것들
+docs/
+tests/
+landing/
+*.md
+run_local.sh
+node_modules
