@@ -22,7 +22,7 @@ Dockerfile의 `docker/entrypoint.sh`가 cloudflared+Streamlit을 자동으로 �
 - `.github/workflows/docker-build.yml` — **정정**: RunPod Pod는 GitHub 레포/Dockerfile을
   직접 빌드하지 못한다(그건 Serverless 전용 기능, Pod는 이미 빌드된 이미지 URL만 받음).
   대신 이 워크플로가 `seunguk` 브랜치에 push될 때마다(또는 수동 실행) 이미지를 빌드해서
-  `ghcr.io/minhahamin/cookear_ai:latest`에 올려둔다 — RunPod엔 이 이미지 주소만
+  `ghcr.io/seungwook-kim/chefear_ai:latest`에 올려둔다 — RunPod엔 이 이미지 주소만
   붙여넣으면 되고 로컬 Docker는 필요 없다.
 
 **아직 검증 안 된 부분(첫 배포 때 반드시 확인)**: 이 Dockerfile로 실제 빌드/실행을 아직
@@ -82,15 +82,18 @@ GHCR에 push가 된다. 기본값이 "Read repository contents" only인 경우�
    여기 두면 나중에 GPU 타입을 바꾸거나 Pod를 새로 만들어도 모델을 다시 안 받는다.
 3. **Pods → Deploy** → GPU: **A40 (48GB)** 선택
 4. 이미지 소스: **Custom Container / Docker Image** 선택 → Container Image에
-   `ghcr.io/minhahamin/cookear_ai:latest` 입력 (1단계 push로 GitHub Actions가
-   빌드해둔 이미지, repo명의 대문자는 GHCR 규칙상 소문자로 변환돼 있음에 주의)
-   - GHCR 패키지가 기본 private이면 RunPod가 이미지를 못 받아온다. 가장 간단한 방법은
-     GitHub 프로필 → **Packages** → `cookear_ai` 패키지 → **Package settings** →
-     Change visibility → **Public**으로 바꾸는 것 (이미지 안에는 시크릿이 전혀 없고
-     `.env`/토큰류는 전부 RunPod 환경변수로만 주입하니 공개해도 안전). private을
-     유지하고 싶으면 RunPod Pod 생성 화면의 **Container Registry Credentials**에
-     GitHub 계정명 + `read:packages` 권한 PAT(Personal Access Token)를 등록하는 방법도
-     있음.
+   `ghcr.io/seungwook-kim/chefear_ai:latest` 입력 (**정정 2026-08-31**: 팀 공용 레포
+   `minhahamin/cookEar_ai`에서 `seungwook-kim/chefear_ai`로 개인 계정 fork — GHCR
+   패키지 공개/PAT 발급 등을 홍민하 승인 없이 직접 처리하려고 옮김. 레포명의 대문자는
+   GHCR 규칙상 소문자로 변환돼 있음에 주의)
+   - GHCR 패키지가 기본 private이면 RunPod가 이미지를 못 받아온다. 이제 승욱님 계정
+     소유라 GitHub 프로필 → **Packages** → `chefear_ai` 패키지 → **Package settings**
+     → Change visibility → **Public**으로 즉시 바꿀 수 있다 — 다만 이미지 안에
+     `COPY . .`로 앱 소스코드가 그대로 들어가 있고 이건 홍민하·하주성과 공동 작성한
+     코드라는 점은 남아있으니(시크릿은 없음, `.env`/토큰류는 RunPod 환경변수로만 주입),
+     내키지 않으면 RunPod Pod 생성 화면의 **Container Registry Credentials**에
+     GitHub 계정명 + `read:packages` 권한 PAT(Personal Access Token)를 등록해 private
+     유지하는 방법도 있음(이제 본인 계정이라 PAT도 직접 바로 발급 가능).
 5. Container Disk: 최소 30GB 이상 권장(모델 캐시+torch/CUDA 라이브러리 용량 고려)
 6. Network Volume을 만들었으면 마운트 경로 지정 (예: `/workspace`)
 7. **Environment Variables**에 아래 값을 채운다 (`.env.example` 목록과 동일, 실제 값은
