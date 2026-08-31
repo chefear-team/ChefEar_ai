@@ -56,10 +56,18 @@ WORKDIR /app
 # README 실행 방법 그대로: requirements.txt(HF Spaces용 최소, streamlit·supabase·
 # faster-whisper 등)와 requirements-main.txt(transformers·peft·bitsandbytes·qwen-tts
 # 등 모델 로딩 스택)를 둘 다 깔아야 앱이 뜬다. torch는 cu124 인덱스로 별도 설치.
+#
+# 버전 정정(2026-08-31, 실제 빌드 실패로 확인): 팀이 검증한 torch==2.5.1/
+# torchvision==0.20.1/torchaudio==2.5.1 조합은 Python 3.11/3.12용 휠만 있고
+# cu124+Python 3.13(cp313) 휠이 없다 - torchvision 0.20.1은 cp313 빌드 자체가
+# 없어서 첫 빌드가 "No matching distribution" 에러로 실패했다(GitHub Actions run
+# #1 로그). download.pytorch.org/whl/cu124/{torch,torchvision,torchaudio}/ 인덱스를
+# 직접 확인한 결과 cu124+cp313 휠이 존재하는 건 torch 2.6.0 / torchvision 0.21.0 /
+# torchaudio 2.6.0 조합뿐(공식 릴리스 매트릭스상 서로 짝도 맞음) - 그래서 이걸로 올림.
 COPY requirements.txt requirements-main.txt ./
 RUN python -m pip install --upgrade pip \
     && python -m pip install \
-        torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+        torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
         --index-url https://download.pytorch.org/whl/cu124 \
     && python -m pip install -r requirements.txt -r requirements-main.txt
 
