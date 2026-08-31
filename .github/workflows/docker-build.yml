@@ -6,7 +6,7 @@ name: Build & Push RunPod Image
 
 on:
   push:
-    branches: [seunguk]
+    branches: [main]
     paths:
       - Dockerfile
       - docker/**

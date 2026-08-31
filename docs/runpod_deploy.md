@@ -41,9 +41,15 @@ git commit -m "RunPod 배포용 Dockerfile/entrypoint 추가"
 git push origin seunguk
 ```
 
-이 push가 GitHub Actions 빌드를 자동으로 트리거한다 — **Actions 탭에서 빌드가 끝날 때까지
-기다렸다가(수 분~수십 분)** 3단계로 넘어갈 것. 그 전에 RunPod에 이미지 주소를 넣어봐야
-아직 없는 이미지라 실패한다.
+**정정(2026-08-31)**: `docker-build.yml`의 자동 트리거 브랜치를 `seunguk`에서 **`main`**으로
+바꿨다 — `seunguk`에 아무리 push해도 이제 자동으로는 안 돈다. `seunguk`처럼 트리거 브랜치가
+아닌 곳에서 테스트하려면 GitHub 웹 **Actions → Build & Push RunPod Image → Run workflow**
+버튼(우측 상단)에서 브랜치를 `seunguk`로 선택해 수동 실행(`workflow_dispatch`)한다. 이
+Dockerfile/워크플로가 실제로 `main`에 병합되기 전까지는 이 수동 실행 방식만 쓴다.
+
+push든 수동 실행이든 트리거되면 GitHub Actions가 빌드를 시작한다 — **Actions 탭에서
+빌드가 끝날 때까지 기다렸다가(첫 빌드는 캐시가 없어 30분 안팎)** 3단계로 넘어갈 것.
+그 전에 RunPod에 이미지 주소를 넣어봐야 아직 없는 이미지라 실패한다.
 
 **레포 설정 확인 필요(push 전에 한 번, GitHub 웹에서)**: Settings → Actions → General →
 Workflow permissions가 "Read and write permissions"로 되어있어야 GITHUB_TOKEN으로
