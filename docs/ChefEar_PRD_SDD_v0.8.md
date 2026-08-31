@@ -5,7 +5,7 @@ STT/TTS 도메인 파인튜닝 기반 음성 레시피 진행·등록 에이전�
 | 항목 | 내용 |
 | --- | --- |
 | 프로젝트 | 메인 프로젝트 — 딥러닝 기반 TTS·STT 서비스 |
-| 팀 규모 | 3인 — 김승욱, 홍민하, 하주성 |
+| 팀 규모 | 2인 — 김승욱, 홍민하 |
 | 작성자 | 김승욱 |
 | 착수일 | 2026-08-14 |
 | 기준일 | 2026-08-28 (현재 배포·실사용 중인 소스 기준으로 전면 재작성 — 계정/재료대체 제거, 관리자 승인·화자검증 2FA 반영) |
@@ -497,4 +497,4 @@ sentence-transformers(jhgan/ko-sroberta-multitask)로 사용자 발화를 벡터
 | --- | --- | --- |
 | 오케스트레이션/통합(조장) | 김승욱 | 의도분류, 단계 진행·등록·관리자 승인 로직, Supabase 연동, 배포·통합 |
 | TTS 파인튜닝/UI | 홍민하 | Qwen3-TTS-12Hz-1.7B + KSS 파인튜닝, Streamlit UI 구현 |
-| STT 파인튜닝 | 하주성 | Whisper Small·wav2vec2 비교 실험, whisper-large-v3-turbo QLoRA 파인튜닝, WER/CER 평가 |
+| STT 파인튜닝 | 김승욱 | Whisper Small·wav2vec2 비교 실험, whisper-large-v3-turbo QLoRA 파인튜닝, WER/CER 평가 |

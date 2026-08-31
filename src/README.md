@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `orchestration/` | 김승욱 | 완성 — `pipeline.py`에 `handle_utterance()`(STT→의도분류→라우팅) 포함. 재료대체(`substitution.py`)·계정(`auth.py`/`identity.py`)은 2026-08-27 삭제, 관리자 화자검증(`speaker_verify.py`)은 2026-08-28 신규 | [orchestration/README.md](orchestration/README.md) |
 | `llm/` | 김승욱 | 로컬 LLM(EXAONE-3.5-2.4B-Instruct)을 GPU 데스크탑 프로세스 안에 직접 로드해서 요리명 추출·등록의도 판단을 보조. 외부 API 아님(AGENTS.md 절대 원칙 참고) | [llm/README.md](llm/README.md) |
-| `stt/` | 하주성 | 모델 확정(whisper-large-v3-turbo) + 파인튜닝·평가 완료. 배포용 `stt_transcribe()`(faster-whisper/CTranslate2 int8)가 실사용 중이며, 환각(hallucination) 방어(상투구 블록리스트 + no_speech_prob 임계값)가 2026-08-28 추가됨 | [stt/README.md](stt/README.md) |
+| `stt/` | 김승욱 | 모델 확정(whisper-large-v3-turbo) + 파인튜닝·평가 완료. 배포용 `stt_transcribe()`(faster-whisper/CTranslate2 int8)가 실사용 중이며, 환각(hallucination) 방어(상투구 블록리스트 + no_speech_prob 임계값)가 2026-08-28 추가됨 | [stt/README.md](stt/README.md) |
 | `tts/` | 홍민하 | 파인튜닝 완료(HF Hub 업로드, 13에포크 체크포인트). `infer.py`의 `tts_synthesize()`가 실사용 중, `max_new_tokens`는 문장 길이 비례 동적 계산 | [tts/README.md](tts/README.md) |
 | `ui/`(`src/ui/`) | 홍민하 | 실서비스 화면 컴포넌트 9개 모듈(session/voice_io/dispatch/recipe_view + screens 5개: cooking/register/admin/admin_auth/admin_enroll). 관리자 화면(`screens/admin*.py`)은 일반 흐름과 완전히 분리된 별도 Streamlit 페이지 | [ui/README.md](ui/README.md) |
 
