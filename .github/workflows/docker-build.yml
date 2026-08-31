@@ -6,9 +6,12 @@ name: Build & Push RunPod Image
 
 on:
   push:
-    # TODO(임시): main엔 아직 이 워크플로 파일이 없어 workflow_dispatch 버튼이 안 뜬다.
-    # seunguk의 Dockerfile 최적화(멀티스테이지) 검증 끝나면 [main]만 남기고 이 줄 제거할 것.
-    branches: [main, seunguk]
+    # main에 병합된 변경사항만 이미지로 빌드한다(요청에 따름, 2026-08-31) - seunguk 등
+    # 작업 브랜치에 push할 때마다 매번 30분 가까이 걸리는 빌드가 도는 걸 막기 위함.
+    # seunguk 등 비-main 브랜치에서 Dockerfile을 다시 검증해야 하면, main에 이 워크플로
+    # 파일이 있어야 뜨는 Actions 웹의 "Run workflow"(workflow_dispatch) 버튼으로 브랜치를
+    # 선택해 수동 실행한다(docs/runpod_deploy.md 참고).
+    branches: [main]
     paths:
       - Dockerfile
       - docker/**
@@ -16,6 +19,15 @@ on:
       - requirements-main.txt
       - .dockerignore
       - .github/workflows/docker-build.yml
+      # 앱 코드/설정 - 이게 빠져있으면 소스만 고쳐서 push해도 이미지가 재빌드 안 되고
+      # GHCR엔 예전 코드가 그대로 남는다(2026-08-31 발견). Dockerfile이 COPY . .로
+      # 통째로 복사하는 만큼, 실제로 이미지에 들어가는(=.dockerignore에 안 걸리는)
+      # 최상위 디렉터리들을 여기 맞춰 나열한다.
+      - src/**
+      - ui/**
+      - db/**
+      - data/**
+      - .streamlit/**
   workflow_dispatch: {}
 
 jobs:
