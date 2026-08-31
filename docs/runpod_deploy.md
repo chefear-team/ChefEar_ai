@@ -19,23 +19,38 @@ Dockerfile의 `docker/entrypoint.sh`가 cloudflared+Streamlit을 자동으로 �
 - `.dockerignore` — `models/`, `result_test*/`, `_work_backups/` 등 수 GB짜리 로컬 산출물을
   빌드 컨텍스트에서 제외(대부분 `.gitignore`에도 있어 원격 레포엔 원래 없음).
 - `.streamlit/config.toml` — `headless=true`, `address=0.0.0.0`, `port=8501` 추가.
+- `.github/workflows/docker-build.yml` — **정정**: RunPod Pod는 GitHub 레포/Dockerfile을
+  직접 빌드하지 못한다(그건 Serverless 전용 기능, Pod는 이미 빌드된 이미지 URL만 받음).
+  대신 이 워크플로가 `seunguk` 브랜치에 push될 때마다(또는 수동 실행) 이미지를 빌드해서
+  `ghcr.io/minhahamin/cookear_ai:latest`에 올려둔다 — RunPod엔 이 이미지 주소만
+  붙여넣으면 되고 로컬 Docker는 필요 없다.
 
 **아직 검증 안 된 부분(첫 배포 때 반드시 확인)**: 이 Dockerfile로 실제 빌드/실행을 아직
 한 번도 안 해봤다. 특히 (1) Python 3.13 소스 빌드가 이 베이스 이미지에서 그대로
 성공하는지, (2) `libcublas.so.12` 문제(run_local.sh 주석 참고)가 CUDA 12.4 베이스에서도
-재현되는지는 RunPod 빌드 로그/첫 Start 로그로 직접 확인해야 한다. 실패하면 로그 그대로
-가져오면 같이 고친다.
+재현되는지, (3) GitHub Actions 러너 디스크 용량이 이 빌드(CUDA devel+torch+Python
+소스빌드)에 충분한지는 실제 Actions 로그/RunPod 첫 Start 로그로 직접 확인해야 한다.
+실패하면 로그 그대로 가져오면 같이 고친다.
 
 ## 1. 이 변경사항을 원격 레포에 올리기 (여기까지만 로컬에서 명령어 입력)
 
 ```bash
 cd "C:\Users\Wook\Desktop\data\porject\proj1-a"
-git add Dockerfile docker/entrypoint.sh .dockerignore .streamlit/config.toml docs/runpod_deploy.md
+git add Dockerfile docker/entrypoint.sh .dockerignore .streamlit/config.toml docs/runpod_deploy.md .github/workflows/docker-build.yml
 git commit -m "RunPod 배포용 Dockerfile/entrypoint 추가"
 git push origin seunguk
 ```
 
-이후 과정은 전부 Cloudflare 대시보드 + RunPod 콘솔에서만 진행한다(로컬 스크립트 실행 없음).
+이 push가 GitHub Actions 빌드를 자동으로 트리거한다 — **Actions 탭에서 빌드가 끝날 때까지
+기다렸다가(수 분~수십 분)** 3단계로 넘어갈 것. 그 전에 RunPod에 이미지 주소를 넣어봐야
+아직 없는 이미지라 실패한다.
+
+**레포 설정 확인 필요(push 전에 한 번, GitHub 웹에서)**: Settings → Actions → General →
+Workflow permissions가 "Read and write permissions"로 되어있어야 GITHUB_TOKEN으로
+GHCR에 push가 된다. 기본값이 "Read repository contents" only인 경우가 많아서, 안 되어
+있으면 이 워크플로의 GHCR push 단계가 403으로 실패한다.
+
+이후 과정은 전부 GitHub/Cloudflare 대시보드 + RunPod 콘솔에서만 진행한다(로컬 스크립트 실행 없음).
 
 ## 2. Cloudflare Zero Trust — 터널 토큰 발급
 
@@ -60,9 +75,16 @@ git push origin seunguk
 2. (선택, 권장) **Storage → Network Volumes**에서 볼륨 생성(예: 20GB) — HF 모델 캐시를
    여기 두면 나중에 GPU 타입을 바꾸거나 Pod를 새로 만들어도 모델을 다시 안 받는다.
 3. **Pods → Deploy** → GPU: **A40 (48GB)** 선택
-4. 이미지 소스: **GitHub 연동 빌드** 선택 → 이 레포(`minhahamin/cookEar_ai`, `seunguk`
-   브랜치) 연결, Dockerfile 경로는 루트의 `Dockerfile` 그대로. (GitHub 계정이 레포
-   소유자(홍민하)면 collaborator 초대가 먼저 필요할 수 있다.)
+4. 이미지 소스: **Custom Container / Docker Image** 선택 → Container Image에
+   `ghcr.io/minhahamin/cookear_ai:latest` 입력 (1단계 push로 GitHub Actions가
+   빌드해둔 이미지, repo명의 대문자는 GHCR 규칙상 소문자로 변환돼 있음에 주의)
+   - GHCR 패키지가 기본 private이면 RunPod가 이미지를 못 받아온다. 가장 간단한 방법은
+     GitHub 프로필 → **Packages** → `cookear_ai` 패키지 → **Package settings** →
+     Change visibility → **Public**으로 바꾸는 것 (이미지 안에는 시크릿이 전혀 없고
+     `.env`/토큰류는 전부 RunPod 환경변수로만 주입하니 공개해도 안전). private을
+     유지하고 싶으면 RunPod Pod 생성 화면의 **Container Registry Credentials**에
+     GitHub 계정명 + `read:packages` 권한 PAT(Personal Access Token)를 등록하는 방법도
+     있음.
 5. Container Disk: 최소 30GB 이상 권장(모델 캐시+torch/CUDA 라이브러리 용량 고려)
 6. Network Volume을 만들었으면 마운트 경로 지정 (예: `/workspace`)
 7. **Environment Variables**에 아래 값을 채운다 (`.env.example` 목록과 동일, 실제 값은
