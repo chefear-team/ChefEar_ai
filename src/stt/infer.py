@@ -950,16 +950,15 @@ def stt_transcribe(
             flush=True,
         )
 
-    # 2026-08-25 추가 — STT/LLM/TTS/임베딩(classify_intent) 넷 다 같은 12GB GPU를
-    # 공유하는데, 모델 가중치는 셋 다 상주(재로딩 비용 커서 언로드 안 함, docs 참고)라
-    # 유휴 상태에서도 VRAM이 11GB대까지 차 있는 게 실측 확인됐다(여유 500MB 미만).
-    # 이 여유가 거의 없는 상태에서 추론 한 번마다 남는 활성화/중간 버퍼(가중치 자체는
-    # 아님)를 torch의 캐싱 allocator가 계속 쥐고 있으면, 다음 호출의 임시 할당이
-    # 실패/재시도하며 멎는 것으로 의심된다("Queue overflow" 반복 + GPU 사용률은 idle인
-    # 채로 응답이 하나도 안 잡히는 리포트, 2026-08-24/25). 가중치는 그대로 두고
-    # (재로딩 없음, 지연 없음) 이번 추론이 남긴 미사용 캐시 블록만 반환한다.
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    # 2026-09-01 — 이 자리에 있던 매 호출마다의 torch.cuda.empty_cache() 제거.
+    # orchestration/intent_classifier.py::classify_intent()의 같은 날짜 주석에 이유를
+    # 자세히 적어뒀다(요약: "12GB GPU 공유, 여유 500MB 미만"이던 전제가 A40 48GB +
+    # gpu_worker_pool 멀티프로세스 구조로 더 이상 유효하지 않음 — 실측: 워커당 여유
+    # 약 3~4GB). empty_cache()는 CUDA 동기화를 강제하는 안티패턴이라 매 발화마다 이
+    # 비용을 지불할 이유가 없다. 되돌리는 법: 바로 위 문단이 설명하는 그 증상
+    # ("Queue overflow" 반복 + GPU idle인데 응답 안 잡힘)이 재현되면 이 커밋을
+    # 되돌리거나 아래 두 줄을 복원할 것 — if torch.cuda.is_available():
+    # torch.cuda.empty_cache()
     if not text:
         return text
 

@@ -201,11 +201,20 @@ def classify_intent(utterance: str, context_recipe_id: str | None = None) -> dic
     # 노이즈를 안 타게 한다 — chat_log 표시나 다른 후처리에 쓰는 원본 utterance는 그대로 둔다.
     normalized = utterance.strip().rstrip("?!.,~ ")
     query_embedding = _get_model().encode([normalized or utterance], normalize_embeddings=True)[0]
-    # 2026-08-25 — src/stt/infer.py::stt_transcribe()와 같은 이유(그쪽 주석 참고) — STT/
-    # LLM/TTS/임베딩(이 함수)이 12GB GPU를 같이 써서 유휴 상태에도 VRAM 여유가 500MB
-    # 미만이다. 가중치는 그대로 두고(재로딩 없음) 이번 encode()가 남긴 미사용 캐시만 반환한다.
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    # 2026-08-25 — 이 자리에 있던 매 호출마다의 torch.cuda.empty_cache() 제거(2026-09-01).
+    # 원래 이유는 "STT/LLM/TTS/임베딩이 12GB GPU를 같이 써서 유휴 상태에도 VRAM 여유가
+    # 500MB 미만"이었는데(그때 그 전제로 stt/infer.py 등 4곳에 나란히 넣었던 방어 코드),
+    # RunPod A40(48GB) + gpu_worker_pool 멀티프로세스 구조로 옮긴 뒤 실측 확인(2026-09-01,
+    # 승욱님 실측 — 워커 3개 합쳐 36~38GB 사용, 워커당 여유 약 3~4GB)한 결과 그 전제
+    # 자체가 더 이상 유효하지 않다. empty_cache()는 PyTorch에서 잘 알려진 안티패턴이다 —
+    # CUDA 동기화를 강제해서 그 순간 대기 중인 GPU 연산을 전부 완료시키고, 캐싱
+    # allocator가 들고 있던 블록을 드라이버에 반환했다가 다음 호출에서 다시 요청하게
+    # 만들어 오히려 느려진다(모델 가중치 자체는 안 줄어드므로 OOM 방지 효과도 크지
+    # 않음). 여유가 500MB 미만이던 절박한 상황을 벗어난 지금은 이 비용을 매 발화마다
+    # 지불할 이유가 없다. 되돌리는 법: 만약 이후에도 "Queue overflow"/GPU idle인데
+    # 응답이 안 잡히는 증상(과거 이 코드를 넣게 된 그 증상)이 재현되면, git으로 이
+    # 커밋을 되돌리거나 아래 두 줄을 복원할 것 — if torch.cuda.is_available():
+    # torch.cuda.empty_cache()
     # example_embeddings의 shape는 (예문 개수, 768), query_embedding은 (768,).
     # 행렬 @ 벡터 연산을 하면 예문 하나하나와 query 사이의 내적(=코사인 유사도,
     # 위 _example_embeddings() 설명 참고)이 한 번에 배열로 나온다. for문 없이

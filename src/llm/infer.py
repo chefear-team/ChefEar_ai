@@ -161,11 +161,14 @@ def generate_response(prompt: str, *, max_new_tokens: int = DEFAULT_MAX_NEW_TOKE
     generated = output_ids[0][input_ids.shape[-1]:]
     result = tokenizer.decode(generated, skip_special_tokens=True).strip()
 
-    # 2026-08-25 — src/stt/infer.py::stt_transcribe()와 같은 이유(그쪽 주석 참고) — STT/
-    # LLM/TTS/임베딩이 12GB GPU를 같이 써서 유휴 상태에도 VRAM 여유가 500MB 미만이다.
-    # 가중치는 그대로 두고(재로딩 없음) 이번 generate()가 남긴 미사용 캐시만 반환한다.
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    # 2026-09-01 — 이 자리에 있던 매 호출마다의 torch.cuda.empty_cache() 제거.
+    # orchestration/intent_classifier.py::classify_intent()의 같은 날짜 주석에 이유를
+    # 자세히 적어뒀다(요약: "12GB GPU 공유, 여유 500MB 미만"이던 전제가 A40 48GB +
+    # gpu_worker_pool 멀티프로세스 구조로 더 이상 유효하지 않음 — 실측: 워커당 여유
+    # 약 3~4GB). empty_cache()는 CUDA 동기화를 강제하는 안티패턴이라 매 발화마다 이
+    # 비용을 지불할 이유가 없다. 되돌리는 법: OOM/Queue overflow 증상 재현 시 이
+    # 커밋을 되돌리거나 아래 두 줄을 복원할 것 — if torch.cuda.is_available():
+    # torch.cuda.empty_cache()
 
     return result
 
