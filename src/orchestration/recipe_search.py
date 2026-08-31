@@ -328,10 +328,20 @@ def find_more_specific_containing_name(dish_name: str, utterance: str, client=No
     client = client or get_client()
     text_no_space = re.sub(r"\s+", "", utterance)
     names = _all_dish_names(client)
+    # 2026-09-01 버그 수정 — utterance는 공백을 지우고 비교하면서(text_no_space) DB에서
+    # 온 후보 name은 공백을 그대로 둔 채 "in text_no_space"로 비교하고 있었다. DB
+    # 요리명 자체에 내부 공백이 있으면(예: "10분 잡채") 공백 없는 발화 문자열과 절대
+    # substring이 안 맞아서 이 함수가 항상 조용히 실패했다(승격을 못 해서 "10분잡채"라고
+    # 말해도 먼저 찾은 "잡채"에 그대로 머묾) — 실측 재현(2026-09-01, "10분 잡채 알려줘"
+    # -> "잡채" 레시피가 나옴). 이 함수 docstring 자체가 "공백만 무시"라고 명시하고
+    # 있으니 양쪽 다 공백을 지우고 비교해야 그 설명대로 동작한다.
     candidates = [
         name
         for name in names
-        if name and len(name) > len(dish_name) and dish_name in name and name in text_no_space
+        if name
+        and len(name) > len(dish_name)
+        and dish_name in name
+        and re.sub(r"\s+", "", name) in text_no_space
     ]
     if candidates:
         return max(candidates, key=len)

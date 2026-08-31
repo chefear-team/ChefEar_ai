@@ -64,6 +64,27 @@ class MicVadSegmenter:
             min_silence_duration_ms=min_silence_duration_ms,
         )
 
+        # 2026-09-01 — threshold를 "감으로 찍어서 몇 번씩 재배포/재시도"하는 대신,
+        # VADIterator가 매 청크(32ms)마다 실제로 계산하는 "발화 확률"을 직접 실측해서
+        # 한 번에 근거 있는 값을 정하기 위한 진단 로그. 모델을 별도로 한 번 더 호출하면
+        # (같은 청크를 두 번 넣는 셈) VADIterator 내부의 시계열 상태(RNN류라 청크 순서에
+        # 의존)가 꼬일 위험이 있어서, 그 대신 self._iterator.model 호출 자체를 얇게
+        # 감싸서(원래 결과를 그대로 반환하며 곁다리로 로그만 남김) VADIterator가 실제
+        # 판정에 쓰는 바로 그 확률값을 가로챈다 — 동작은 1바이트도 안 바뀐다.
+        # VAD_DEBUG=1일 때만 켜진다(청크마다 찍혀서 평소엔 로그 스팸이라 기본은 끔).
+        if os.environ.get("VAD_DEBUG"):
+            _real_model = self._iterator.model
+
+            def _debug_model(*args, **kwargs):
+                prob_tensor = _real_model(*args, **kwargs)
+                try:
+                    print(f"[VAD_DEBUG] prob={prob_tensor.item():.3f} threshold={threshold}", flush=True)
+                except Exception:  # noqa: BLE001 — 진단 로그 실패가 실제 VAD 판정에 영향 주면 안 됨
+                    pass
+                return prob_tensor
+
+            self._iterator.model = _debug_model
+
         # 2026-08-26 요청 — "사람이 말할 때 최대 길어도 7초 이상은 넘기지 않는다"는
         # 기준으로 강제 컷오프를 추가. 이 min_silence_duration_ms(600ms) 침묵 신호가
         # 한 번도 안 뜨면(배경 소음/음악이 계속 이어지거나, silero-vad가 뭔가를 계속
