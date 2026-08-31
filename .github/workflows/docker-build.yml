@@ -6,7 +6,9 @@ name: Build & Push RunPod Image
 
 on:
   push:
-    branches: [main]
+    # TODO(임시): main엔 아직 이 워크플로 파일이 없어 workflow_dispatch 버튼이 안 뜬다.
+    # seunguk의 Dockerfile 최적화(멀티스테이지) 검증 끝나면 [main]만 남기고 이 줄 제거할 것.
+    branches: [main, seunguk]
     paths:
       - Dockerfile
       - docker/**
