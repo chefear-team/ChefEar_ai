@@ -19,13 +19,12 @@ pinned: false
 |---|---|
 | 프로젝트 | ChefEar (AI Human 7기 A조) |
 | 조장 | 김승욱 |
-| 조원 | 홍민하, 하주성 |
+| 조원 | 홍민하 |
 
 | 이름 | GitHub | 역할 | 담당 업무 |
 |---|---|---|---|
-| 김승욱 | [@seungwook-kim](https://github.com/seungwook-kim) | 조장 / 오케스트레이션·통합 | 의도분류, 단계 진행 로직, Supabase 검색, 배포 및 통합테스트 |
+| 김승욱 | [@seungwook-kim](https://github.com/seungwook-kim) | 조장 / 오케스트레이션·통합 · STT 파인튜닝 | 의도분류, 단계 진행 로직, Supabase 검색, 배포 및 통합테스트 · Whisper Small·wav2vec2 비교 실험, whisper-large-v3-turbo QLoRA 파인튜닝, Fixed100/New500 WER·CER 평가 및 최종 STT 모델 선정 |
 | 홍민하 | [@minhahamin](https://github.com/minhahamin) | TTS 파인튜닝 / UI | Qwen3-TTS-12Hz-1.7B + KSS 학습 환경 구성 및 파인튜닝, Streamlit UI 구현 |
-| 하주성 | [@leeony2636](https://github.com/leeony2636) | STT 파인튜닝 | Whisper Small·wav2vec2 비교 실험, whisper-large-v3-turbo QLoRA 파인튜닝, Fixed100/New500 WER·CER 평가 및 최종 STT 모델 선정 |
 
 ## 🟢 배포 상태
 

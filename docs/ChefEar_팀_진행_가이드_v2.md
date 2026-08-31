@@ -85,7 +85,7 @@ proj1-a/
 │   │   ├── mock_client.py                # 로컬 개발용 가짜 클라이언트
 │   │   └── load_data.py                  # 표준 레시피 CSV → Supabase 적재 스크립트
 │   ├── llm/infer.py                  # 로컬 LLM(EXAONE) 로드·추론
-│   ├── stt/                          # 하주성 담당
+│   ├── stt/                          # 김승욱 담당
 │   │   ├── infer.py                      # 배포용 STT 추론(faster-whisper, CTranslate2 int8) — 환각 방어 포함
 │   │   ├── export_ct2.py                 # 파인튜닝 체크포인트 → CTranslate2 변환(오프라인 1회)
 │   │   ├── prepare_data.py / finetune_whisper.py  # 학습 데이터 준비·QLoRA 파인튜닝
@@ -141,7 +141,7 @@ proj1-a/
 | --- | --- | --- |
 | 오케스트레이션/통합(조장) | 김승욱 | 의도분류, 기준 예문 세트 관리, 등록·관리자 승인 로직, 로컬 LLM 연동, Supabase 연동·적재, 배포, 통합테스트 |
 | TTS 파인튜닝/UI | 홍민하 | Qwen3-TTS-12Hz-1.7B + KSS 학습·파인튜닝, Streamlit UI 구현 |
-| STT 파인튜닝 | 하주성 | Whisper Small·wav2vec2 비교 실험, whisper-large-v3-turbo QLoRA 파인튜닝, WER/CER 평가 및 최종 모델 선정 |
+| STT 파인튜닝 | 김승욱 | Whisper Small·wav2vec2 비교 실험, whisper-large-v3-turbo QLoRA 파인튜닝, WER/CER 평가 및 최종 모델 선정 |
 
 ---
 
