@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# RunPod Pod의 컨테이너 시작 시(=Pod Start 버튼) 자동 실행되는 진입점.
+# Pod를 Stop하면 이 프로세스와 함께 cloudflared·Streamlit 둘 다 같이 내려간다.
+# 즉 로컬에서 run_local.sh 같은 걸 따로 실행할 필요가 없다 - RunPod 콘솔의
+# Start/Stop이 전부다 (docs/runpod_deploy.md 참고).
+set -euo pipefail
+
+# ---- ctranslate2(faster-whisper)의 libcublas.so.12 워크어라운드 ----
+# run_local.sh가 팀 데스크탑에서 쓰던 것과 같은 방식: pip가 설치한 nvidia-*-cu12
+# 패키지들의 lib 디렉터리를 LD_LIBRARY_PATH에 얹는다. Dockerfile을 CUDA 12.4
+# 베이스로 맞춰서 이 문제가 애초에 안 생길 가능성이 높지만, 혹시 재현되더라도
+# 바로 대응 가능하게 방어적으로 남겨둔다.
+NVIDIA_LIB_DIR="$(python -c 'import nvidia, os; print(os.path.dirname(nvidia.__file__))' 2>/dev/null || true)"
+if [ -n "$NVIDIA_LIB_DIR" ]; then
+    EXTRA_LIBS="$(echo "$NVIDIA_LIB_DIR"/*/lib 2>/dev/null | tr ' ' ':')"
+    export LD_LIBRARY_PATH="${EXTRA_LIBS}:${LD_LIBRARY_PATH:-}"
+fi
+
+# ---- Cloudflare Tunnel ----
+# 방식 A(권장) - Cloudflare Zero Trust 대시보드에서 만든 원격관리형 터널의 토큰을
+#   CLOUDFLARE_TUNNEL_TOKEN 환경변수로 RunPod Pod 설정에 넣어두면 그걸로 붙는다.
+#   Public Hostname(chefear.store -> http://localhost:8501) 라우팅도 같은 대시보드
+#   화면에서 설정 - 로컬 파일이 전혀 필요 없다.
+# 방식 B - 기존에 CLI(cloudflared tunnel create)로 만든 로컬관리형 터널이면
+#   credentials.json + config.yml을 RunPod Network Volume에 올려두고 경로를 알려준다.
+if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
+    echo "[entrypoint] cloudflared: 토큰 방식으로 터널 실행" >&2
+    cloudflared tunnel run --token "${CLOUDFLARE_TUNNEL_TOKEN}" &
+elif [ -f "${CLOUDFLARED_CONFIG:-/workspace/cloudflared/config.yml}" ]; then
+    echo "[entrypoint] cloudflared: config.yml 방식으로 터널 실행 (${CLOUDFLARED_CONFIG:-/workspace/cloudflared/config.yml})" >&2
+    cloudflared tunnel --config "${CLOUDFLARED_CONFIG:-/workspace/cloudflared/config.yml}" run &
+else
+    echo "[entrypoint] 경고: CLOUDFLARE_TUNNEL_TOKEN도 config.yml도 없음 - cloudflared를 안 띄웁니다." \
+        "chefear.store 연결 없이 RunPod 프록시 URL로만 접근 가능합니다." >&2
+fi
+
+# cloudflared가 백그라운드에서 죽으면(&) 컨테이너가 조용히 터널 없이 계속 도는 걸
+# 막기 위해 짧게 기동을 기다렸다가 살아있는지 한 번 확인한다.
+sleep 3
+if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}${CLOUDFLARED_CONFIG:-}" ] && ! jobs %% >/dev/null 2>&1; then
+    echo "[entrypoint] 경고: cloudflared가 시작 직후 종료된 것으로 보입니다 - 로그를 확인하세요." >&2
+fi
+
+# ---- Streamlit (포그라운드 - 이 프로세스가 컨테이너의 생명주기가 된다) ----
+exec python -m streamlit run src/app.py
