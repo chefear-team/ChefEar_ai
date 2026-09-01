@@ -24,8 +24,12 @@ from ui.session import goto, login as session_login, persist_local_session
 
 
 def screen_login() -> None:
-    if render_back_link("처음 화면으로"):
-        goto("start")
+    # 2026-09-01 요청 — 로그인 화면에서 "처음 화면으로" 뒤로가기 링크 주석 처리
+    # (로그인을 첫 화면으로 삼은 이상 이 화면에서 굳이 비로그인 우회로를 보여줄
+    # 필요가 없다는 판단). app.py 쪽 로그인 아이콘 버튼도 이 화면에서만 같이 뺐다
+    # (app.py::main()의 render_brand() 호출부 참고).
+    # if render_back_link("처음 화면으로"):
+    #     goto("start")
     render_spacer()
     st.markdown("**로그인**")
 
@@ -119,3 +123,12 @@ def handle_google_login_if_returned() -> None:
         return
     user = auth.login_or_create_google(st.user.sub, st.user.email, client=get_client())
     session_login(user)
+    # 2026-09-01 — 로컬 로그인/회원가입(session_login 직후 goto("start"))과 달리
+    # 구글 로그인은 st.login() 리다이렉트로 돌아온 뒤라 화면 상태가 리다이렉트 전
+    # 그대로(대개 "login")였다 — current_user는 채워지는데 화면은 안 넘어가서
+    # 로그인 화면에 그대로 머무는 버그(사용자 리포트, 2026-09-01)가 있었다. 여기서도
+    # goto()를 그대로 쓰면 이 함수 자체가 main()의 화면 렌더링보다 앞에서 호출되는
+    # 도중에 st.rerun()이 걸려버려 이번 rerun에서 하려던 나머지 초기화(restore_local_
+    # session 등)를 건너뛰게 된다 — goto() 대신 세션 상태만 "start"로 바꿔서, 이번
+    # rerun은 그대로 이어가고 그 결과로 그려질 화면만 바꾼다.
+    st.session_state.screen = "start"

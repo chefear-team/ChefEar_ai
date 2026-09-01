@@ -358,7 +358,14 @@ def main() -> None:
     # 재도입했다. 관리자 접근은 이 버튼과 무관하게 별도 게이트(admin_recipe_approval.md)로
     # 그대로 유지.
     _current_user = st.session_state.get("current_user")
-    _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
+    if st.session_state.screen == "login":
+        # 2026-09-01 요청 — 로그인 화면 자체에서는 로고 옆 로그인 아이콘 버튼이
+        # 불필요하다(이미 로그인 화면이라 눌러도 갈 곳이 없음) 해서 뺀다. 다른
+        # 화면은 전부 기존대로 show_login=True를 유지.
+        render_brand()
+        _brand_clicked = False
+    else:
+        _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
     if _brand_clicked:
         if _current_user:
             # 로그인 아이콘이 아이디로 바뀐 뒤 다시 누르면 마이레시피로 이동한다
