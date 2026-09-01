@@ -1,7 +1,7 @@
 """registration.py 테스트 — 문서 7.5 AC-06, EC-14~17."""
 from fake_supabase import FakeSupabaseClient
 
-from orchestration.registration import register_recipe, save_recipe
+from orchestration.registration import register_recipe, save_recipe, update_recipe
 
 
 def test_ac06_full_flow_confirms_and_saves_as_user_custom():
@@ -68,6 +68,44 @@ def test_ac04_owner_id_reflected_when_logged_in_and_null_when_not():
 
     assert client.table("recipes").rows[logged_in["recipe_id"]]["owner_id"] == "sha256-user-id"
     assert client.table("recipes").rows[anonymous["recipe_id"]]["owner_id"] is None
+
+
+def test_ac02_update_recipe_replaces_steps_and_keeps_recipe_id():
+    """docs/specs/my_recipes.md AC-02 — 조리순서가 3단계에서 2단계로 줄어도 UPDATE되고
+    (새 recipe_id로 insert되지 않음), recipe_steps는 옛 3단계가 전부 사라지고 새
+    2단계만 남는다."""
+    client = FakeSupabaseClient()
+    saved = save_recipe("김치찌개", ["김치", "돼지고기"], ["1단계", "2단계", "3단계"], client=client)
+    recipe_id = saved["recipe_id"]
+
+    result = update_recipe(
+        recipe_id, "김치찌개 ", ["김치"], ["새 1단계", "새 2단계"], client=client
+    )
+
+    assert result == {"recipe_id": recipe_id, "updated": True}
+    assert len(client.table("recipes").rows) == 1  # 새로 insert 안 됨, 같은 행 그대로
+    row = client.table("recipes").rows[recipe_id]
+    assert row["dish_name"] == "김치찌개"  # _normalize_dish_name()으로 trailing 공백 제거
+    assert row["ingredients"] == "김치"
+
+    steps = sorted(
+        (r for r in client.table("recipe_steps").rows.values() if r["recipe_id"] == recipe_id),
+        key=lambda r: r["step_number"],
+    )
+    assert [s["step_text"] for s in steps] == ["새 1단계", "새 2단계"]
+
+
+def test_update_recipe_preserves_owner_id_and_approved():
+    """update_recipe()는 recipes 행을 UPDATE만 하지 owner_id/approved는 안 건드린다."""
+    client = FakeSupabaseClient()
+    saved = save_recipe("된장찌개", ["두부"], ["끓인다"], client=client, owner_id="sha256-user-id")
+    recipe_id = saved["recipe_id"]
+
+    update_recipe(recipe_id, "된장찌개", ["두부", "감자"], ["끓인다"], client=client)
+
+    row = client.table("recipes").rows[recipe_id]
+    assert row["owner_id"] == "sha256-user-id"
+    assert row["approved"] == "N"  # save_recipe()가 넣은 값 그대로, update_recipe()가 안 바꿈
 
 
 def test_register_recipe_confirm_passes_owner_id_through_to_save_recipe():

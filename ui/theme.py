@@ -145,6 +145,25 @@ footer { visibility: hidden; }
    stVerticalBlock에서 실측 확인함). shrink:0으로 고정하면 콘텐츠가 짧을 때 grow:1로
    남는 공간을 채우는 동작은 그대로 유지하면서, 콘텐츠가 길어져도 절대 안 찌그러진다. */
 .block-container > [data-testid="stVerticalBlock"] { flex: 1 0 auto !important; }
+/* 2026-09-01 — my_recipes 빈 목록 화면의 render_spacer() 위아래 감싸기(아래 .ce-spacer
+   규칙 참고, "화면 크기 상관없이 정가운데"를 만드는 방식)가 실사용에서 전혀 안 먹혔다
+   (사용자 리포트 — 아이콘이 헤더 바로 아래에 붙어 있고 안 내려감). Playwright로 실제
+   DOM/computed style을 찍어서 확인한 원인: app.py::main()의 st.container(key=f"screen_
+   {screen}")는 stVerticalBlock 하나가 아니라 그걸 감싸는 stLayoutWrapper까지 한 겹 더
+   생긴다(위 "order:0" 수정에 쓰인 [data-testid="stLayoutWrapper"]:has(...) 규칙과 같은
+   구조). 안쪽 stVerticalBlock에 flex:1을 줘봐야, 그 부모인 stLayoutWrapper 자체가
+   flex-grow:0라 자기 콘텐츠 높이(예: 372px)만큼만 차지하고 그 위 조상(792px짜리 큰
+   stVerticalBlock)이 남겨준 나머지 공간을 안 물려준다 — 그러면 안쪽에 flex:1을 줘도
+   나눠 가질 "남는 공간" 자체가 없다. stLayoutWrapper 쪽에 직접 flex:1을 줘야 진짜
+   늘어난다. */
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_my_recipes"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_edit_recipe"]) {
+  flex: 1 0 auto !important;
+}
+[data-testid="stVerticalBlock"][class*="st-key-screen_my_recipes"],
+[data-testid="stVerticalBlock"][class*="st-key-screen_edit_recipe"] {
+  flex: 1 0 auto !important; display: flex !important; flex-direction: column !important;
+}
 /* .ce-spacer 자체에 flex:1을 줘도 소용없다 - 실제로 stVerticalBlock의 flex 아이템인 건
    .ce-spacer의 4단계 위 조상인 stElementContainer이고, .ce-spacer는 그 안에 block으로
    납작하게 들어있는 손자뻘이라 flex:1이 그 자리에서 먹히지 않는다(DOM 구조를 실제로
@@ -283,7 +302,18 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 
 /* start 화면 상단 로그인 버튼 - 자기 칸 안에서 왼쪽에 붙어있던 걸 오른쪽 끝으로 민다. */
 [data-testid="stVerticalBlock"][class*="st-key-brand_login_wrap"] {
-  display: flex; align-items: flex-end; justify-content: flex-end;
+  display: flex; align-items: center; justify-content: flex-end;
+}
+/* 2026-09-01 재요청 — 로고(왼쪽 칸)와 로그인/유저 버튼(오른쪽 칸)이 서로 다른 세로
+   기준(로고는 자연스러운 위쪽 정렬, 버튼은 위 규칙으로 자기 칸 안에서 아래쪽/가운데
+   정렬)으로 떠 있어서, 구글 로그인처럼 유저명이 이메일(길어짐)이면 버튼 칸 자체의
+   높이가 달라져 로고와 어긋나 보이는 문제(사용자 리포트 — "유저 이름이 길어지면
+   유저 구역이 위로 붕 뜨는 느낌"). render_brand()가 두 칸(st.columns)을
+   st.container(key="brand_row")로 감싸도록 바꾸고, 그 안의 가로 블록 자체를
+   세로 중앙 정렬해서 두 칸의 내용물이 서로의 높이와 무관하게 항상 같은 기준선에
+   오도록 한다. */
+[class*="st-key-brand_row"] [data-testid="stHorizontalBlock"] {
+  align-items: center;
 }
 
 /* 레시피 등록 · 조리 순서 화면(register_steps)의 순서 번호 배지 - 원형 배지 + 문장,
@@ -610,6 +640,9 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
 /* 2026-09-01 — screen_signup도 render_back_link()를 맨 앞에서 부르는데(screen_login과
    같은 구조) 이 목록에 없어서 로고가 화면 맨 아래로 밀리는 게 실측 확인됐다(사용자
    리포트) — login 옆에 추가. */
+/* 2026-09-01 — screen_my_recipes/screen_edit_recipe 항목은 2026-08-27 계정 시스템
+   전체 삭제 때도 여기서 안 지워진 채 남아있던 죽은 규칙이었는데, my_recipes.md로
+   두 화면이 다시 생기면서 그대로 다시 유효해졌다(내용은 그때와 동일 — 손 안 댐). */
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_login"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_signup"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_cooking_complete"]),
@@ -712,6 +745,14 @@ ICON_QUESTION_CIRCLE = _SVG.format(
     body='<circle cx="12" cy="12" r="10"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1.3 1-1.3 1.9"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
 )
 ICON_SPARKLE = _SVG.format(size=26, body='<path d="M12 3v6M12 15v6M3 12h6M15 12h6"/>')
+# 빈 보관함(inbox) 모양 — "아직 아무것도 없음"을 나타내는 범용 empty-state 아이콘
+# (2026-09-01, 마이레시피 빈 목록 화면). ICON_BASKET은 레시피 항목 자체를 가리키는
+# 아이콘이라 "없음"의 의미가 잘 안 살아서 별도로 추가했다.
+ICON_INBOX = _SVG.format(
+    size=26,
+    body='<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>'
+    '<path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+)
 _BASKET_BODY = '<path d="M3 11h18M12 3v3M7 5v1M17 5v1"/><path d="M4 11l1.2 8.4A2 2 0 0 0 7.2 21h9.6a2 2 0 0 0 2-1.6L20 11"/>'
 ICON_BASKET = _SVG.format(size=21, body=_BASKET_BODY)
 # 재료 이름별로 식재료 이모지를 하나씩 골라줄 파서가 없는 곳(실제 Supabase 조회 재료처럼
@@ -941,17 +982,22 @@ def render_brand(show_login: bool = False, username: str | None = None) -> bool:
     if not show_login:
         st.markdown(brand_html, unsafe_allow_html=True)
         return False
-    left, right = st.columns([6, 1])
-    with left:
-        st.markdown(brand_html, unsafe_allow_html=True)
-    with right:
-        # 버튼이 자기 칸 왼쪽에 붙어서 화면 오른쪽 끝까지 안 갔다(실측 지적,
-        # 2026-08-21) - my_recipe_actions_와 같은 방식으로 감싸는 세로 블록에
-        # justify-content:flex-end를 줘서 칸 안에서 오른쪽 끝으로 민다.
-        with st.container(key="brand_login_wrap"):
-            if username:
-                return st.button(f":material/person: {username}", key="brand_login_btn", help="마이 레시피")
-            return st.button(":material/login:", key="brand_login_btn", help="로그인")
+    # 2026-09-01 — 로고 칸과 버튼 칸을 이 컨테이너로 감싸서, CSS(st-key-brand_row)가
+    # 그 안의 가로 블록을 세로 중앙 정렬할 수 있는 고유 선택자를 갖게 한다(유저명이
+    # 길어질 때 버튼 칸이 로고와 어긋나 보이던 문제 수정 — 위 CSS 주석 참고).
+    with st.container(key="brand_row"):
+        left, right = st.columns([6, 1])
+        with left:
+            st.markdown(brand_html, unsafe_allow_html=True)
+        with right:
+            # 버튼이 자기 칸 왼쪽에 붙어서 화면 오른쪽 끝까지 안 갔다(실측 지적,
+            # 2026-08-21) - my_recipe_actions_와 같은 방식으로 감싸는 세로 블록에
+            # justify-content:flex-end를 줘서 칸 안에서 오른쪽 끝으로 민다.
+            with st.container(key="brand_login_wrap"):
+                if username:
+                    label = f":material/person: {truncate_display_name(username)}"
+                    return st.button(label, key="brand_login_btn", help=username)
+                return st.button(":material/login:", key="brand_login_btn", help="로그인")
 
 
 def render_back_link(label: str = "처음으로", key: str = "ce_back_link") -> bool:
@@ -967,6 +1013,20 @@ def render_section_title(text: str) -> None:
 
 def render_badge(text: str) -> None:
     st.markdown(f'<span class="ce-badge">{text}</span>', unsafe_allow_html=True)
+
+
+# 2026-09-01 — 구글 로그인은 username에 이메일 전체(예: "hlkm1667hehe@gmail.com")가
+# 들어가서, 브랜드 상단 버튼/마이레시피 헤더 배지가 유저명 길이만큼 늘어나거나
+# 줄바꿈되는 문제가 사용자 리포트로 확인됐다(render_brand()/ui/screens/my_recipes.py::
+# screen_my_recipes() 둘 다 영향받음). 9자를 넘으면 "..."으로 생략한다(2026-09-01
+# 사용자 확정값 — 처음엔 5자였다가 너무 짧다는 재요청으로 9자로 조정).
+_DISPLAY_NAME_LIMIT = 9
+
+
+def truncate_display_name(name: str) -> str:
+    if len(name) <= _DISPLAY_NAME_LIMIT:
+        return name
+    return name[:_DISPLAY_NAME_LIMIT] + "..."
 
 
 # 2026-08-26 재요청 — 대화 기록(render_chat())에 "나: 다음...." 처럼 STT가 붙인 끝
@@ -1486,6 +1546,10 @@ _AUDIO_FREE_SCREENS = (
     # 전혀 안 쓰는 순수 폼 화면이라 register_ingredients/register_steps와 같은 부류.
     "login",
     "signup",
+    # 2026-09-01 — my_recipes/edit_recipe(ui/screens/my_recipes.py, docs/specs/
+    # my_recipes.md)도 마찬가지로 speak() 호출이 전혀 없는 순수 폼/목록 화면.
+    "my_recipes",
+    "edit_recipe",
 )
 
 # 2026-08-25 — render_screen_cleanup()이 쓰는, "텍스트 대체 입력칸을 절대 안 만드는
@@ -1519,6 +1583,10 @@ _NO_TEXT_FALLBACK_SCREENS = (
     "register_steps",
     "login",
     "signup",
+    # 2026-09-01 — my_recipes/edit_recipe도 listen() 자체를 안 부르므로(app.py 참고)
+    # 범용 텍스트 입력칸이 만들어질 일이 없다.
+    "my_recipes",
+    "edit_recipe",
 )
 
 # 2026-08-25 — fallback_buttons()와 같은 부류의 잔상을 no_match 화면에서도 실측 확인:
@@ -1657,6 +1725,9 @@ _STALE_CONTENT_MARKERS = {
     # (ui/screens/login.py::screen_login()). 이 owner 리스트에 "login"을 빠뜨리면 위
     # no_match 사례와 똑같은 증상(뒤로가기 링크를 잔상으로 오판해 화면 전체를 숨김,
     # 사용자 실사용 재현: 로그인 버튼 눌러도 브랜드 헤더 밑이 통째로 빈 화면)이 난다.
+    # 2026-09-01 — my_recipes(ui/screens/my_recipes.py, docs/specs/my_recipes.md)도
+    # 같은 문구로 render_back_link()를 화면 맨 앞에서 부른다 — 위 login과 같은 이유로
+    # 미리 owner에 추가해서 같은 버그 클래스를 재현 전에 막는다.
     "처음 화면으로": [
         "cooking_complete",
         "register_dish_name",
@@ -1664,7 +1735,12 @@ _STALE_CONTENT_MARKERS = {
         "register_steps",
         "complete",
         "login",
+        "my_recipes",
     ],
+    # edit_recipe는 "마이레시피로"라는 자기 전용 문구로 render_back_link()를 화면 맨
+    # 앞에서 부른다(signup이 "로그인 화면으로"를 쓰는 것과 같은 패턴) — 위와 같은
+    # 이유로 자기 자신을 owner로 등록해둔다.
+    "마이레시피로": ["edit_recipe"],
 }
 
 # 2026-08-25 사용자 실사용 재현 보고(버그.png) — cooking_step에서 실제 대화를 나눈 뒤
@@ -1733,7 +1809,10 @@ _SINGLE_OWNER_WIDGET_KEYS = {
 # 몇 시간 전 얘기다 — 로그인/회원가입이 다시 생기면서 이 상수와 JS 쪽
 # ruleLoginSignup()(_CE_SWEEP_JS 안) 둘 다 다시 살아 있다. 그때 "값만 남기고 지우지
 # 않았던" 덕분에 이번엔 코드 추가만으로 그대로 재사용됐다.
-LOGIN_KEY_PREFIXES = ("login_", "signup_")
+# 2026-09-01 — my_recipes/edit_recipe(docs/specs/my_recipes.md)도 같은 이유로 이
+# 접두사 방식을 쓴다. ui/screens/my_recipes.py의 모든 위젯 key를 my_recipes_*/
+# edit_recipe_*로 통일해서 이 구조적 규칙이 그대로 커버하게 했다.
+LOGIN_KEY_PREFIXES = ("login_", "signup_", "my_recipes_", "edit_recipe_")
 
 # ⚠️ 2026-08-26 재구성 — 이 아래 render_screen_cleanup()은 2026-08-25 새벽 세션에서 여러
 # 시행착오를 거쳐 완성된 원본이 커밋 한 번 안 된 채로(git에 저장된 적 없음, 워킹 디렉토리
@@ -2007,8 +2086,17 @@ _CE_SWEEP_JS = r"""
     }
   }
 
-  // 규칙 5(구 8번, 로그인/회원가입) — login_*/signup_* key 위젯은 login 화면 밖으로
-  // 새면 숨긴다(_STALE_CONTENT_MARKERS 텍스트 마커보다 안정적인 구조적 규칙).
+  // 규칙 5(구 8번, 로그인/회원가입/마이레시피 등) — login_*/signup_*/my_recipes_*/
+  // edit_recipe_* 같은 key 접두사를 가진 위젯은 그 접두사의 소유 화면 밖으로 새면
+  // 숨긴다(_STALE_CONTENT_MARKERS 텍스트 마커보다 안정적인 구조적 규칙).
+  //
+  // 2026-09-01 — 원래는 "CURRENT === 'login' || CURRENT === 'signup'"처럼 소유
+  // 화면을 하드코딩한 OR 목록이었다. signup_google_btn처럼 "signup_" 접두사 key를
+  // 가진 위젯이 signup 화면 자신에서도 숨어버리는 버그(login만 있고 signup이
+  // 빠짐)로 한 번 걸렸는데, 화면을 추가할 때마다 이 목록도 매번 같이 고쳐야 하는
+  // 구조라 재발 가능성이 그대로 남는다 — 대신 접두사 자체("login_" -> "login")에서
+  // 소유 화면 이름을 매번 계산해서, LOGIN_KEY_PREFIXES에 접두사만 추가하면 이 목록도
+  // 자동으로 따라오게 일반화했다(ruleSingleOwnerWidgets()의 owner 기반 방식과 동일).
   function ruleLoginSignup() {
     var prefixes = DATA.loginKeyPrefixes;
     var nodes = document.querySelectorAll('[class*="st-key-"]');
@@ -2019,18 +2107,15 @@ _CE_SWEEP_JS = r"""
       var at = cls.indexOf("st-key-");
       if (at === -1) continue;
       var rest = cls.slice(at + "st-key-".length);
-      var matched = false;
+      var owner = null;
       for (var p = 0; p < prefixes.length; p++) {
         if (rest.indexOf(prefixes[p]) === 0) {
-          matched = true;
+          owner = prefixes[p].slice(0, -1); // "login_" -> "login"
           break;
         }
       }
-      if (!matched) continue;
-      // 2026-09-01 — CURRENT === "signup" 케이스가 빠져 있었다. signup_google_btn처럼
-      // "signup_" 접두사 key를 가진 위젯이 signup 화면 자신에서도 숨어버리는 버그였다
-      // (login 화면 것만 살아남고, signup 화면 자기 자신의 위젯은 매번 else로 hide()됨).
-      if (CURRENT === "login" || CURRENT === "signup") unhide(el);
+      if (owner === null) continue;
+      if (CURRENT === owner) unhide(el);
       else hide(el);
     }
   }

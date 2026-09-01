@@ -30,6 +30,11 @@ def init_state() -> None:
     # 로그인 상태를 들고 있어서 이 세션 값은 그 결과를 캐시해두는 용도다(app.py::
     # main()이 매 rerun마다 st.user.is_logged_in과 동기화).
     st.session_state.setdefault("current_user", None)
+    # 2026-09-01 — 마이레시피 재도입(docs/specs/my_recipes.md). editing_recipe_id는
+    # edit_recipe 화면이 수정 대상을 특정할 때, confirm_delete_id는 my_recipes 화면이
+    # "정말 삭제할까요?" 확인 문구를 어느 카드에 띄울지 결정할 때 쓴다.
+    st.session_state.setdefault("editing_recipe_id", None)
+    st.session_state.setdefault("confirm_delete_id", None)
     st.session_state.setdefault("recipe_view", None)  # {"recipe_id","dish_name","ingredients_raw","steps"}
     st.session_state.setdefault("pending_dish_name", None)  # 등록 화면 진입 시 추정 요리명 프리필용
     # listen()의 위젯 키에 붙는 턴 번호. text_input/audio_input 값은 Streamlit 세션에

@@ -177,6 +177,42 @@ def save_recipe(
     return {"recipe_id": recipe_id, "saved": True}
 
 
+def update_recipe(
+    recipe_id: str,
+    dish_name: str,
+    ingredients: list[str],
+    instructions: list[str],
+    client=None,
+) -> dict:
+    """이미 저장된 user_custom 레시피 한 건을 제자리에서 고친다(마이레시피 화면의 "수정",
+    docs/specs/my_recipes.md).
+
+    save_recipe()는 일부러 매번 새 행을 insert만 하고 절대 덮어쓰지 않는다(EC-17) —
+    "새 버전으로 등록"과 "이미 있는 내 레시피를 고치기"는 다른 동작이라서 함수도
+    나눴다. recipe_steps는 통째로 지우고 다시 넣는다 — 조리순서는 몇 단계짜리로
+    바뀔지 몰라서(늘거나 줄 수 있음) 행 단위로 하나씩 맞춰 UPDATE하는 것보다
+    delete-then-insert가 훨씬 단순하고, on delete cascade와 달리 recipes 행 자체는
+    안 건드리므로 recipe_id/created_at/owner_id/approved 등은 그대로 유지된다.
+
+    소유권 확인(호출자가 recipe.owner_id == 현재 로그인 사용자인지)은 여기서 하지 않는다 —
+    ui/screens/my_recipes.py::screen_edit_recipe()가 진입 시점에 이미 확인한다(EC-04).
+    """
+    client = client or get_client()
+    client.table("recipes").update(
+        {"dish_name": _normalize_dish_name(dish_name), "ingredients": ", ".join(ingredients)}
+    ).eq("id", recipe_id).execute()
+
+    client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
+    step_payload = [
+        {"recipe_id": recipe_id, "step_number": i, "step_text": text, "source": "user_custom"}
+        for i, text in enumerate(instructions, start=1)
+    ]
+    if step_payload:
+        client.table("recipe_steps").insert(step_payload).execute()
+
+    return {"recipe_id": recipe_id, "updated": True}
+
+
 def delete_recipe(recipe_id: str, client=None) -> dict:
     """레시피 한 건을 완전히 지운다(관리자 페이지의 "삭제" — admin_recipe_approval.md).
 

@@ -55,6 +55,7 @@ from ui.screens.login import (
     screen_login,
     screen_signup,
 )
+from ui.screens.my_recipes import screen_edit_recipe, screen_my_recipes
 from ui.screens.register import (
     handle_register_dish_name,
     handle_register_intro,
@@ -65,7 +66,7 @@ from ui.screens.register import (
     screen_register_steps,
     screen_unclassified,
 )
-from ui.session import _DEFAULT_PIPELINE_SESSION, goto, init_state, logout as session_logout
+from ui.session import _DEFAULT_PIPELINE_SESSION, goto, init_state
 from ui.voice_io import listen
 
 load_env()
@@ -83,6 +84,8 @@ SCREENS = {
     "complete": screen_complete,
     "login": screen_login,
     "signup": screen_signup,
+    "my_recipes": screen_my_recipes,
+    "edit_recipe": screen_edit_recipe,
 }
 
 # 화면 본문 뒤에 붙이는 빈 슬롯 개수(main()의 st.empty() 스왑 안, #8360 꼬리 패딩).
@@ -347,17 +350,17 @@ def main() -> None:
     _start_model_warmup()
     inject_css()
     # 2026-08-27 — 일반 사용자 로그인/회원가입/마이레시피를 전부 없앴다가, 2026-09-01
-    # 로그인/회원가입만 재도입했다(마이레시피는 여전히 범위 밖 — docs/specs/
-    # user_accounts_google_login.md Out of Scope). 관리자 접근은 이 버튼과 무관하게
-    # 별도 게이트(admin_recipe_approval.md)로 그대로 유지.
+    # 로그인/회원가입(user_accounts_google_login.md)에 이어 마이레시피(my_recipes.md)도
+    # 재도입했다. 관리자 접근은 이 버튼과 무관하게 별도 게이트(admin_recipe_approval.md)로
+    # 그대로 유지.
     _current_user = st.session_state.get("current_user")
     _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
     if _brand_clicked:
         if _current_user:
-            # 마이레시피 화면은 이번 Spec 범위 밖이라, 로그인 아이콘이 아이디로 바뀐
-            # 뒤 다시 누르면 가장 쓸모 있는 동작인 로그아웃으로 처리한다.
-            session_logout()
-            st.rerun()
+            # 로그인 아이콘이 아이디로 바뀐 뒤 다시 누르면 마이레시피로 이동한다
+            # (기존엔 여기서 바로 로그아웃했으나, 로그아웃 버튼은 my_recipes 화면
+            # 안으로 옮겼다 — screens/my_recipes.py::screen_my_recipes() 참고).
+            goto("my_recipes")
         else:
             goto("login")
 
@@ -483,15 +486,16 @@ def main() -> None:
         text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
-    elif screen in ("login", "signup"):
-        # 2026-09-01 — 다른 화면과 달리 이 둘은 listen()을 아예 안 부른다(= 마이크
+    elif screen in ("login", "signup", "my_recipes", "edit_recipe"):
+        # 2026-09-01 — 다른 화면과 달리 이 넷은 listen()을 아예 안 부른다(= 마이크
         # 컴포넌트 자체를 안 그림). 원래는 register_ingredients/register_steps처럼
         # listen_for_speech=False로 연결만 유지하려 했으나, 실사용 중 브라우저에서
         # "Failed to construct 'RTCPeerConnection': Cannot create so many
         # PeerConnections"가 재현됐다 — 비밀번호 입력 중엔 애초에 마이크가 전혀
         # 필요 없는 화면이라, 재연결 비용(다음 화면 진입 시 한 번 더 협상)을 감수하고
-        # 아예 안 그리는 쪽으로 바꿨다. 다른 화면들처럼 "항상 listen() 호출" 규칙의
-        # 의도적 예외.
+        # 아예 안 그리는 쪽으로 바꿨다. my_recipes/edit_recipe(2026-09-01 도입,
+        # docs/specs/my_recipes.md)도 폼/버튼 조작 전용 화면이라 같은 이유로 처음부터
+        # 이 예외에 포함시킨다. 다른 화면들처럼 "항상 listen() 호출" 규칙의 의도적 예외.
         pass
 
 

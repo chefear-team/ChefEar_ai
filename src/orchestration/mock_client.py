@@ -132,6 +132,15 @@ class FakeQuery:
                 del self.table.rows[r["id"]]
             return FakeResult(rows)
 
+        if self.op == "update":
+            # 진짜 supabase-py의 .update({...}).eq(...).execute()처럼, 매치된 행에
+            # payload만 덮어쓴다(다른 컬럼은 그대로) — self.table.rows[id]가 들고 있는
+            # 바로 그 dict를 수정하므로 update_recipe()/admin.py::_approve() 양쪽 다
+            # 별도 처리 없이 그대로 동작한다.
+            for r in rows:
+                r.update(self.payload)
+            return FakeResult(rows)
+
         if self.order_col:
             rows = sorted(rows, key=lambda r: r.get(self.order_col, 0))
         if self.range_bounds:
@@ -167,6 +176,9 @@ class FakeTable:
         if isinstance(payload, dict):
             payload = [payload]
         return FakeQuery(self, op="insert", payload=payload)
+
+    def update(self, payload):
+        return FakeQuery(self, op="update", payload=payload)
 
     def delete(self):
         return FakeQuery(self, op="delete")
