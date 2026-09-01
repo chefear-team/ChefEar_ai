@@ -93,6 +93,10 @@ def screen_start() -> None:
 def screen_recipe_confirm() -> None:
     view = st.session_state.recipe_view
     if not view:
+        # 2026-09-01 — 진단 로그 추가(실측 리포트: "다음"이라고 확정했는데 시작
+        # 화면으로 되돌아감 — 원인 후보 중 하나로 recipe_view가 이 시점에 비어있는
+        # 경우를 의심 중). 이 줄이 안 찍히면 이 가드는 원인이 아니라는 뜻이다.
+        print("[GUARD] screen_recipe_confirm: recipe_view 비어있음 -> start로", flush=True)
         goto("start")
         return
 
@@ -161,9 +165,16 @@ def handle_recipe_confirm(text: str) -> None:
     """
     view = st.session_state.recipe_view
     if not view:
+        # 2026-09-01 — 진단 로그. 이 줄이 찍히면 handle_recipe_confirm() 자신도
+        # recipe_view가 비어있는 걸 봤다는 뜻 — screen_recipe_confirm()의 같은 가드와
+        # 같은 rerun에서 같이 걸렸을 가능성이 높다(app.py 라우팅상 화면 렌더 -> 발화
+        # 처리 순서라서 렌더 쪽이 먼저 goto("start")를 건 뒤에도 이 함수는 여전히
+        # 호출됨).
+        print(f"[GUARD] handle_recipe_confirm: recipe_view 비어있음, text={text!r} -> 무시", flush=True)
         return  # 화면 본문이 이미 goto("start")로 넘어갔을 상황 — 방어적으로만 남김
 
     norm = text.strip().rstrip("?!. ")
+    print(f"[RECIPE_CONFIRM] text={text!r} norm={norm!r}", flush=True)
     # 2026-08-22 원래 의도로 되돌림 — 이 화면은 원래 "확정 단어 목록 -> 진행,
     # 그 외 전부 -> 처음 화면"이라는 단순한 이분법으로 설계됐었는데, 그동안
     # else 분기가 process_utterance()(classify_intent() 전체 파이프라인)로
@@ -179,9 +190,11 @@ def handle_recipe_confirm(text: str) -> None:
     # 단어와 정확히 같아야만 인정하던 것(예: "네 좋아요 시작할게요"는 안 걸림)을
     # 포함 여부로 완화했다. 확정 단어도 처음도 다시도 아니면 기존 그대로 처음 화면으로.
     if is_home_word(norm) or "처음" in norm:
+        print(f"[RECIPE_CONFIRM] 분기=처음/홈단어 -> reset_to_start()", flush=True)
         st.session_state.chat_log.append(("user", text))
         reset_to_start()
     elif "다시" in norm:
+        print(f"[RECIPE_CONFIRM] 분기=다시 -> 같은 화면 재생", flush=True)
         # 2026-08-26 재요청 — "다음 페이지로 안 넘어가면 기록 안 함"으로 한 번 뺐다가,
         # 사용자가 "내 발화가 성공하면 기록에 남겨야 한다"로 재확인해 되돌림(dispatch.py
         # 의 "재청취" 처리와 같은 이유) — "다시"도 정상 인식된 확정 발화라 기록한다.
@@ -194,9 +207,11 @@ def handle_recipe_confirm(text: str) -> None:
     # 새던 문제. handle_register_intro()가 이미 쓰는 것과 같은 "부정어를 확정어보다
     # 먼저 검사" 패턴이다.
     elif any(word in norm for word in ("아니", "싫", "말고", "별로", "취소", "안 좋", "안좋", "안 할", "안할", "안 해", "안해", "안 돼", "안돼")):
+        print(f"[RECIPE_CONFIRM] 분기=부정어 -> reset_to_start()", flush=True)
         st.session_state.chat_log.append(("user", text))
         reset_to_start()
     elif "등록" in norm:
+        print(f"[RECIPE_CONFIRM] 분기=등록 -> register_dish_name", flush=True)
         # "이거 말고 등록할래" 등 — 현재 뜬 레시피가 아니라 새 레시피 등록 의도.
         # dispatch.py::process_utterance()의 _REGISTER_WORD 처리와 같은 목적지.
         st.session_state.chat_log.append(("user", "등록"))
@@ -229,6 +244,7 @@ def handle_recipe_confirm(text: str) -> None:
         any(word in norm for word in ("응", "네", "좋", "다음", "그래", "시작", "진행", "할래"))
         or norm.lower() == "next"
     ):
+        print(f"[RECIPE_CONFIRM] 분기=확정단어 -> cooking_step (step 1)", flush=True)
         st.session_state.chat_log.append(("user", text))
         st.session_state.pipeline_session["step_number"] = 1
         # register_steps의 "네, 저장할게요"와 같은 이유(2026-08-22 리포트) — 여기서
@@ -261,6 +277,7 @@ def handle_recipe_confirm(text: str) -> None:
     # rerun 없이 그냥 끝나서 그 순간부터 프레임이 안 비워져 "Queue overflow"로
     # 이어졌다. 화면은 그대로 두고 rerun만 걸어서 드레인을 이어지게 한다.
     else:
+        print(f"[RECIPE_CONFIRM] 분기=무시(아무 단어도 매칭 안 됨) -> 화면 그대로, rerun만", flush=True)
         st.rerun()
 
 

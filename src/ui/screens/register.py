@@ -114,21 +114,26 @@ def handle_register_intro(text: str) -> None:
     잠깐 나타나는 좁은 화면이라 실사용상 위험은 낮다고 보고 기존 관례를 그대로 따른다.
     """
     norm = text.strip().rstrip("?!. ")
+    print(f"[REGISTER_INTRO] text={text!r} norm={norm!r}", flush=True)
     if is_home_word(norm) or any(word in norm for word in ("아니", "괜찮아", "취소")):
         # 2026-08-23 — "처음"류는 reset_to_start()(진행 중이던 값 전부 초기화)로,
         # 기존 "아니/취소"는 원래 하던 대로 단순 이동만(이 화면은 아직 등록 자체를
         # 시작 전이라 초기화할 진행 상태가 없음).
         if is_home_word(norm):
+            print(f"[REGISTER_INTRO] 분기=처음/홈단어 -> reset_to_start()", flush=True)
             reset_to_start()
         else:
+            print(f"[REGISTER_INTRO] 분기=거절(아니/괜찮아/취소) -> start", flush=True)
             goto("start")
     elif any(word in norm for word in ("네", "응", "좋", "그래", "등록")):
+        print(f"[REGISTER_INTRO] 분기=확정 -> register_dish_name", flush=True)
         goto("register_dish_name")
     else:
         # 2026-08-25 추가 — dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고).
         # 위 두 분기 다 goto()로 화면을 다시 그리며 listen()을 재호출해 마이크 드레인
         # 루프를 이어가는데, 이 무시 케이스만 rerun 없이 끝나서 그 순간부터 프레임이
         # 안 비워져 "Queue overflow"로 이어졌다.
+        print(f"[REGISTER_INTRO] 분기=무시 -> 화면 그대로, rerun만", flush=True)
         st.rerun()
 
 
@@ -166,13 +171,16 @@ def screen_register_dish_name() -> None:
 def handle_register_dish_name(text: str) -> None:
     """screen_register_dish_name()이 그려진 뒤 app.py가 잡아온 발화를 처리한다."""
     norm = text.strip().rstrip("?!. ")
+    print(f"[REGISTER_DISH_NAME] text={text!r} norm={norm!r} pending={st.session_state.pending_dish_name!r}", flush=True)
     if is_home_word(norm):
         # 2026-08-23 추가 — 이 체크가 없으면 "처음"이라고 말해도 요리명("처음")으로
         # 그대로 등록 시도돼버린다(아래가 "확정 단어 아니면 발화 전체를 요리명으로"
         # 라서). 등록 도중이니 reset_to_start()로 진행 중이던 값도 같이 비운다.
+        print(f"[REGISTER_DISH_NAME] 분기=처음/홈단어 -> reset_to_start()", flush=True)
         reset_to_start()
         return
     if norm in ("취소", "취소할래", "취소할래요", "취소해줘"):
+        print(f"[REGISTER_DISH_NAME] 분기=취소 -> register_intro", flush=True)
         goto("register_intro")
         return
     if norm in ("네", "응", "맞아", "맞아요", "그래", "그래요", "좋아", "좋아요"):
@@ -180,7 +188,9 @@ def handle_register_dish_name(text: str) -> None:
         # (예전엔 pending 없을 때 "네"가 그대로 요리명으로 등록됐다).
         if st.session_state.pending_dish_name:
             dish_name = st.session_state.pending_dish_name
+            print(f"[REGISTER_DISH_NAME] 분기=확정(짐작값 사용) dish_name={dish_name!r}", flush=True)
         else:
+            print(f"[REGISTER_DISH_NAME] 분기=확정단어인데 짐작값 없음 -> 다시 물음(rerun)", flush=True)
             st.rerun()
             return
     # 2026-08-28 추가 — 이 화면은 확정어가 아닌 발화를 전부 요리명으로 받는데, STT
@@ -189,10 +199,12 @@ def handle_register_dish_name(text: str) -> None:
     # 25자를 거의 안 넘는다(compound도 "소고기무국" 수준) — 그보다 길면 문장을
     # 말한 것으로 보고 요리명으로 확정하지 않고 다시 묻는다(화면 유지 + rerun).
     elif len(norm.replace(" ", "")) > 25:
+        print(f"[REGISTER_DISH_NAME] 분기=25자 초과(문장으로 판단) -> 다시 물음(rerun)", flush=True)
         st.rerun()
         return
     else:
         dish_name = text.strip()
+        print(f"[REGISTER_DISH_NAME] 분기=발화 전체를 요리명으로 -> dish_name={dish_name!r}", flush=True)
     # 2026-08-21: 여기서 speak(result["prompt"])로 음성 합성을 하고 있었지만, 그
     # 재생 위젯은 바로 뒤 goto()의 st.rerun()에 지워지고, 도착 화면인
     # register_ingredients는 텍스트 입력 전용(마이크 바·재생바 없음)이라 이 안내문을
@@ -200,6 +212,7 @@ def handle_register_dish_name(text: str) -> None:
     # 화면들은 render_chat()을 안 써서 그것도 어차피 안 보인다 — 즉 매번 로컬 CPU로
     # 몇 분씩 걸리는 합성을 하고도 아무도 못 듣는 죽은 호출이라 제거했다.
     register_recipe(st.session_state.pipeline_session, "dish_name", dish_name, client=get_client())
+    print(f"[REGISTER_DISH_NAME] register_recipe(dish_name) 완료 -> register_ingredients", flush=True)
     goto("register_ingredients")
 
 
@@ -237,10 +250,12 @@ def screen_register_ingredients() -> None:
     if st.button("추가") and new_item.strip():
         items = [x.strip() for x in new_item.split(",") if x.strip()]
         register_recipe(st.session_state.pipeline_session, "ingredients", items, client=get_client())
+        print(f"[REGISTER_INGREDIENTS] 추가 버튼: items={items!r} -> 누적={reg['ingredients']!r}", flush=True)
         st.session_state.reg_ing_turn = _ing_turn + 1
         st.rerun()
 
     if reg["ingredients"] and st.button("네, 맞아요", type="primary", use_container_width=True):
+        print(f"[REGISTER_INGREDIENTS] '네, 맞아요' 버튼 -> register_steps", flush=True)
         goto("register_steps")
 
 
@@ -312,6 +327,7 @@ def screen_register_steps() -> None:
     new_step = st.text_input("순서 추가", key=f"reg_step_new_{_step_turn}", placeholder="새 단계 추가")
     if st.button("단계 추가") and new_step.strip():
         register_recipe(st.session_state.pipeline_session, "instructions", [new_step.strip()], client=get_client())
+        print(f"[REGISTER_STEPS] 단계 추가: {new_step.strip()!r} -> 누적={reg['instructions']!r}", flush=True)
         st.session_state.reg_step_new_turn = _step_turn + 1
         st.rerun()
 
@@ -328,8 +344,14 @@ def screen_register_steps() -> None:
         # 나머지 필드가 없어도 screen_complete()는 dish_name만 읽으므로 안전하고, 이후
         # 실제 조회가 일어나면 refresh_recipe_view()가 이 임시 값을 통째로 덮어쓴다.
         dish_name = reg["dish_name"]
-        register_recipe(
+        save_result = register_recipe(
             st.session_state.pipeline_session, "confirm", None, client=get_client(), owner_id=get_owner_id()
+        )
+        print(
+            f"[REGISTER_STEPS] '네, 저장할게요' 버튼: dish_name={dish_name!r} "
+            f"ingredients={reg['ingredients']!r} instructions={reg['instructions']!r} "
+            f"save_result={save_result!r} -> complete",
+            flush=True,
         )
         st.session_state.recipe_view = {"dish_name": dish_name}
         speak(_REGISTER_SAVED_MESSAGE, hidden=True)
