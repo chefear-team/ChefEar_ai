@@ -21,7 +21,11 @@ _DEFAULT_PIPELINE_SESSION = {
 
 
 def init_state() -> None:
-    st.session_state.setdefault("screen", "start")
+    # 2026-09-01 요청 — 첫 진입 화면을 "무엇을 만들고 싶으세요?"(start) 대신 로그인
+    # 화면으로 바꾼다. login 화면의 "처음 화면으로" 뒤로가기 링크로 start에 그대로
+    # 갈 수 있으므로, 비로그인 이용 자체를 막는 건 아니다 — 세션이 새로 시작될 때
+    # 맨 처음 보이는 화면만 바뀐다.
+    st.session_state.setdefault("screen", "login")
     st.session_state.setdefault("pipeline_session", dict(_DEFAULT_PIPELINE_SESSION))
     st.session_state.setdefault("chat_log", [])
     # 2026-09-01 — 로그인 재도입(docs/specs/user_accounts_google_login.md).
