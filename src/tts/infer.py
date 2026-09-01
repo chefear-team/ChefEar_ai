@@ -287,8 +287,13 @@ def _dynamic_max_new_tokens(text: str) -> int:
             # 실제 생성은 텍스트 토큰 수보다 더 걸릴 수 있어(운율/화자 임베딩 등 TTS 특유의
             # 프레임 확장) 안전 여유를 곱해서 잡는다 — 1.3배는 정식 실측치가 아니라 보수적인
             # 잠정 배수다(위 글자수x20 배수들의 잠정치 원칙과 동일하게 여기도 명시).
+            # 2026-09-01 — resolve_for_tts()로 [TERM:...] 설명 문장이 붙으면서 문장이
+            # 길어졌는데, 실측(TTS_DEBUG 로그)으로 "2단계" 안내(텍스트 56자)가
+            # implied_tokens_per_s × duration_s ≈ max_new_tokens(=400)로 딱 예산에
+            # 맞아떨어져 끝음절이 잘리는 게 확인됐다 — 여유가 사실상 없었다는 뜻. 1.3 ->
+            # 1.5로 올려서 여유를 더 준다.
             token_count = len(tokenizer(text).input_ids)
-            estimated = int(token_count * 1.3)
+            estimated = int(token_count * 1.5)
             return min(_MAX_NEW_TOKENS_CEILING, max(DEFAULT_MAX_NEW_TOKENS, estimated))
         except Exception as exc:  # noqa: BLE001 — 인코딩 실패해도 폴백으로 계속 진행
             print(f"[TTS] 토크나이저 기반 길이 추정 실패(글자수 추정으로 폴백): {exc!r}")

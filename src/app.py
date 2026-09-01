@@ -358,14 +358,16 @@ def main() -> None:
     # 재도입했다. 관리자 접근은 이 버튼과 무관하게 별도 게이트(admin_recipe_approval.md)로
     # 그대로 유지.
     _current_user = st.session_state.get("current_user")
-    if st.session_state.screen == "login":
-        # 2026-09-01 요청 — 로그인 화면 자체에서는 로고 옆 로그인 아이콘 버튼이
-        # 불필요하다(이미 로그인 화면이라 눌러도 갈 곳이 없음) 해서 뺀다. 다른
-        # 화면은 전부 기존대로 show_login=True를 유지.
+    # 2026-09-01 재요청 — 로고 옆 계정 버튼(로그인 아이콘/내 아이디)을 "start" 화면
+    # 에서만 보이게 한다. 조리 진행 중이나 등록/조회 도중에 실수로 눌러 마이레시피로
+    # 새 화면이 훅 넘어가는 걸 막기 위함 — 로그인 화면은 원래도 이 버튼이 필요 없다는
+    # 이전 요청(바로 위 이력)과 결과가 같아 별도 예외 처리 없이 이 조건 하나로 같이
+    # 커버된다(login도 "start"가 아니므로 자연히 안 보임).
+    if st.session_state.screen == "start":
+        _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
+    else:
         render_brand()
         _brand_clicked = False
-    else:
-        _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
     if _brand_clicked:
         if _current_user:
             # 로그인 아이콘이 아이디로 바뀐 뒤 다시 누르면 마이레시피로 이동한다
