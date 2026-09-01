@@ -489,6 +489,17 @@ def process_utterance(text: str) -> None:
         # 내 말풍선은 제육복근"이라는 불일치가 생겼다. AI 응답(바로 아래 speak())과
         # 같은 값(result["dish_name"], 실제로 DB에서 찾은 표준 요리명)을 써서 맞춘다.
         st.session_state.chat_log.append(("user", result["dish_name"]))
+        # 2026-09-01 — 위 "진행"/"재청취"/"이전" 분기와 완전히 같은 원인의 버그.
+        # handle_utterance()가 조회 성공 시 session["current_recipe_id"]/["step_number"]를
+        # 그 자리에서 직접 바꾸는 방식으로 짜여 있는데(orchestration/pipeline.py
+        # 참고), 이 호출이 gpu_worker_pool.submit_handle_utterance(session, ...)로
+        # 별도 프로세스에 넘어가서 그 프로세스 안의 pickle된 복사본만 바뀌고 여기
+        # 이 session(=st.session_state.pipeline_session)은 안 바뀐다 — 캐시 히트
+        # 경로(위 _hit_fresh 분기)는 메인 스레드에서 직접 실행돼 이미 명시적으로
+        # 쓰고 있던 것과 같은 이유로, 여기(캐시 미스 = 첫 조회)도 명시적으로 다시
+        # 써서 프로세스 경계를 건너 세션에 반영한다.
+        session["current_recipe_id"] = result["recipe_id"]
+        session["step_number"] = 1
         # 2026-08-28 — 이 발화 -> 이 레시피 매칭을 세션 캐시에 남긴다(위 process_utterance()
         # 상단 lookup_cache 주석 참고). 다음에 같은 발화를 다시 말하면 LLM/임베딩/DB를
         # 전부 건너뛴다. result["recipe_id"]는 handle_utterance()가 방금 DB에서 확정한 값.
@@ -513,6 +524,20 @@ def process_utterance(text: str) -> None:
         return
 
     if intent in ("진행", "재청취", "이전"):
+        # 2026-09-01 — 실측 리포트("챗박스는 2단계로 정상 표시되는데 화면 카드와
+        # 음성은 계속 1단계 그대로") 원인 발견: handle_utterance()(-> advance_step())가
+        # session["step_number"]를 "그 자리에서 직접 바꾸는" 방식으로 동작하는데,
+        # 2026-09-01 GPU 워커 풀을 멀티프로세스(ProcessPoolExecutor)로 전환하면서 이
+        # 호출이 gpu_worker_pool.submit_handle_utterance(session, ...)로 별도
+        # *프로세스*에 넘어가게 됐다 — 그 프로세스 안에서 session을 바꿔봐야 pickle된
+        # 복사본만 바뀌고, 여기 이 session(=st.session_state.pipeline_session 그 자체)
+        # 은 전혀 안 바뀐다. .result()로 돌아오는 건 반환값(result 딕셔너리)뿐이라
+        # 챗박스(아래 speak() 텍스트)는 result["step"] 기준이라 맞게 나오는데, 화면
+        # 카드/오디오 캐시 경로는 여전히 이 session["step_number"](갱신 안 됨, 1단계
+        # 그대로)를 보고 그려져서 어긋났다. advance_step()은 항상 최상위에 "step_number"
+        # 를 돌려주므로(orchestration/pipeline.py 문서 참고, no_previous/완료 케이스
+        # 포함 전부) 여기서 명시적으로 다시 써서 프로세스 경계를 건너 세션에 반영한다.
+        session["step_number"] = result["step_number"]
         step = result.get("step")
         if result.get("no_previous"):
             # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제
