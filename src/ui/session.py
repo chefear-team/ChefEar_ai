@@ -74,7 +74,14 @@ def goto(screen: str) -> None:
     그 왕복 시간만큼 webrtc audio_receiver 큐가 못 비워지는 구간이 늘어나 "Queue
     overflow" 경고가 급증하는 부작용만 생겼다(실측 확인). 단순한 st.rerun() 한 번으로
     되돌린다.
+
+    2026-09-01 — 화면 전환마다 "어디서 어디로" 갔는지 한 줄 남긴다(진단 요청 대응).
+    모든 화면 전환이 결국 이 함수 하나를 거치므로, 어느 호출부(process_utterance()의
+    각 분기, handle_recipe_confirm() 등)에서 왔는지는 이 로그 바로 위/아래에 찍히는
+    다른 [PERF]/[STT_CONF_DEBUG]/각 함수 자체 로그와 맞춰봐야 알 수 있다 — 이 줄
+    자체는 "무엇으로 바뀌었나"만 확정해준다.
     """
+    print(f"[GOTO] {st.session_state.get('screen')!r} -> {screen!r}", flush=True)
     st.session_state.screen = screen
     st.rerun()
 

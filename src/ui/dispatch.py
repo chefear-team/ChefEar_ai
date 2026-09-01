@@ -144,7 +144,13 @@ def _is_admin_trigger(text: str) -> bool:
 
 
 def process_utterance(text: str) -> None:
+    # 2026-09-01 — 진단 로그(실측 리포트 추적용, 요청에 따라 process_utterance()
+    # 전체 분기에 빠짐없이 추가). 이 줄이 매 발화 처리의 진입점이라 [PERF]/
+    # [STT_CONF_DEBUG]/[GOTO]와 시간순으로 나란히 놓고 보면 "어떤 발화가 어떤
+    # 분기를 타서 어디로 갔는지"를 끝까지 추적할 수 있다.
+    print(f"[DISPATCH] process_utterance 진입: text={text!r} screen={st.session_state.get('screen')!r}", flush=True)
     if is_home_word(text):
+        print(f"[DISPATCH] 분기=is_home_word -> reset_to_start()", flush=True)
         reset_to_start()
         return
 
@@ -154,6 +160,7 @@ def process_utterance(text: str) -> None:
     # _admin_via_voice 플래그가 있으면 등록됨). 조리 중에도 허용한다(관리자가 급히
     # 승인/삭제할 상황).
     if _is_admin_trigger(text):
+        print(f"[DISPATCH] 분기=admin_trigger -> 관리자 페이지 전환", flush=True)
         st.session_state["_admin_via_voice"] = True
         st.rerun()
         return
@@ -175,6 +182,7 @@ def process_utterance(text: str) -> None:
     # "등록"이 섞인 아무 말이나 오인식해도 무조건 로그인 게이트가 발동했다. 나머지
     # 세 경로와 똑같이 조리 중이면 이 분기 자체를 건너뛰고 그냥 재청취로 넘어간다.
     if _REGISTER_WORD in text and not st.session_state.pipeline_session.get("current_recipe_id"):
+        print(f"[DISPATCH] 분기=등록단어(빠른경로) -> register_dish_name", flush=True)
         st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL["등록"]))
         # is_home_word()와 같은 자리 — classify_intent()/LLM까지 갈 것도 없이 "등록"
         # 단어 하나로 확정되는 명령이라 바로 처리한다. wants_register 분기(아래)와
@@ -213,6 +221,7 @@ def process_utterance(text: str) -> None:
     )
     if not session.get("current_recipe_id") and _hit_fresh:
         hit = _hit
+        print(f"[DISPATCH] 분기=조회(캐시히트) dish_name={hit['dish_name']!r} -> recipe_confirm", flush=True)
         st.session_state.chat_log.append(("user", hit["dish_name"]))
         session["current_recipe_id"] = hit["recipe_id"]
         session["step_number"] = 1
@@ -368,7 +377,9 @@ def process_utterance(text: str) -> None:
     llm_result = job["llm_result"]
     dish_name_guess = llm_result["dish_name"]
 
+    print(f"[DISPATCH] LLM 추출 결과: dish_name={dish_name_guess!r} wants_register={llm_result['wants_register']!r}", flush=True)
     if llm_result["wants_register"] and not session.get("current_recipe_id"):
+        print(f"[DISPATCH] 분기=wants_register(LLM) -> register_dish_name", flush=True)
         # 2026-08-22 추가 — classify_intent()(임베딩 유사도)가 "등록" 같은 짧은 단일
         # 발화를 "진행"/"이전"과 헷갈려 margin 미충족으로 미분류 처리하는 사례가 실측
         # 확인됐다(기준예문.csv 보강으로 그 구체 사례는 고쳤지만, 임베딩 분류기가 커버
@@ -390,6 +401,7 @@ def process_utterance(text: str) -> None:
     # wants_register가 True) 그냥 무시하고 원래 화면에 머무른다("등록은 첫 페이지 아니면
     # 의미없는 문구다" 원칙, classify_intent() 쪽과 동일).
     elif llm_result["wants_register"]:
+        print(f"[DISPATCH] 분기=wants_register(조리중이라 무시) -> 화면 그대로, rerun만", flush=True)
         st.rerun()
         return
 
@@ -401,11 +413,13 @@ def process_utterance(text: str) -> None:
         # 화면 자체의 고정 문구("잘 이해하지 못했어요")는 이 케이스(실제로는 인식은
         # 됐지만 서버 오류)엔 살짝 안 맞지만, 음성 응답은 정확한 이유를 말해주고 화면
         # 기능(재시도 버튼 등)은 그대로 동작해서 이번엔 이 경로를 재사용한다.
+        print(f"[DISPATCH] 분기=network_error -> unclassified", flush=True)
         speak("일시적인 오류가 발생했어요. 잠시 후 다시 이용해 주세요.", hidden=True)
         goto("unclassified")
         return
 
     if job["value_error"]:
+        print(f"[DISPATCH] 분기=value_error(등록 의도인데 registration_step 없음) -> register_dish_name", flush=True)
         # 위 배경 스레드의 _compute() 안에서 handle_utterance()가 ValueError를 던진 경우 —
         # "등록" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
         # 죽이는 대신 신규 등록으로 안전하게 보낸다. classify_intent()가 이미 "등록"으로
@@ -417,8 +431,10 @@ def process_utterance(text: str) -> None:
 
     result = job["result"]
     intent = result.get("intent")
+    print(f"[DISPATCH] classify_intent 결과: intent={intent!r} result={result!r}", flush=True)
 
     if intent == "미분류" or intent == "감탄사":
+        print(f"[DISPATCH] 분기=미분류/감탄사 -> 무시(화면 그대로, rerun만)", flush=True)
         # 2026-08-26 추가 — "감탄사"(감사합니다/아멘/고마워요 등, 기준예문.csv 참고):
         # classify_intent()가 이 실제 매칭시킨 진짜 의도라 "미분류"는 아니지만, 이
         # 발화들은 애초에 아무 명령도 아니라서 처리할 게 없다 — 실측: "감사합니다"가
@@ -459,6 +475,7 @@ def process_utterance(text: str) -> None:
 
     if intent == "조회":
         if "message" in result:  # DISH_NOT_FOUND_MESSAGE 또는 PENDING_MESSAGE
+            print(f"[DISPATCH] 분기=조회(실패) message={result['message']!r} -> 현재 화면 유지, rerun만", flush=True)
             # 2026-08-27 — no_match 화면 자체를 없앴다(잔상 문제 다발). 화면 전환
             # 없이 현재 화면(start)에 그대로 머무른 채 안내만 1회 들려준다 — 대화
             # 기록에도 안 남기고(같은 요리를 계속 물어봐도 채팅창이 안 쌓임), 재생을
@@ -488,6 +505,7 @@ def process_utterance(text: str) -> None:
         # 정작 채팅창엔 보정 전 원문(text)이 그대로 남아서 "AI는 제육볶음이라 답하는데
         # 내 말풍선은 제육복근"이라는 불일치가 생겼다. AI 응답(바로 아래 speak())과
         # 같은 값(result["dish_name"], 실제로 DB에서 찾은 표준 요리명)을 써서 맞춘다.
+        print(f"[DISPATCH] 분기=조회(성공) dish_name={result['dish_name']!r} recipe_id={result['recipe_id']!r} -> recipe_confirm", flush=True)
         st.session_state.chat_log.append(("user", result["dish_name"]))
         # 2026-09-01 — 위 "진행"/"재청취"/"이전" 분기와 완전히 같은 원인의 버그.
         # handle_utterance()가 조회 성공 시 session["current_recipe_id"]/["step_number"]를
@@ -539,7 +557,13 @@ def process_utterance(text: str) -> None:
         # 포함 전부) 여기서 명시적으로 다시 써서 프로세스 경계를 건너 세션에 반영한다.
         session["step_number"] = result["step_number"]
         step = result.get("step")
+        print(
+            f"[DISPATCH] 분기={intent} step_number(반영후)={session['step_number']!r} "
+            f"no_previous={result.get('no_previous')!r} step_is_none={step is None!r}",
+            flush=True,
+        )
         if result.get("no_previous"):
+            print(f"[DISPATCH]   -> no_previous 안내, cooking_step 유지", flush=True)
             # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제
             # 의도와 매칭시켰으면) 기록에 남겨야 한다"로 다시 확정. "다음 페이지로
             # 안 넘어가면 기록 안 함"으로 한 번 더 좁혔다가(이전 커밋), 사용자가
@@ -564,6 +588,7 @@ def process_utterance(text: str) -> None:
             speak("1단계예요, 이전 단계가 없어요.", hidden=True)
             goto("cooking_step")
         elif step is None:
+            print(f"[DISPATCH]   -> 마지막 단계 이후 -> cooking_complete", flush=True)
             st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
             # 마지막 단계에서 "다음" -> advance_step()이 더 이상 존재하지 않는 단계를
             # 찾다 step=None을 돌려준 경우(2026-08-22 요청) — 안내만 하고 cooking_step에
@@ -578,6 +603,7 @@ def process_utterance(text: str) -> None:
             speak(COOKING_COMPLETE_MESSAGE, hidden=True)
             goto("cooking_complete")
         else:
+            print(f"[DISPATCH]   -> 정상 진행, step_number={step.get('step_number')!r} -> cooking_step", flush=True)
             # 2026-08-26 재요청 — 위 no_previous 분기와 같은 이유로 되돌림: "재청취"
             # (다시)도 classify_intent()가 정상적으로 매칭시킨 성공 케이스라 기록한다
             # (한때 "다음 페이지로 안 넘어가면 제외"로 뺐다가 사용자 재확인으로 복구).
@@ -616,6 +642,7 @@ def process_utterance(text: str) -> None:
         return
 
     if intent == "등록":
+        print(f"[DISPATCH] 분기=등록(분류) -> register_intro", flush=True)
         st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
         prompt = result.get("prompt") or result.get("summary") or result.get("message")
         if prompt:
@@ -624,6 +651,7 @@ def process_utterance(text: str) -> None:
         return
 
     # 알 수 없는 intent(방어적 처리) — 서비스가 죽는 대신 fallback으로.
+    print(f"[DISPATCH] 분기=알수없는intent({intent!r}, 방어적처리) -> unclassified", flush=True)
     st.session_state.chat_log.append(("user", text))
     # 위와 같은 이유(2026-08-22) — unclassified가 chat_log의 마지막 ai 메시지를 다시
     # 들려주므로 hidden=True.
@@ -660,6 +688,11 @@ def fallback_buttons(key_prefix: str) -> None:
             with col:
                 if st.button(button, key=f"{key_prefix}_{button}", use_container_width=True):
                     result = manual_fallback(session, button, client=client, steps=steps_cache)
+                    print(
+                        f"[DISPATCH] fallback_buttons: button={button!r} -> "
+                        f"step_number={session.get('step_number')!r} result={result!r}",
+                        flush=True,
+                    )
                     if result.get("no_previous"):
                         # 2026-08-28 — process_utterance()의 같은 분기와 동일한 수정(그쪽
                         # 주석 참고): hidden=True + 전용 nonce(_cooking_notice_nonce)로
