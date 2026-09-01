@@ -16,7 +16,7 @@ from orchestration.pipeline import manual_fallback
 from orchestration.term_dict import resolve_for_tts
 from ui.recipe_view import _fetch_recipe_view, _view_cache_fresh, refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, goto
-from ui.voice_io import _drain_mic_while, speak
+from ui.voice_io import _close_loading_overlay, _drain_mic_while, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -372,7 +372,13 @@ def process_utterance(text: str) -> None:
             job["done"] = True
 
     threading.Thread(target=_compute, daemon=True).start()
-    _drain_mic_while(job)
+    # 2026-09-01 — "로딩바가 두 번 켜졌다 꺼진다" 리포트 대응. close=False로 팝업을
+    # 안 닫고 그대로 돌려받아, 아래 각 분기의 speak() 호출까지 넘겨서 팝업 하나로
+    # 이어붙인다(voice_io._drain_mic_while()/_LoadingOverlay 문서 참고). speak()
+    # 없이 끝나는 분기(등록 의도, value_error, 미분류/감탄사 등)는 그 자리에서
+    # 직접 _close_loading_overlay(overlay)를 불러 닫아야 한다 — 안 그러면 팝업이
+    # 화면에 계속 남는다.
+    overlay = _drain_mic_while(job, close=False)
 
     llm_result = job["llm_result"]
     dish_name_guess = llm_result["dish_name"]
@@ -392,6 +398,9 @@ def process_utterance(text: str) -> None:
         # (새 레시피 등록 1/3 요리명)으로 바로 보낸다.
         # 2026-08-27 — 로그인 개념 자체가 없어져서 게이트도 같이 없앴다.
         st.session_state.pending_dish_name = dish_name_guess
+        # 2026-09-01 — speak() 없이 끝나는 분기라 여기서 직접 팝업을 닫는다(위
+        # overlay 문서 참고).
+        _close_loading_overlay(overlay)
         goto("register_dish_name")
         return
     # intent_classifier.py의 "등록"(임베딩 매칭)은 context_recipe_id가 있으면(=이미
@@ -402,6 +411,7 @@ def process_utterance(text: str) -> None:
     # 의미없는 문구다" 원칙, classify_intent() 쪽과 동일).
     elif llm_result["wants_register"]:
         print(f"[DISPATCH] 분기=wants_register(조리중이라 무시) -> 화면 그대로, rerun만", flush=True)
+        _close_loading_overlay(overlay)
         st.rerun()
         return
 
@@ -414,7 +424,7 @@ def process_utterance(text: str) -> None:
         # 됐지만 서버 오류)엔 살짝 안 맞지만, 음성 응답은 정확한 이유를 말해주고 화면
         # 기능(재시도 버튼 등)은 그대로 동작해서 이번엔 이 경로를 재사용한다.
         print(f"[DISPATCH] 분기=network_error -> unclassified", flush=True)
-        speak("일시적인 오류가 발생했어요. 잠시 후 다시 이용해 주세요.", hidden=True)
+        speak("일시적인 오류가 발생했어요. 잠시 후 다시 이용해 주세요.", hidden=True, _loading_overlay=overlay)
         goto("unclassified")
         return
 
@@ -426,6 +436,9 @@ def process_utterance(text: str) -> None:
         # 확정 분류한 경우라 위 wants_register 분기와 같은 이유로 register_intro(확인
         # 화면)는 안 거치고 바로 register_dish_name으로 보낸다.
         st.session_state.pending_dish_name = dish_name_guess
+        # 2026-09-01 — speak() 없이 끝나는 분기라 여기서 직접 팝업을 닫는다(위
+        # overlay 문서 참고).
+        _close_loading_overlay(overlay)
         goto("register_dish_name")
         return
 
@@ -452,6 +465,9 @@ def process_utterance(text: str) -> None:
         # register_intro/unclassified 화면 자체는 다른 경로(_REGISTER_WORD, "알 수
         # 없는 intent" 방어 분기 등)로 여전히 갈 수 있다.
         #
+        # 2026-09-01 — speak() 없이 끝나는 분기라 여기서 직접 팝업을 닫는다(위
+        # overlay 문서 참고).
+        #
         # 2026-08-25 추가 — 이 분기만 유일하게 goto()(=st.rerun())를 안 불렀다. 다른
         # 모든 분기는 화면을 옮기며 rerun이 걸리고, 그 rerun이 다시 listen()을 호출해
         # _run_mic_loop()의 프레임 드레인 루프가 곧장 이어지는데, 여기는 그냥 return해서
@@ -461,6 +477,7 @@ def process_utterance(text: str) -> None:
         # "여기까지하면"/"좋아?"처럼 margin 미충족으로 미분류 처리된 직후에만 정확히
         # 재현됨). 화면은 그대로 두고 같은 화면으로 rerun만 걸어서 드레인 루프가
         # 끊기지 않게 한다.
+        _close_loading_overlay(overlay)
         st.rerun()
         return
 
@@ -497,7 +514,7 @@ def process_utterance(text: str) -> None:
             # hidden=True — 도착 화면(현재 화면 그대로, 대개 start)이 _render_cached_speech()로
             # 재생을 맡는다. 여기서 render_audio_player()를 그리면 바로 뒤 st.rerun()에 곧장
             # 지워지는 "떴다 사라짐" 깜빡임만 남는다(이 파일 다른 분기들과 동일 패턴).
-            speak(result["message"], hidden=True)
+            speak(result["message"], hidden=True, _loading_overlay=overlay)
             st.rerun()
             return
         # 2026-08-26 요청 — "제육복근"이라고 잘못 들려도 recipe_search.py::extract_dish_name()
@@ -537,7 +554,11 @@ def process_utterance(text: str) -> None:
             refresh_recipe_view(force=True)
         # 위와 같은 이유 — 도착 화면(recipe_confirm)이 chat_log의 마지막 ai 메시지를
         # _render_cached_speech()로 다시 들려준다.
-        speak(f'{result["dish_name"]}, 조회수 1위 표준 레시피예요. 이걸로 시작할까요?', hidden=True)
+        speak(
+            f'{result["dish_name"]}, 조회수 1위 표준 레시피예요. 이걸로 시작할까요?',
+            hidden=True,
+            _loading_overlay=overlay,
+        )
         goto("recipe_confirm")
         return
 
@@ -585,7 +606,7 @@ def process_utterance(text: str) -> None:
             # 남아있는 조리 단계 카드의 캐시 오디오까지 덩달아 다시 재생되어 이 안내
             # 음성과 겹쳐 들리므로(위 else 분기 주석 참고) 반드시 별도 변수를 쓴다.
             st.session_state["_cooking_notice_nonce"] = st.session_state.get("_cooking_notice_nonce", 0) + 1
-            speak("1단계예요, 이전 단계가 없어요.", hidden=True)
+            speak("1단계예요, 이전 단계가 없어요.", hidden=True, _loading_overlay=overlay)
             goto("cooking_step")
         elif step is None:
             print(f"[DISPATCH]   -> 마지막 단계 이후 -> cooking_complete", flush=True)
@@ -600,7 +621,7 @@ def process_utterance(text: str) -> None:
             # 플래그를 여기서 리셋한다(screen_cooking_complete()의 "화면 진입당 한 번만
             # 재생" 가드 참고 — 이 플래그가 없으면 그 가드가 매번 True로 막혀버린다).
             st.session_state["_cooking_complete_audio_played"] = False
-            speak(COOKING_COMPLETE_MESSAGE, hidden=True)
+            speak(COOKING_COMPLETE_MESSAGE, hidden=True, _loading_overlay=overlay)
             goto("cooking_complete")
         else:
             print(f"[DISPATCH]   -> 정상 진행, step_number={step.get('step_number')!r} -> cooking_step", flush=True)
@@ -637,6 +658,7 @@ def process_utterance(text: str) -> None:
                 recipe_id=session.get("current_recipe_id"),
                 step_number=step.get("step_number"),
                 hidden=True,
+                _loading_overlay=overlay,
             )
             goto("cooking_step")
         return
@@ -646,7 +668,11 @@ def process_utterance(text: str) -> None:
         st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
         prompt = result.get("prompt") or result.get("summary") or result.get("message")
         if prompt:
-            speak(prompt)
+            speak(prompt, _loading_overlay=overlay)
+        else:
+            # 2026-09-01 — speak()를 안 부르는 경우라 여기서 직접 팝업을 닫는다(위
+            # overlay 문서 참고).
+            _close_loading_overlay(overlay)
         goto("register_intro")
         return
 
@@ -655,7 +681,7 @@ def process_utterance(text: str) -> None:
     st.session_state.chat_log.append(("user", text))
     # 위와 같은 이유(2026-08-22) — unclassified가 chat_log의 마지막 ai 메시지를 다시
     # 들려주므로 hidden=True.
-    speak("죄송해요, 잘 처리하지 못했어요. 다시 한 번 말씀해주시겠어요?", hidden=True)
+    speak("죄송해요, 잘 처리하지 못했어요. 다시 한 번 말씀해주시겠어요?", hidden=True, _loading_overlay=overlay)
     goto("unclassified")
 
 

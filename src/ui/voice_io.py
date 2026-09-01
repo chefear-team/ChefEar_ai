@@ -321,7 +321,62 @@ def _render_cached_speech(message: str, *, nonce: int | str = 0) -> None:
 # 진행/재청취/이전/취소/등록 등 결과가 뭐가 될지 모르는 모든 처리 대기 구간에 공통으로
 # 쓰여서 특정 동작을 전제로 한 문구는 안 맞고, "내 말을 들었다"는 확인 + "기다려달라"는
 # 요청, 이 두 가지가 사용자가 실제로 궁금해하는 것이라는 판단으로 골랐다.
-def _drain_mic_while(job: dict, *, loading_message: str | None = "말씀 잘 들었어요, 잠시만요...") -> None:
+
+_LOADING_OVERLAY_SHOW_DELAY_S = 0.4
+_LOADING_OVERLAY_MIN_VISIBLE_S = 0.3
+
+
+class _LoadingOverlay:
+    """_drain_mic_while() 호출 여러 번에 걸쳐 로딩 팝업 하나를 이어 쓰기 위한 핸들.
+
+    2026-09-01 리포트 — "무엇을 만들고 싶으세요?에서 왜 조회 로딩이 두번 돌까"/
+    "로딩바가 두 번 켜졌다 꺼진다": 발화 한 번 처리에 실제로 블로킹 대기 구간이
+    두 번(1. process_utterance()의 LLM 추출+handle_utterance, 2. speak()의 TTS
+    합성) 있는데, 각자 자기 몫의 _drain_mic_while()을 따로 호출해서 각자 팝업을
+    한 번씩 껐다 켰다 하고 있었다 — 두 구간 사이는 세션 갱신 등 순수 파이썬 코드라
+    실제로는 수십~수백 ms뿐인데도 그 잠깐 사이에 껐다 켜지는 게 "깜박깜박 두 번
+    뜬다"로 눈에 띄었다. 이 핸들을 process_utterance()가 첫 대기 구간에서 만들어
+    speak() 호출까지 그대로 넘기면, 두 구간이 팝업 하나(같은 st.empty() 슬롯, 같은
+    "떴다"/"떴던 시각" 상태)를 이어서 쓰게 되어 중간에 꺼졌다 켜지는 순간이 없어진다.
+    """
+
+    __slots__ = ("slot", "shown", "shown_at", "start")
+
+    def __init__(self) -> None:
+        import time
+
+        self.slot = st.empty()
+        self.shown = False
+        self.shown_at = 0.0
+        self.start = time.monotonic()
+
+
+def _close_loading_overlay(overlay: "_LoadingOverlay") -> None:
+    """열려 있는 로딩 팝업을 닫는다 — _drain_mic_while(close=True)가 스스로 부르는
+    것과 같은 로직이라 별도 함수로 뺐다. close=False로 팝업을 열어둔 채 반환받은
+    호출부가, 결국 다음 _drain_mic_while() 단계 없이(예: speak() 없이 바로 goto())
+    끝나는 분기에서 직접 불러 마무리를 책임진다 — 안 그러면 팝업이 화면에 계속
+    남는다.
+    """
+    import time
+
+    if overlay.shown:
+        remaining = _LOADING_OVERLAY_MIN_VISIBLE_S - (time.monotonic() - overlay.shown_at)
+        if remaining > 0:
+            time.sleep(remaining)
+        overlay.slot.empty()
+        # 2026-08-25 리포트 — 아래 _drain_mic_while()의 같은 주석 참고("지워라"/
+        # "다시 그려라" 신호가 너무 붙어 도착하면 잔상이 남는 문제) — 임시 완화책.
+        time.sleep(0.05)
+
+
+def _drain_mic_while(
+    job: dict,
+    *,
+    loading_message: str | None = "말씀 잘 들었어요, 잠시만요...",
+    overlay: "_LoadingOverlay | None" = None,
+    close: bool = True,
+) -> "_LoadingOverlay":
     """job["done"]가 True가 될 때까지 상시 마이크(webrtc)의 오디오 큐를 계속 비워준다.
 
     2026-08-23 리포트 실측 확인 — "된장찌개 레시피 알려줘"로 recipe_confirm까지는
@@ -367,29 +422,36 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "말씀 잘 들
     보장한다 — 뜨자마자 바로 지워지는 경우가 없어져서 눈에 실제로 "안내가 있었다"고
     인지할 시간을 준다. 표시 여부(뜨는 시점)는 안 건드린다 — 처리 시간 자체를 더
     기다리게 만드는 게 아니라, 이미 뜨기로 결정된 뒤의 "얼마나 오래 보이는가"만 바꾼다.
+
+    overlay/close(2026-09-01 추가, "로딩바가 두 번 켜졌다 꺼진다" 리포트 대응) — 위
+    _LoadingOverlay 문서 참고. overlay를 안 넘기면(기본값) 지금까지와 완전히 같게
+    이 호출 안에서 팝업을 새로 만들고 끝날 때 스스로 닫는다. 이전 단계가 만든
+    _LoadingOverlay를 넘기면 그 슬롯/표시 상태를 그대로 이어 쓴다 — close=False면
+    끝나도 닫지 않고 그대로 반환하므로, 이어받은 다음 단계(speak() 등)가 마무리
+    책임을 진다. 반환값은 항상 이번에 실제로 쓴 _LoadingOverlay(새로 만들었든
+    넘겨받았든)라, 호출부가 close=False로 부른 뒤 그대로 다음 단계에 넘기면 된다.
     """
     import queue
     import time
 
-    _SHOW_DELAY_S = 0.4
-    _MIN_VISIBLE_S = 0.3
-
-    overlay_slot = st.empty()
-    overlay_shown = False
-    shown_at = 0.0
-    start = time.monotonic()
+    if overlay is None:
+        overlay = _LoadingOverlay()
 
     while not job["done"]:
-        if loading_message and not overlay_shown and (time.monotonic() - start) >= _SHOW_DELAY_S:
-            with overlay_slot:
+        if (
+            loading_message
+            and not overlay.shown
+            and (time.monotonic() - overlay.start) >= _LOADING_OVERLAY_SHOW_DELAY_S
+        ):
+            with overlay.slot:
                 render_loading_overlay(loading_message)
             # 2026-08-26 요청 — 화면을 안 보고 있어도(핵심 컨셉이 "화면 안 보고 음성만으로")
             # 처리 중이라는 걸 알 수 있게, 같은 지점에서 짧은 효과음도 한 번 같이 울린다
             # (render_processing_chime() 문서 참고). start(이 드레인 호출의 시작 시각)를
             # nonce로 그대로 넘기면 호출마다 자연히 값이 달라져 autoplay가 매번 재실행된다.
-            render_processing_chime(nonce=start)
-            overlay_shown = True
-            shown_at = time.monotonic()
+            render_processing_chime(nonce=overlay.start)
+            overlay.shown = True
+            overlay.shown_at = time.monotonic()
 
         context = st.session_state.get(_mic_component_key())
         receiver = getattr(context, "audio_receiver", None) if context is not None else None
@@ -405,19 +467,9 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "말씀 잘 들
             # audio_receiver가 None으로 바뀔 수 있다. 조용히 다음 루프에서 다시 확인.
             pass
 
-    if overlay_shown:
-        remaining = _MIN_VISIBLE_S - (time.monotonic() - shown_at)
-        if remaining > 0:
-            time.sleep(remaining)
-        overlay_slot.empty()
-        # 2026-08-25 리포트 — 이 함수를 부른 쪽(process_utterance()의 미분류 분기 등)이
-        # 바로 다음 줄에서 st.rerun()을 부르는 경우, "지워라"(위 empty())와 "전체를 새로
-        # 그려라"(뒤이은 rerun) 두 신호가 브라우저에 너무 붙어서 도착하면 첫 신호가 다
-        # 반영되기 전에 두 번째가 덮쳐서 팝업이 지워지다 만 채로 남는 잔상이 실측
-        # 확인됐다. 정확한 프론트엔드 내부 메커니즘은 확정 못 했지만(화면 전환 잔상
-        # 전반과 같은 부류의 문제로 추정), 아주 짧은 간격을 둬서 "지워라" 델타가 먼저
-        # 반영될 시간을 벌어주는 임시 완화책 — 근본 fix는 아니다.
-        time.sleep(0.05)
+    if close:
+        _close_loading_overlay(overlay)
+    return overlay
 
 
 def speak(
@@ -426,9 +478,17 @@ def speak(
     recipe_id: str | None = None,
     step_number: int | None = None,
     hidden: bool = False,
+    _loading_overlay: "_LoadingOverlay | None" = None,
 ) -> None:
     """TTS로 응답을 재생하고 채팅 로그에 남긴다. 합성 실패는 조용히 삼키지 않는다(EC-05) —
     화면 텍스트는 항상 남고, 음성만 실패했다는 걸 사용자에게 알린다.
+
+    _loading_overlay(2026-09-01 추가, "로딩바가 두 번 켜졌다 꺼진다" 리포트 대응) —
+    process_utterance()가 자신의 LLM/DB 대기 단계에서 만든 _LoadingOverlay를 넘겨
+    받으면, 이 함수의 TTS 합성 대기도 같은 팝업을 이어 쓰고 여기서 마지막으로 닫는다
+    (voice_io._LoadingOverlay/_drain_mic_while() 문서 참고). 기본값 None은 지금까지
+    처럼 이 함수 혼자 팝업을 만들고 닫는 단독 호출이다 — dispatch.py 외 다른
+    호출부(cooking.py/register.py 등)는 이 인자를 안 넘겨서 동작이 그대로다.
 
     2026-08-21: st.audio()는 Streamlit이 rerun마다 <audio> 태그를 새로 만드는 방식이라
     자동재생·수동 재생 버튼 둘 다 안 먹히는 문제가 실측으로 확인됐다(브라우저에서 재생
@@ -498,9 +558,18 @@ def speak(
                     job["done"] = True
 
             threading.Thread(target=_run_synthesis, daemon=True).start()
-            _drain_mic_while(job)
+            # 2026-09-01 — 이 대기가 process_utterance()의 앞 단계(LLM/DB)와 이어붙는
+            # 두 번째 단계일 수 있다(_loading_overlay 문서 참고) — 넘겨받았으면 그
+            # 팝업을 그대로 이어 쓰고, 여기가(TTS 합성이) 항상 마지막 단계이므로
+            # close=True로 여기서 닫는다.
+            _drain_mic_while(job, overlay=_loading_overlay, close=True)
             if job["error"] is not None:
                 raise job["error"]
+        elif _loading_overlay is not None:
+            # 2026-09-01 — TTS 캐시 히트라 이 함수 안에서는 대기가 필요 없지만, 호출부가
+            # 앞 단계에서 열어둔 팝업을 이 speak() 호출이 마지막 단계로서 닫아줄 걸로
+            # 기대하고 있다(process_utterance() 각 분기 참고) — 여기서 대신 닫는다.
+            _close_loading_overlay(_loading_overlay)
 
         # 2026-08-25 — hidden=True에서도 render_audio_autoplay()로 실제로 한 번 틀고
         # 있었다. hidden=True는 항상 "이 문구를 goto() 직전에 미리 합성/캐싱만 해두고,
