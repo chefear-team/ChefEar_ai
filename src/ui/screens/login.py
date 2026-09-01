@@ -4,10 +4,13 @@
 아이디+비밀번호는 발화가 아니라 폼(텍스트 입력)으로만 받는다 — 비밀번호를 마이크에
 대고 소리 내어 말하게 하는 건 보안상 부적절하다.
 
-다른 화면과 달리 이 둘은 app.py::main()이 listen()을 아예 안 부른다(마이크 컴포넌트
-자체를 안 그림) — 처음엔 register_ingredients/register_steps처럼
-listen_for_speech=False로 연결만 유지하려 했으나, 실사용 중 브라우저에서 "Cannot
-create so many PeerConnections"가 재현돼 아예 뺐다(app.py의 해당 분기 주석 참고).
+app.py::main()이 이 둘을 포함한 4개 화면(login/signup/my_recipes/edit_recipe)에서
+register_ingredients/register_steps와 같은 방식으로 listen_for_speech=False를 부른다
+— 마이크 연결은 유지하되 음성 처리는 건너뛴다(비밀번호를 마이크에 대고 말하게 하는
+건 보안상 부적절하므로 폼으로만 받는다는 원래 취지는 그대로). 한때 "Cannot create so
+many PeerConnections" 크래시로 마이크를 아예 안 그리는 쪽으로 후퇴했었으나, 진짜
+원인(이 넷만 화면을 짧은 간격으로 반복 왕복해 재협상 중인 연결을 죽은 걸로 오판)을
+규명해 voice_io._recover_dead_mic()에서 고쳤다 — app.py의 해당 분기 주석 참고.
 
 구글 로그인은 Streamlit 내장 st.login()/st.user(OIDC)를 그대로 쓴다 — 리다이렉트 왕복은
 Streamlit이 알아서 처리하고, 우리 코드는 돌아온 뒤 st.user.is_logged_in만 확인하면

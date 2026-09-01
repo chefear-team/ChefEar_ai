@@ -5,10 +5,12 @@
 ui.session.get_owner_id())에 맞춰 되살린다 — 카드 레이아웃/삭제 2단계 확인/
 잔상 방지 key 패턴은 그때 구현을 그대로 재사용한다.
 
-다른 화면과 달리 이 둘(my_recipes/edit_recipe)도 login/signup과 같은 이유로
-app.py::main()이 listen()을 아예 안 부른다(마이크 컴포넌트 자체를 안 그림) —
-폼/버튼 조작 전용 화면이라 마이크가 필요 없고, login/signup에서 실제로 겪은
-"Cannot create so many PeerConnections" 재현을 미리 피한다.
+이 둘(my_recipes/edit_recipe)도 login/signup과 같은 이유로 폼/버튼 조작 전용
+화면이라 음성 입력은 필요 없다 — app.py::main()이 listen_for_speech=False로
+불러서 마이크 연결은 유지하되(register_ingredients/steps와 같은 패턴) 음성 처리는
+건너뛴다. 한때 "Cannot create so many PeerConnections" 크래시로 마이크를 아예 안
+그리는 쪽으로 후퇴했었으나, 진짜 원인을 규명해 voice_io._recover_dead_mic()에서
+고쳤다 — login.py/app.py의 해당 분기 주석 참고.
 """
 from __future__ import annotations
 

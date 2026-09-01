@@ -763,6 +763,12 @@ def mic_is_playing() -> bool:
     return _mic_truly_alive(st.session_state.get(_mic_component_key()))
 
 
+# 2026-09-01 — 아래 _recover_dead_mic() 문서 참고. "죽었다" 판정을 debounce하는
+# 최소 지속 시간 — 이보다 짧게 죽어있다 살아나면(정상 재협상 중이었던 것) 세대를
+# 아예 안 올린다.
+_MIC_DEAD_DEBOUNCE_S = 2.0
+
+
 def _recover_dead_mic() -> None:
     """한 번은 정상 연결됐던 마이크가 완전히 끊긴 채(_mic_truly_alive()가 False —
     "checking" 중이 아니라 진짜 종료됐거나 워커가 사라진 상태) 저절로 안 돌아오면,
@@ -777,18 +783,50 @@ def _recover_dead_mic() -> None:
     인스턴스를 만들어 강제로 처음부터 다시 시작시키는 더 확실한 방법을 쓴다 — 이미
     한 번 연결에 성공했던 세션에서만 적용한다(아직 한 번도 연결 안 된 상태, 즉 최초
     로딩 중이거나 사용자가 권한을 아직 안 줬을 뿐인 정상 대기 상태를 오작동으로 착각해
-    불필요하게 재마운트하지 않기 위함)."""
+    불필요하게 재마운트하지 않기 위함).
+
+    2026-09-01 추가 — "Cannot create so many PeerConnections" 크래시 원인 규명.
+    login/my_recipes/edit_recipe/signup에서 register_ingredients/register_steps와
+    똑같이 listen_for_speech=False로 마이크를 계속 그렸는데도(app.py::main()의
+    해당 분기 옛 주석, login.py 문서 참고) 실사용 중 이 크래시가 재현돼 결국 마이크
+    자체를 안 그리는 쪽으로 후퇴했었다. streamlit_webrtc 프론트엔드 소스를 직접 읽어
+    확인한 진짜 메커니즘: 이 넷은 이 프로젝트에서 유일하게 사용자가 "처음 화면으로"/
+    "내 정보" 버튼으로 짧은 간격에 반복해서 왔다갔다 하는 화면들이다(등록 화면들은
+    순서대로 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데(RunPod 배포 환경의
+    ICE/TURN 왕복), 그 몇 초 사이에 또 다른 화면으로 나갔다 돌아오면 이 함수가 "아직
+    재협상 중이라 안 죽었다"와 "진짜 죽었다"를 구분 못 하고 바로 세대를 올렸다 — 새
+    세대 = 새 RTCPeerConnection(component.py::_get_or_create_context()의 orphan-reset
+    참고)이라, 이 왕복이 반복될수록(브라우저가 이전 연결들을 완전히 정리하는 속도보다
+    빠르게) 연결이 계속 쌓여 결국 브라우저의 PeerConnection 개수 상한에 부딪혔다.
+    "죽었다"는 판정을 한 번의 관측이 아니라 _MIC_DEAD_DEBOUNCE_S만큼 계속 죽어있는
+    상태가 이어질 때만 확정하도록 바꾼다 — 진짜 재협상 중이면 그 사이 다시 살아있는
+    걸로 관측되는 순간(아래 _mic_truly_alive() 분기) 바로 리셋되고, 화면을 벗어났다
+    정말 오래 돌아오지 않거나 실제로 끊긴 경우(네트워크 끊김, 탭 백그라운드 등)엔
+    여전히 정상적으로(그냥 몇 초 늦게) 세대를 올려 복구한다.
+    """
+    import time as _time2
+
     context = st.session_state.get(_mic_component_key())
     state = getattr(context, "state", None)
     signalling = bool(getattr(state, "signalling", False))
 
     if _mic_truly_alive(context):
         st.session_state["_mic_ever_connected"] = True
+        st.session_state["_mic_dead_since"] = None
         return
 
     if st.session_state.get("_mic_ever_connected") and not signalling:
+        dead_since = st.session_state.get("_mic_dead_since")
+        if dead_since is None:
+            # 이번이 "죽어있다"는 첫 관측 — 바로 세대를 올리지 않고 시각만 남겨둔다.
+            st.session_state["_mic_dead_since"] = _time2.monotonic()
+            return
+        if _time2.monotonic() - dead_since < _MIC_DEAD_DEBOUNCE_S:
+            # 아직 debounce 창 안 — 재협상이 정상적으로 진행 중일 수 있으니 좀 더 지켜본다.
+            return
         st.session_state["_mic_gen"] = st.session_state.get("_mic_gen", 0) + 1
         st.session_state["_mic_ever_connected"] = False
+        st.session_state["_mic_dead_since"] = None
         # 2026-08-28 — 세대별 임시 타이밍 키(_mic_connect_start_<gen>/_mic_connect_logged_<gen>,
         # _run_mic_loop() 참고)가 재연결마다 2개씩 session_state에 쌓이기만 하고 아무도 안
         # 지웠다("화면 전환마다 재연결"이라 한 세션에 수십 개). 세대가 바뀌는 지금 옛 세대

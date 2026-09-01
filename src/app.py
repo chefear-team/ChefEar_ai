@@ -500,16 +500,26 @@ def main() -> None:
         if text:
             process_utterance(text)
     elif screen in ("login", "signup", "my_recipes", "edit_recipe"):
-        # 2026-09-01 — 다른 화면과 달리 이 넷은 listen()을 아예 안 부른다(= 마이크
-        # 컴포넌트 자체를 안 그림). 원래는 register_ingredients/register_steps처럼
-        # listen_for_speech=False로 연결만 유지하려 했으나, 실사용 중 브라우저에서
+        # 2026-09-01 — 원래 register_ingredients/register_steps와 같은 이유로
+        # listen_for_speech=False로 마이크 연결만 유지하려 했으나, 실사용 중
         # "Failed to construct 'RTCPeerConnection': Cannot create so many
-        # PeerConnections"가 재현됐다 — 비밀번호 입력 중엔 애초에 마이크가 전혀
-        # 필요 없는 화면이라, 재연결 비용(다음 화면 진입 시 한 번 더 협상)을 감수하고
-        # 아예 안 그리는 쪽으로 바꿨다. my_recipes/edit_recipe(2026-09-01 도입,
-        # docs/specs/my_recipes.md)도 폼/버튼 조작 전용 화면이라 같은 이유로 처음부터
-        # 이 예외에 포함시킨다. 다른 화면들처럼 "항상 listen() 호출" 규칙의 의도적 예외.
-        pass
+        # PeerConnections"가 재현돼 마이크 자체를 아예 안 그리는 쪽으로 후퇴했었다
+        # (이 주석의 이전 버전, login.py 문서 참고 — 근본 원인 미해결 워크어라운드
+        # 였음).
+        #
+        # 근본 원인 규명(voice_io._recover_dead_mic() 문서 참고): 이 넷은 이
+        # 프로젝트에서 유일하게 사용자가 "처음 화면으로"/"내 정보" 버튼으로 다른
+        # 화면과 짧은 간격을 두고 반복해서 왕복하는 화면들이다(등록 화면들은 순서대로
+        # 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데, 그 몇 초 사이에
+        # 왕복하면 _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을 구분 못 하고
+        # 매번 새 세대(=새 RTCPeerConnection, component.py::_get_or_create_context()의
+        # orphan-reset 참고)를 만들어냈다 — 왕복이 반복될수록 브라우저가 이전 연결을
+        # 정리하는 속도보다 빠르게 연결이 쌓여 결국 PeerConnection 개수 상한에
+        # 부딪혔다. _recover_dead_mic()에 "죽었다" 판정을 debounce하는 로직을 추가해
+        # 이 오판을 막았으므로, register_ingredients/steps와 동일한(이미 검증된) 안전한
+        # 패턴으로 되돌린다 — 마이크를 안 그려서 매번 재연결시키는 대신, 연결은
+        # 유지하고 음성 처리만 건너뛴다.
+        listen(screen, listen_for_speech=False, show_text_fallback=False)
 
 
 def _run_with_error_notice(label: str, fn) -> None:
