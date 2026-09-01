@@ -116,3 +116,26 @@ alter table recipes add column if not exists approved text not null default 'Y' 
 -- 것으로 간주한다 — 안 그러면 기존 데이터가 이 마이그레이션 직후 전부 조회 안 되는
 -- 회귀가 생긴다. 한 번만 실행하면 되고, 재실행해도 이미 'Y'인 행은 그대로라 안전하다.
 update recipes set approved = 'Y' where approved is distinct from 'Y';
+
+-- ── users 재도입(2026-09-01, docs/specs/user_accounts_google_login.md) ──────────────
+-- 일반 사용자 로그인/회원가입을 다시 만들면서 users.id의 성격이 바뀐다: 예전엔
+-- gen_random_uuid()가 만드는 무작위 값이었지만, 이제는 결정론적 SHA256 해시값이다
+-- (로컬 가입은 sha256(username), 구글 로그인은 sha256(google_sub)) — "이미 가입된
+-- 계정인지"를 그냥 이 id로 조회하는 것만으로 알 수 있게 하기 위함(auth.py 참고).
+-- SHA256 hex digest는 64자라 uuid 타입에 안 들어가므로 text로 바꾼다. uuid->text
+-- 변환 자체는 PostgreSQL이 손실 없이 안전하게 해준다(문자열 표현 그대로 보존).
+--
+-- 주의(EC-08): 이 마이그레이션 시점에 이미 있던 행(2026-08-22~27, 로그인 기능이
+-- 살아있던 동안 만들어진 테스트/디버그 계정 6건 확인됨)은 옛 uuid 문자열을 id로 그대로
+-- 유지한 채 남는다 — 새 sha256 스킴으로는 조회가 안 되는 고아 행이 되지만, 팀 결정으로
+-- 삭제하지 않는다. 그 행들의 username 값(예: "test", "leeony")과 겹치는 아이디로 신규
+-- 가입을 시도하면 아래 uq_users_username 제약에 걸려 막힌다(auth.py::signup_local()이
+-- 그 경우를 SignupError로 변환해서 화면에 보여줌).
+alter table users alter column id type text;
+alter table users alter column id drop default;
+
+alter table users add column if not exists email text;  -- 구글 계정만 채움, 로컬 가입은 null
+alter table users add column if not exists auth_provider text not null default 'local'
+    check (auth_provider in ('local', 'google'));
+alter table users add column if not exists google_sub text;
+alter table users alter column password_hash drop not null;  -- 구글 계정은 로컬 비밀번호 없음

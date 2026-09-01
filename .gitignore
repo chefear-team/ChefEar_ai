@@ -4,6 +4,8 @@
 !.env.example
 *.pem
 *.key
+# 구글 OAuth client_secret 등 Streamlit 내장 인증 설정(docs/specs/user_accounts_google_login.md)
+.streamlit/secrets.toml
 
 # 관리자 화자검증 성문(docs/specs/admin_voice_2fa.md) — 음성 생체 임베딩이라 커밋 금지.
 # 각 배포 환경에서 /enroll 로 직접 등록한다.

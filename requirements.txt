@@ -6,6 +6,10 @@ sentence-transformers==5.6.1
 faster-whisper==1.2.1
 supabase==2.31.0
 
+# 구글 OAuth 로그인(docs/specs/user_accounts_google_login.md) — st.login()/st.user가
+# 요구하는 의존성(Streamlit 공식 안내: pip install streamlit[auth]).
+Authlib>=1.3.2
+
 # 상시 마이크(실시간 스트리밍 인식) — 2026-08-23 추가. streamlit-webrtc가 브라우저 마이크를
 # 끊김 없이 스트리밍해주고, silero-vad(VADIterator)가 "말하다가 조용해지면 거기까지 한
 # 발화"로 프레임을 잘라준다. aiortc는 streamlit-webrtc의 WebRTC 구현 의존성.

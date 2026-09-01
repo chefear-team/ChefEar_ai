@@ -24,6 +24,12 @@ def init_state() -> None:
     st.session_state.setdefault("screen", "start")
     st.session_state.setdefault("pipeline_session", dict(_DEFAULT_PIPELINE_SESSION))
     st.session_state.setdefault("chat_log", [])
+    # 2026-09-01 — 로그인 재도입(docs/specs/user_accounts_google_login.md).
+    # orchestration.auth.User 또는 None. 로컬 로그인/회원가입은 이 값을 직접 채우고,
+    # 구글 로그인은 st.user(브라우저 쿠키 기반, Streamlit이 자체로 유지)가 진짜
+    # 로그인 상태를 들고 있어서 이 세션 값은 그 결과를 캐시해두는 용도다(app.py::
+    # main()이 매 rerun마다 st.user.is_logged_in과 동기화).
+    st.session_state.setdefault("current_user", None)
     st.session_state.setdefault("recipe_view", None)  # {"recipe_id","dish_name","ingredients_raw","steps"}
     st.session_state.setdefault("pending_dish_name", None)  # 등록 화면 진입 시 추정 요리명 프리필용
     # listen()의 위젯 키에 붙는 턴 번호. text_input/audio_input 값은 Streamlit 세션에
@@ -62,3 +68,23 @@ def goto(screen: str) -> None:
     """
     st.session_state.screen = screen
     st.rerun()
+
+
+def login(user) -> None:
+    """orchestration.auth.User를 세션에 로그인 상태로 기록한다(로컬/구글 공통 진입점)."""
+    st.session_state.current_user = user
+
+
+def logout() -> None:
+    """로그아웃. 구글 계정으로 로그인한 상태였다면 Streamlit이 들고 있는 OIDC 쿠키도
+    같이 지워야 다음 방문 때 자동 재로그인되지 않는다(st.login() 문서: st.logout()이
+    쿠키를 지움). 로컬 로그인은 애초에 쿠키가 없으니 그냥 넘어간다."""
+    if getattr(st.user, "is_logged_in", False):
+        st.logout()
+    st.session_state.current_user = None
+
+
+def get_owner_id() -> str | None:
+    """레시피 등록 시 `recipes.owner_id`에 넣을 값. 비로그인 상태면 None(기존과 동일)."""
+    user = st.session_state.get("current_user")
+    return user.id if user else None

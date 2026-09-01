@@ -55,7 +55,7 @@ def _final_summary(ingredients: list[str], instructions: list[str]) -> str:
     return "재료와 순서를 확인할게요. 재료: " + ", ".join(ingredients) + f". 순서: {steps_text} 이대로 저장할까요?"
 
 
-def register_recipe(session: dict, step: str, value=None, client=None) -> dict:
+def register_recipe(session: dict, step: str, value=None, client=None, owner_id: str | None = None) -> dict:
     """등록 대화 한 턴을 처리한다. step 값에 따라 하는 일이 완전히 달라지는
     "상태 기계(state machine)" 형태의 함수다 — 지금 세션이 어느 단계에
     있느냐에 따라 같은 함수를 다르게 호출해가며 쓴다.
@@ -109,6 +109,7 @@ def register_recipe(session: dict, step: str, value=None, client=None) -> dict:
             source="user_custom",  # 신규 등록은 항상 사용자 버전
             origin_id=None,
             client=client,
+            owner_id=owner_id,
         )
         session["registration"] = None  # 저장 끝났으니 임시 등록 상태는 정리
         return result
@@ -123,6 +124,7 @@ def save_recipe(
     source: str = "user_custom",
     origin_id: str | None = None,
     client=None,
+    owner_id: str | None = None,
 ) -> dict:
     """레시피 하나를 실제로 recipes/recipe_steps 테이블에 저장한다(7.5 확정 저장).
 
@@ -131,12 +133,15 @@ def save_recipe(
     같은 로직이 전혀 없음) — 그래서 사용자가 같은 요리를 여러 버전으로 저장해도
     전부 별도의 행으로 남는다.
 
-    2026-08-27 — 계정/쿠키 시스템을 없애면서 "누가 등록했는지" 추적을 그만뒀다
-    (owner_id는 항상 None으로 저장, `recipes.owner_id` 컬럼 자체는 나중에 다른
-    식별자로 재사용할 수 있게 스키마엔 남겨둠). 대신 승인(approved) 컬럼으로
-    공개 여부를 가린다 — 신규 user_custom은 관리자가 승인(`approved='Y'`)하기
-    전까진 아무도 조회할 수 없다(admin_recipe_approval.md). api_standard는
-    load_data.py가 적재 시점에 이미 approved='Y'로 넣는다.
+    2026-08-27 — 계정/쿠키 시스템을 없애면서 "누가 등록했는지" 추적을 그만뒀었다
+    (owner_id는 항상 None). 2026-09-01 로그인 재도입(docs/specs/
+    user_accounts_google_login.md)으로 다시 채우기 시작한다 — 로그인 상태면
+    호출부(ui/screens/register.py)가 ui.session.get_owner_id()의 값을 넘기고,
+    비로그인이면 여전히 None이라 기존과 동작이 같다. 승인(approved) 컬럼으로
+    공개 여부를 가리는 건 그대로다 — 신규 user_custom은 관리자가 승인
+    (`approved='Y'`)하기 전까진 아무도(등록한 사람 포함) 조회할 수 없다
+    (admin_recipe_approval.md). api_standard는 load_data.py가 적재 시점에
+    이미 approved='Y'로 넣는다.
     """
     client = client or get_client()
     # .insert({...}) 는 딕셔너리 하나(행 하나)를 즉시 넣고, .execute().data는
@@ -152,6 +157,7 @@ def save_recipe(
                 "source": source,
                 "origin_id": origin_id,
                 "approved": "N",  # 관리자 승인 대기 — 승인 전까진 조회에서 제외됨
+                "owner_id": owner_id,
             }
         )
         .execute()

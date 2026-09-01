@@ -57,3 +57,26 @@ def test_ec17_duplicate_dish_name_saved_as_separate_row_not_overwritten():
 
     assert first["recipe_id"] != second["recipe_id"]
     assert len(client.table("recipes").rows) == 2
+
+
+def test_ac04_owner_id_reflected_when_logged_in_and_null_when_not():
+    """docs/specs/user_accounts_google_login.md AC-04."""
+    client = FakeSupabaseClient()
+
+    logged_in = save_recipe("김치찌개", ["김치"], ["끓인다"], client=client, owner_id="sha256-user-id")
+    anonymous = save_recipe("김치찌개", ["김치"], ["끓인다"], client=client, owner_id=None)
+
+    assert client.table("recipes").rows[logged_in["recipe_id"]]["owner_id"] == "sha256-user-id"
+    assert client.table("recipes").rows[anonymous["recipe_id"]]["owner_id"] is None
+
+
+def test_register_recipe_confirm_passes_owner_id_through_to_save_recipe():
+    client = FakeSupabaseClient()
+    session: dict = {}
+    register_recipe(session, "dish_name", "김치찌개", client=client)
+    register_recipe(session, "ingredients", ["김치"], client=client)
+    register_recipe(session, "instructions", ["끓인다"], client=client)
+
+    result = register_recipe(session, "confirm", client=client, owner_id="sha256-user-id")
+
+    assert client.table("recipes").rows[result["recipe_id"]]["owner_id"] == "sha256-user-id"

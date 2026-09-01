@@ -50,6 +50,11 @@ from ui.screens.cooking import (
     screen_recipe_confirm,
     screen_start,
 )
+from ui.screens.login import (
+    handle_google_login_if_returned,
+    screen_login,
+    screen_signup,
+)
 from ui.screens.register import (
     handle_register_dish_name,
     handle_register_intro,
@@ -60,7 +65,7 @@ from ui.screens.register import (
     screen_register_steps,
     screen_unclassified,
 )
-from ui.session import _DEFAULT_PIPELINE_SESSION, goto, init_state
+from ui.session import _DEFAULT_PIPELINE_SESSION, goto, init_state, logout as session_logout
 from ui.voice_io import listen
 
 load_env()
@@ -76,6 +81,8 @@ SCREENS = {
     "register_ingredients": screen_register_ingredients,
     "register_steps": screen_register_steps,
     "complete": screen_complete,
+    "login": screen_login,
+    "signup": screen_signup,
 }
 
 # 화면 본문 뒤에 붙이는 빈 슬롯 개수(main()의 st.empty() 스왑 안, #8360 꼬리 패딩).
@@ -268,6 +275,10 @@ def main() -> None:
         st.switch_page(_ADMIN_PAGE)
 
     init_state()
+    # 2026-09-01 — 구글 로그인 재도입(docs/specs/user_accounts_google_login.md).
+    # st.login() 리다이렉트로 막 돌아온 rerun인지를 매번 확인해서, 그런 경우에만
+    # DB 조회/insert(login_or_create_google)를 한 번 수행하고 세션에 반영한다.
+    handle_google_login_if_returned()
 
     # 2026-08-28 — 디버그 진입로(?debug_screen / ?debug_panel)는 .env의 CHEFEAR_DEBUG가
     # 설정된 경우에만 활성화한다. 예전엔 프로덕션에서도 항상 켜져 있어서(접근 게이트만
@@ -335,10 +346,20 @@ def main() -> None:
     st.session_state._active_recipe_box["recipe_id"] = st.session_state.pipeline_session.get("current_recipe_id")
     _start_model_warmup()
     inject_css()
-    # 2026-08-27 — 일반 사용자 로그인/회원가입/마이레시피를 전부 없앴다(계정 시스템
-    # 제거 결정). 로그인 버튼도 같이 없앤다 — 관리자 접근은 별도 게이트(admin_recipe_
-    # approval.md)로 이동.
-    render_brand()
+    # 2026-08-27 — 일반 사용자 로그인/회원가입/마이레시피를 전부 없앴다가, 2026-09-01
+    # 로그인/회원가입만 재도입했다(마이레시피는 여전히 범위 밖 — docs/specs/
+    # user_accounts_google_login.md Out of Scope). 관리자 접근은 이 버튼과 무관하게
+    # 별도 게이트(admin_recipe_approval.md)로 그대로 유지.
+    _current_user = st.session_state.get("current_user")
+    _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
+    if _brand_clicked:
+        if _current_user:
+            # 마이레시피 화면은 이번 Spec 범위 밖이라, 로그인 아이콘이 아이디로 바뀐
+            # 뒤 다시 누르면 가장 쓸모 있는 동작인 로그아웃으로 처리한다.
+            session_logout()
+            st.rerun()
+        else:
+            goto("login")
 
     # 2026-08-24 — "화면 전체를 st.empty() 슬롯 하나로 감싸서 매번 통째로 교체" 시도는
     # 되돌림(실측: "된장찌개 레시피 알려줘" 인식 후 무반응/회색 화면으로 멈추는 새 증상
@@ -462,6 +483,16 @@ def main() -> None:
         text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
+    elif screen in ("login", "signup"):
+        # 2026-09-01 — 다른 화면과 달리 이 둘은 listen()을 아예 안 부른다(= 마이크
+        # 컴포넌트 자체를 안 그림). 원래는 register_ingredients/register_steps처럼
+        # listen_for_speech=False로 연결만 유지하려 했으나, 실사용 중 브라우저에서
+        # "Failed to construct 'RTCPeerConnection': Cannot create so many
+        # PeerConnections"가 재현됐다 — 비밀번호 입력 중엔 애초에 마이크가 전혀
+        # 필요 없는 화면이라, 재연결 비용(다음 화면 진입 시 한 번 더 협상)을 감수하고
+        # 아예 안 그리는 쪽으로 바꿨다. 다른 화면들처럼 "항상 listen() 호출" 규칙의
+        # 의도적 예외.
+        pass
 
 
 def _run_with_error_notice(label: str, fn) -> None:

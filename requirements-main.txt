@@ -12,6 +12,9 @@ tokenizers==0.22.2
 
 qwen-tts==0.1.1
 
+# 구글 OAuth 로그인(docs/specs/user_accounts_google_login.md) — st.login()/st.user 요구 의존성.
+Authlib>=1.3.2
+
 # 관리자 페이지 2FA 화자검증(docs/specs/admin_voice_2fa.md) — ECAPA-TDNN
 # (speechbrain/spkrec-ecapa-voxceleb). CPU 추론(VRAM 여유 없음). torchaudio 2.9+에서
 # 제거된 list_audio_backends()를 speechbrain이 부르므로 src/orchestration/speaker_verify.py

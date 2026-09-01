@@ -31,6 +31,17 @@ try:
 except Exception:
     _LOGO_DATA_URI = None
 
+# 2026-09-01 — 구글 로그인/회원가입 버튼(ui/screens/login.py)의 "G" 로고 이미지.
+# 위 _LOGO_PATH(ui/images/, 이 파일과 같은 폴더 밑)와 달리 이건 src/ui/images/에 있다
+# (사용자가 직접 그 경로에 저장) — 이 파일(ui/theme.py)은 top-level ui/ 소속이라
+# .parent.parent가 프로젝트 루트, 거기서 src/ui/images/로 내려간다. 헷갈리기 쉬운 두
+# ui/ 폴더 얘기는 이 프로젝트 여러 파일 상단에 반복해서 적혀있는 그 주의사항과 같다.
+_GOOGLE_ICON_PATH = Path(__file__).resolve().parent.parent / "src" / "ui" / "images" / "google_icon.png"
+try:
+    _GOOGLE_ICON_DATA_URI = "data:image/png;base64," + base64.b64encode(_GOOGLE_ICON_PATH.read_bytes()).decode("ascii")
+except Exception:
+    _GOOGLE_ICON_DATA_URI = None
+
 # 2026-08-26 요청 — 바깥 배경(.stApp, 모바일 폭 카드 바깥쪽 뷰포트 전체)에 배경 이미지를
 # 입힌다. 원본(ui/images/chefear_배경.png)이 2816x1536 PNG로 6.2MB나 돼서 그대로
 # base64로 CSS에 박으면 매 페이지 로드마다 8MB 넘게 더 얹는 꼴이라(무거운 화면 잔상
@@ -596,7 +607,11 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
    Code가 이 파일을 고친 직후엔 VS Code에서 그 파일을 반드시 새로고침(다시 불러오기)
    한 뒤에 저장할 것 — 안 그러면 이 규칙(그리고 이 파일의 다른 최근 수정분)이 또
    조용히 사라질 수 있다. */
+/* 2026-09-01 — screen_signup도 render_back_link()를 맨 앞에서 부르는데(screen_login과
+   같은 구조) 이 목록에 없어서 로고가 화면 맨 아래로 밀리는 게 실측 확인됐다(사용자
+   리포트) — login 옆에 추가. */
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_login"]),
+[data-testid="stLayoutWrapper"]:has([class*="st-key-screen_signup"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_cooking_complete"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_register_dish_name"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_register_ingredients"]),
@@ -614,6 +629,12 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
   width: 100%; height: 100%; padding: 0; border: none; background: transparent;
   box-shadow: none; color: transparent; cursor: pointer;
 }
+
+/* 2026-09-01 — 구글 로그인/회원가입 버튼(ui/screens/login.py)의 "G" 로고 배경 이미지
+   자체(url(...) 포함)는 inject_css() 안에서 _GOOGLE_ICON_DATA_URI로 별도 <style>
+   블록으로 붙인다(_BG_DATA_URI와 같은 이유 — 이 CSS 문자열 전체를 f-string으로
+   바꾸면 중괄호 수백 개 이스케이프가 위험해서, data URI가 필요한 규칙만 뒤에 분리).
+   여기서는 배경색/모양 등 데이터 URI가 필요 없는 부분만 잡는다. */
 
 /* 화면 하단 버튼 줄을 화면 밑에 고정한다(recipe_confirm의 응/시작·다른 레시피,
    substitution_confirm의 네/아니요 등 - 컨테이너 key가 "_footer_buttons"로 끝나는
@@ -722,6 +743,21 @@ def inject_css() -> None:
             f"<style>.stApp {{ background-image: url('{_BG_DATA_URI}'); "
             "background-size: cover; background-position: center; background-repeat: no-repeat; "
             "background-attachment: fixed; }}</style>",
+            unsafe_allow_html=True,
+        )
+
+    # 2026-09-01 — 구글 로그인/회원가입 버튼의 "G" 로고(_GOOGLE_ICON_DATA_URI, 모듈
+    # 최상단 문서 참고). 위 배경 이미지와 같은 이유로 별도 <style> 블록. 이미지 로딩
+    # 실패 시(파일 없음 등) 아이콘 없이 텍스트만 있는 버튼으로 조용히 대체된다.
+    if _GOOGLE_ICON_DATA_URI:
+        st.markdown(
+            "<style>"
+            '[class*="st-key-login_google_btn"] button,'
+            '[class*="st-key-signup_google_btn"] button {'
+            f"background-image: url('{_GOOGLE_ICON_DATA_URI}') !important;"
+            "background-repeat: no-repeat !important; background-position: 16px center !important;"
+            "background-size: 20px 20px !important;"
+            "}</style>",
             unsafe_allow_html=True,
         )
 
@@ -1446,6 +1482,10 @@ _AUDIO_FREE_SCREENS = (
     "register_steps",
     "register_dish_name",
     "register_intro",
+    # 2026-09-01 재도입 — login/signup(ui/screens/login.py)도 speak()/오디오 재생을
+    # 전혀 안 쓰는 순수 폼 화면이라 register_ingredients/register_steps와 같은 부류.
+    "login",
+    "signup",
 )
 
 # 2026-08-25 — render_screen_cleanup()이 쓰는, "텍스트 대체 입력칸을 절대 안 만드는
@@ -1469,11 +1509,16 @@ _AUDIO_FREE_SCREENS = (
 #
 # 2026-09-01 재감사 — no_match/login/my_recipes/edit_recipe 네 화면을 뺐다(위
 # _AUDIO_FREE_SCREENS와 같은 이유 — SCREENS 딕셔너리에서 이미 삭제된 화면들).
+#
+# 2026-09-01 재도입 — 뺐던 지 몇 시간 만에 login/signup이 다시 생겼다(app.py::main()이
+# 이 둘을 show_text_fallback=False로 부름, ui/screens/login.py 참고). 다시 넣는다.
 _NO_TEXT_FALLBACK_SCREENS = (
     "start",
     "recipe_confirm",
     "register_ingredients",
     "register_steps",
+    "login",
+    "signup",
 )
 
 # 2026-08-25 — fallback_buttons()와 같은 부류의 잔상을 no_match 화면에서도 실측 확인:
@@ -1608,12 +1653,17 @@ _STALE_CONTENT_MARKERS = {
     # 2026-09-01 재감사 — no_match 화면 자체가 2026-08-27에 삭제돼서 위 항목을 owner
     # 목록에서 뺐다(SCREENS에 없는 이름이라 CURRENT가 될 일이 없어 남겨둬도 무해하긴
     # 했지만, 바로 위 주석이 이미 없는 화면을 설명하고 있어 혼란스러워서 정리).
+    # 2026-09-01 — login도 render_back_link("처음 화면으로")를 화면 맨 앞에서 부른다
+    # (ui/screens/login.py::screen_login()). 이 owner 리스트에 "login"을 빠뜨리면 위
+    # no_match 사례와 똑같은 증상(뒤로가기 링크를 잔상으로 오판해 화면 전체를 숨김,
+    # 사용자 실사용 재현: 로그인 버튼 눌러도 브랜드 헤더 밑이 통째로 빈 화면)이 난다.
     "처음 화면으로": [
         "cooking_complete",
         "register_dish_name",
         "register_ingredients",
         "register_steps",
         "complete",
+        "login",
     ],
 }
 
@@ -1677,15 +1727,12 @@ _SINGLE_OWNER_WIDGET_KEYS = {
 # 이 화면들의 위젯을 공유하는 key 접두사로 구조적으로 잡는 규칙을 추가했다. login/signup
 # 두 뷰(_login_view) 다 이 접두사를 쓴다(my_recipes.py::screen_login() 참고).
 #
-# 2026-09-01 재감사 — my_recipes.py::screen_login()이 2026-08-27에 계정 시스템과 함께
-# 삭제돼서, login_*/signup_* key를 가진 위젯을 만드는 코드가 이제 없다 — 이 상수와
-# JS 쪽 ruleLoginSignup()(_CE_SWEEP_JS 안)은 사실상 완전히 죽은 규칙이다(매 sweep마다
-# 절대 안 걸릴 조건 검사만 하나 더 도는 정도). 다른 화이트리스트들과 달리 여기선 값만
-# 지우지 않고 남겨뒀다 — 지우려면 render_screen_cleanup()이 st.html()에 base64+eval로
-# 밀어 넣는 15KB짜리 JS 본문(DOMPurify 새니타이저에 걸려 통째로 사라진 전례, UTF-8
-# mojibake 전례 등 최근에도 두 번 깨졌던 곳)까지 같이 고쳐야 해서, 무해한 죽은 코드
-# 하나 지우자고 그 위험을 감수할 이유가 없다고 판단했다. JS 쪽을 다른 이유로 손댈
-# 일이 생기면 그때 ruleLoginSignup() 호출부까지 같이 지울 것.
+# 2026-09-01 재도입(docs/specs/user_accounts_google_login.md) — ui/screens/login.py의
+# screen_login()/screen_signup()이 이 접두사 그대로(login_username_*, signup_password_*
+# 등) 위젯 key를 쓴다. 위 2026-09-01 재감사에서 "완전히 죽은 규칙"이라고 적었던 건
+# 몇 시간 전 얘기다 — 로그인/회원가입이 다시 생기면서 이 상수와 JS 쪽
+# ruleLoginSignup()(_CE_SWEEP_JS 안) 둘 다 다시 살아 있다. 그때 "값만 남기고 지우지
+# 않았던" 덕분에 이번엔 코드 추가만으로 그대로 재사용됐다.
 LOGIN_KEY_PREFIXES = ("login_", "signup_")
 
 # ⚠️ 2026-08-26 재구성 — 이 아래 render_screen_cleanup()은 2026-08-25 새벽 세션에서 여러
@@ -1980,7 +2027,10 @@ _CE_SWEEP_JS = r"""
         }
       }
       if (!matched) continue;
-      if (CURRENT === "login") unhide(el);
+      // 2026-09-01 — CURRENT === "signup" 케이스가 빠져 있었다. signup_google_btn처럼
+      // "signup_" 접두사 key를 가진 위젯이 signup 화면 자신에서도 숨어버리는 버그였다
+      // (login 화면 것만 살아남고, signup 화면 자기 자신의 위젯은 매번 else로 hide()됨).
+      if (CURRENT === "login" || CURRENT === "signup") unhide(el);
       else hide(el);
     }
   }

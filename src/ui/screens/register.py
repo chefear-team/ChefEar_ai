@@ -33,7 +33,7 @@ from theme import (
 from orchestration.db import get_client
 from orchestration.registration import register_recipe
 from ui.dispatch import fallback_buttons, is_home_word, reset_to_start
-from ui.session import goto
+from ui.session import get_owner_id, goto
 from ui.voice_io import _render_cached_speech, mic_is_playing, speak
 
 _REGISTER_SAVED_MESSAGE = "저장이 완료됐어요!"
@@ -328,7 +328,9 @@ def screen_register_steps() -> None:
         # 나머지 필드가 없어도 screen_complete()는 dish_name만 읽으므로 안전하고, 이후
         # 실제 조회가 일어나면 refresh_recipe_view()가 이 임시 값을 통째로 덮어쓴다.
         dish_name = reg["dish_name"]
-        register_recipe(st.session_state.pipeline_session, "confirm", None, client=get_client())
+        register_recipe(
+            st.session_state.pipeline_session, "confirm", None, client=get_client(), owner_id=get_owner_id()
+        )
         st.session_state.recipe_view = {"dish_name": dish_name}
         speak(_REGISTER_SAVED_MESSAGE, hidden=True)
         goto("complete")
