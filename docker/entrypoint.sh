@@ -41,5 +41,28 @@ if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}${CLOUDFLARED_CONFIG:-}" ] && ! jobs %% >/d
     echo "[entrypoint] 경고: cloudflared가 시작 직후 종료된 것으로 보입니다 - 로그를 확인하세요." >&2
 fi
 
+# ---- 구글 OAuth 로그인(docs/specs/user_accounts_google_login.md) ----
+# st.login()은 환경변수가 아니라 .streamlit/secrets.toml 파일의 [auth] 섹션만 읽는다.
+# 그런데 이 파일은 스펙 문서에 "커밋 금지"로 돼 있어서(비밀값이라 .gitignore) Docker
+# 이미지에 안 들어있다 - Supabase 키처럼 RunPod 환경변수만 넣어선 절대 안 읽힌다.
+# cloudflared 토큰 방식과 같은 패턴: RunPod Pod의 "Environment Variables" 화면에
+# 아래 4개 변수만 넣어두면, 컨테이너가 뜰 때마다 이 스크립트가 secrets.toml을 대신
+# 생성해준다 - 비밀값 자체는 이 코드 어디에도 안 남고, git에도 안 올라간다.
+if [ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" ] && [ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]; then
+    echo "[entrypoint] 구글 OAuth: 환경변수로부터 .streamlit/secrets.toml 생성" >&2
+    mkdir -p .streamlit
+    cat > .streamlit/secrets.toml <<EOF
+[auth]
+redirect_uri = "${GOOGLE_OAUTH_REDIRECT_URI:-https://chefear.store/oauth2callback}"
+cookie_secret = "${GOOGLE_OAUTH_COOKIE_SECRET:?GOOGLE_OAUTH_COOKIE_SECRET 환경변수가 비어있음 - secrets.token_urlsafe(32)로 생성해서 RunPod Pod 환경변수에 넣을 것}"
+client_id = "${GOOGLE_OAUTH_CLIENT_ID}"
+client_secret = "${GOOGLE_OAUTH_CLIENT_SECRET}"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+EOF
+else
+    echo "[entrypoint] 경고: GOOGLE_OAUTH_CLIENT_ID/SECRET 없음 - 구글 로그인 버튼을 누르면" \
+        "StreamlitAuthError가 납니다(로컬 아이디/비밀번호 로그인은 정상 동작)." >&2
+fi
+
 # ---- Streamlit (포그라운드 - 이 프로세스가 컨테이너의 생명주기가 된다) ----
 exec python -m streamlit run src/app.py
