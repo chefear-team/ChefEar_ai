@@ -15,6 +15,7 @@ from theme import (
     render_spacer,
     render_step_card,
 )
+from orchestration.term_dict import resolve_for_display, resolve_for_tts
 from ui.dispatch import COOKING_COMPLETE_MESSAGE, fallback_buttons, is_home_word, reset_to_start
 from ui.recipe_view import _ingredients_to_chips, refresh_recipe_view
 from ui.session import goto
@@ -237,8 +238,10 @@ def handle_recipe_confirm(text: str) -> None:
         # 화면 없는 자동재생만 하고, 실제로 들리는 소리는 도착 화면 쪽에 맡긴다.
         if view["steps"]:
             first_step = view["steps"][0]
+            # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이라(term_dict.py/
+            # pipeline.py 참고) TTS로 읽기 전에 resolve_for_tts()로 설명 문장까지 풀어준다.
             speak(
-                first_step["text"],
+                resolve_for_tts(first_step["text"]),
                 recipe_id=view["recipe_id"],
                 step_number=first_step.get("step_number", 1),
                 hidden=True,
@@ -314,16 +317,19 @@ def screen_cooking_step() -> None:
     # 직접 찾아서 render_step_card()에 넘겨야 실제로 화면에 남아있는 재생바가 된다
     # (speak()가 쓰는 것과 같은 ui/assets/audio/<recipe_id>/<step:02d>.wav 캐시 경로).
     cached_audio_path = _AUDIO_DIR / str(view["recipe_id"]) / f"{step_number:02d}.wav"
+    # 2026-09-01 — 화면 자막용은 태그를 설명 없이 걷어내는 resolve_for_display()를 거친다
+    # (theme.py::render_step_card() 자체는 안 건드림 — resolve는 항상 호출부 책임).
+    display_text = resolve_for_display(current["text"])
     if cached_audio_path.exists():
         nav_target = render_step_card(
             total,
             step_number,
-            current["text"],
+            display_text,
             audio_path=cached_audio_path,
             audio_nonce=st.session_state.get("_audio_replay_nonce", 0),
         )
     else:
-        nav_target = render_step_card(total, step_number, current["text"])
+        nav_target = render_step_card(total, step_number, display_text)
 
     # 2026-08-21: 점을 눌러 그 단계로 바로 이동하거나 화살표로 이전/다음 단계로 넘어간
     # 경우 - render_step_card()는 표시만 하고 실제 상태 전환은 여기서 한다(theme.py는
@@ -348,7 +354,7 @@ def screen_cooking_step() -> None:
         # rerun에 곧장 지워져 "떴다 사라짐" 깜빡임만 남긴다. 도착 화면이 render_step_card()로
         # 같은 단계 오디오를 캐시에서 다시 들려주므로 hidden=True로 화면 없는 자동재생만 한다.
         speak(
-            target_step["text"],
+            resolve_for_tts(target_step["text"]),
             recipe_id=view["recipe_id"],
             step_number=target_step.get("step_number", nav_target),
             hidden=True,
