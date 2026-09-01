@@ -84,12 +84,72 @@ def login(user) -> None:
     st.session_state.current_user = user
 
 
+def persist_local_session(user, client=None) -> None:
+    """일반(로컬) 로그인/회원가입 성공 직후 호출 — 새로고침해도 로그인이 안 풀리게
+    한다(2026-09-01 사용자 요청).
+
+    st.session_state는 브라우저를 새로고침하면 통째로 사라지지만, 브라우저 주소창의
+    쿼리파라미터(st.query_params)는 새로고침해도 URL의 일부로 그대로 남는다 — 이
+    성질을 이용해서, 로그인 성공 시 무작위 세션 토큰(orchestration.auth.
+    create_session_token(), 추측 불가능)을 발급해 주소창에 실어두고, 다음 로드 때
+    restore_local_session()이 그 토큰으로 계정을 다시 찾는다.
+
+    구글 로그인은 이 함수를 호출하지 않는다 — Streamlit 자체 OIDC 쿠키(st.user)가
+    이미 새로고침에도 살아남아서 이 메커니즘이 따로 필요 없다.
+    """
+    from orchestration import auth
+    from orchestration.db import get_client
+
+    client = client or get_client()
+    token = auth.create_session_token(user.id, client)
+    st.query_params["session_token"] = token
+
+
+def restore_local_session(client=None) -> None:
+    """app.py::main()이 매 rerun 시작부에서 호출한다. 이미 로그인 상태(current_user
+    있음)면 아무것도 안 한다 — persist_local_session()이 심어둔 st.query_params의
+    session_token으로 아직 로그인이 안 된 경우에만 계정을 복원한다.
+
+    한계: 탭을 닫았다 나중에 주소창에 토큰 없는 새 URL로 재방문하면 복원 안 된다
+    (쿠키/localStorage가 아니라 주소창 쿼리파라미터 기반이라서) — "새로고침에도 로그인이
+    안 풀리게" 요청 범위까지만 해결한다.
+    """
+    if st.session_state.get("current_user") is not None:
+        return
+    token = st.query_params.get("session_token")
+    if not token:
+        return
+
+    from orchestration import auth
+    from orchestration.db import get_client
+
+    client = client or get_client()
+    user = auth.resolve_session_token(token, client)
+    if user is None:
+        del st.query_params["session_token"]  # 만료/무효 토큰이면 주소창에서도 정리
+        return
+    st.session_state.current_user = user
+
+
 def logout() -> None:
     """로그아웃. 구글 계정으로 로그인한 상태였다면 Streamlit이 들고 있는 OIDC 쿠키도
     같이 지워야 다음 방문 때 자동 재로그인되지 않는다(st.login() 문서: st.logout()이
-    쿠키를 지움). 로컬 로그인은 애초에 쿠키가 없으니 그냥 넘어간다."""
+    쿠키를 지움). 로컬 로그인은 애초에 쿠키가 없으니 그냥 넘어간다.
+
+    2026-09-01 — persist_local_session()이 심어둔 세션 유지 토큰도 여기서 같이
+    정리한다. 서버 쪽(DB) 토큰을 안 지우면, 주소창에 남아있는 URL을 나중에 다시 열었을
+    때 로그아웃 이전 계정으로 재로그인돼버린다.
+    """
+    user = st.session_state.get("current_user")
     if getattr(st.user, "is_logged_in", False):
         st.logout()
+    if user is not None:
+        from orchestration import auth
+        from orchestration.db import get_client
+
+        auth.clear_session_token(user.id, client=get_client())
+    if "session_token" in st.query_params:
+        del st.query_params["session_token"]
     st.session_state.current_user = None
 
 

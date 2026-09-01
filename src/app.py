@@ -66,7 +66,7 @@ from ui.screens.register import (
     screen_register_steps,
     screen_unclassified,
 )
-from ui.session import _DEFAULT_PIPELINE_SESSION, goto, init_state
+from ui.session import _DEFAULT_PIPELINE_SESSION, goto, init_state, restore_local_session
 from ui.voice_io import listen
 
 load_env()
@@ -282,6 +282,10 @@ def main() -> None:
     # st.login() 리다이렉트로 막 돌아온 rerun인지를 매번 확인해서, 그런 경우에만
     # DB 조회/insert(login_or_create_google)를 한 번 수행하고 세션에 반영한다.
     handle_google_login_if_returned()
+    # 2026-09-01 — 일반(로컬) 로그인은 구글과 달리 지속 쿠키가 없어서 새로고침하면
+    # current_user가 그냥 사라졌다(사용자 리포트). st.query_params에 심어둔 세션
+    # 유지 토큰으로 복원한다(ui/session.py::restore_local_session() 문서 참고).
+    restore_local_session()
 
     # 2026-08-28 — 디버그 진입로(?debug_screen / ?debug_panel)는 .env의 CHEFEAR_DEBUG가
     # 설정된 경우에만 활성화한다. 예전엔 프로덕션에서도 항상 켜져 있어서(접근 게이트만

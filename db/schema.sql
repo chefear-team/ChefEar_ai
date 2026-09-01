@@ -139,3 +139,28 @@ alter table users add column if not exists auth_provider text not null default '
     check (auth_provider in ('local', 'google'));
 alter table users add column if not exists google_sub text;
 alter table users alter column password_hash drop not null;  -- 구글 계정은 로컬 비밀번호 없음
+
+-- ── users 컬럼명 정리 + 마지막 로그인/세션 유지(2026-09-01) ──────────────────────────
+-- "id"라는 이름만 보면 이게 진짜 로그인 아이디처럼 보이는데, 실제로는 그걸 해싱한
+-- 값이라 오해를 부른다는 지적으로 이름을 바꾼다. 값 자체(sha256(username)/
+-- sha256(google_sub))는 전혀 안 바뀐다 — 컬럼명만 바뀐다.
+--   id       -> user_id_hash  (PK, 해시값)
+--   username -> user_id       (실제 로그인 아이디)
+alter table users rename column id to user_id_hash;
+alter table users rename column username to user_id;
+
+-- 마지막 로그인 시각. orchestration/auth.py가 로컬 로그인/구글 로그인/회원가입(=최초
+-- 로그인으로 취급) 성공마다 갱신한다. 기존 행은 기록이 없어 NULL로 남고, 다음
+-- 로그인 성공 시 채워진다.
+alter table users add column if not exists last_login_at timestamptz;
+
+-- 일반(로컬) 로그인이 브라우저 새로고침에도 안 풀리게 하는 "로그인 유지" 토큰.
+-- users.user_id_hash(=sha256(username), 공개적으로 추측 가능한 값)를 그대로 브라우저에
+-- 심으면 남의 아이디만 알아도 그 사람으로 로그인해버릴 수 있어서(보안 문제), 로그인/
+-- 회원가입 성공마다 별도의 무작위 토큰(secrets.token_urlsafe)을 새로 발급해 그
+-- "해시값"만 여기 저장한다(비밀번호와 같은 이유 — DB가 유출돼도 토큰 원본은 복원 불가).
+-- 원본 토큰은 브라우저 주소창의 쿼리파라미터(?session_token=)에만 실린다(ui/session.py::
+-- restore_local_session() 참고) — 구글 로그인은 Streamlit 자체 쿠키로 이미 새로고침에도
+-- 살아남아서 이 컬럼을 안 쓴다.
+alter table users add column if not exists session_token_hash text;
+alter table users add column if not exists session_token_expires_at timestamptz;

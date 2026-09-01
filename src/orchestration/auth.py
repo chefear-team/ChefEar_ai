@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import secrets
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from orchestration.db import get_client
 
@@ -25,6 +27,9 @@ from orchestration.db import get_client
 # 재계산하므로, 늘릴수록 브루트포스는 느려지지만 로그인 자체도 느려진다 — 이
 # 값은 그 절충점의 최소선.
 _PBKDF2_ITERATIONS = 260_000
+
+# 2026-09-01 — 로컬 로그인 "새로고침해도 안 풀리게" 세션 유지 토큰의 유효기간.
+_SESSION_TOKEN_TTL_DAYS = 30
 
 
 @dataclass
@@ -72,16 +77,74 @@ def verify_password(password: str, stored_hash: str | None) -> bool:
 
 def _row_to_user(row: dict) -> User:
     return User(
-        id=row["id"],
-        username=row["username"],
+        id=row["user_id_hash"],
+        username=row["user_id"],
         auth_provider=row.get("auth_provider") or "local",
         email=row.get("email"),
     )
 
 
 def _find_by_id(uid: str, client) -> dict | None:
-    rows = client.table("users").select("*").eq("id", uid).execute().data
+    rows = client.table("users").select("*").eq("user_id_hash", uid).execute().data
     return rows[0] if rows else None
+
+
+def _touch_last_login(uid: str, client) -> None:
+    """로그인/회원가입(=최초 로그인) 성공마다 last_login_at을 지금 시각으로 갱신한다."""
+    client.table("users").update({"last_login_at": datetime.now(timezone.utc).isoformat()}).eq(
+        "user_id_hash", uid
+    ).execute()
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def create_session_token(uid: str, client=None) -> str:
+    """로컬 로그인이 브라우저 새로고침에도 안 풀리게 할 무작위 세션 토큰을 발급한다
+    (ui/session.py::restore_local_session() 참고).
+
+    users.user_id_hash(=sha256(username), 공개적으로 추측 가능한 값)를 그대로 "로그인
+    유지 토큰"으로 쓰면 남의 아이디만 알아도(비밀번호 모르는 채) 그 사람으로 로그인해버릴
+    수 있다 — 그래서 매번 별도의 무작위 토큰을 새로 만든다. 토큰 원본은 이 함수 호출자
+    (브라우저 주소창에 실을 곳)에만 보이고, DB에는 비밀번호와 같은 이유로 해시만
+    저장한다(DB가 유출돼도 토큰 원본을 복원할 수 없게).
+    """
+    client = client or get_client()
+    token = secrets.token_urlsafe(32)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=_SESSION_TOKEN_TTL_DAYS)).isoformat()
+    client.table("users").update(
+        {"session_token_hash": _hash_token(token), "session_token_expires_at": expires_at}
+    ).eq("user_id_hash", uid).execute()
+    return token
+
+
+def resolve_session_token(token: str, client=None) -> User | None:
+    """create_session_token()이 발급한 토큰으로 계정을 되찾는다. 만료됐거나 없는
+    토큰이면 None(로그아웃 이후 재사용 등 방어 — clear_session_token()이 로그아웃
+    시 해시를 지워서 그 이후엔 어차피 매치가 안 된다)."""
+    client = client or get_client()
+    rows = client.table("users").select("*").eq("session_token_hash", _hash_token(token)).execute().data
+    if not rows:
+        return None
+    row = rows[0]
+    expires_at = row.get("session_token_expires_at")
+    if not expires_at or _parse_iso(expires_at) < datetime.now(timezone.utc):
+        return None
+    return _row_to_user(row)
+
+
+def clear_session_token(uid: str, client=None) -> None:
+    """로그아웃 시 세션 유지 토큰을 무효화한다 — 안 지우면 로그아웃 후에도 그
+    토큰(주소창에 남아있을 수 있음)으로 다시 로그인돼버린다."""
+    client = client or get_client()
+    client.table("users").update({"session_token_hash": None, "session_token_expires_at": None}).eq(
+        "user_id_hash", uid
+    ).execute()
 
 
 def signup_local(username: str, password: str, client=None) -> User:
@@ -106,8 +169,8 @@ def signup_local(username: str, password: str, client=None) -> User:
             client.table("users")
             .insert(
                 {
-                    "id": uid,
-                    "username": username,
+                    "user_id_hash": uid,
+                    "user_id": username,
                     "password_hash": hash_password(password),
                     "auth_provider": "local",
                     "email": None,
@@ -118,6 +181,7 @@ def signup_local(username: str, password: str, client=None) -> User:
         )
     except Exception as exc:  # noqa: BLE001 — EC-08: DB unique 제약 위반을 안전한 문구로 변환
         raise SignupError("이미 가입된 아이디예요.") from exc
+    _touch_last_login(uid, client)  # 가입 = 최초 로그인으로 취급
     return _row_to_user(row)
 
 
@@ -127,6 +191,7 @@ def login_local(username: str, password: str, client=None) -> User | None:
     row = _find_by_id(uid, client)
     if row is None or not verify_password(password, row.get("password_hash")):
         return None
+    _touch_last_login(uid, client)
     return _row_to_user(row)
 
 
@@ -136,14 +201,15 @@ def login_or_create_google(sub: str, email: str, client=None) -> User:
     uid = account_id_from_google_sub(sub)
     row = _find_by_id(uid, client)
     if row is not None:
+        _touch_last_login(uid, client)
         return _row_to_user(row)
 
     row = (
         client.table("users")
         .insert(
             {
-                "id": uid,
-                "username": email,
+                "user_id_hash": uid,
+                "user_id": email,
                 "email": email,
                 "auth_provider": "google",
                 "google_sub": sub,
@@ -153,4 +219,5 @@ def login_or_create_google(sub: str, email: str, client=None) -> User:
         .execute()
         .data[0]
     )
+    _touch_last_login(uid, client)
     return _row_to_user(row)

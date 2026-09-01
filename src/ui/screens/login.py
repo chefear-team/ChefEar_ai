@@ -20,7 +20,7 @@ import streamlit as st
 from theme import render_back_link, render_spacer
 from orchestration import auth
 from orchestration.db import get_client
-from ui.session import goto, login as session_login
+from ui.session import goto, login as session_login, persist_local_session
 
 
 def screen_login() -> None:
@@ -50,13 +50,15 @@ def screen_login() -> None:
         st.error(error)
 
     if st.button("로그인", type="primary", use_container_width=True):
-        user = auth.login_local(username, password, client=get_client())
+        client = get_client()
+        user = auth.login_local(username, password, client=client)
         if user is None:
             st.session_state["login_error"] = "아이디 또는 비밀번호가 올바르지 않습니다."
             st.session_state.login_form_turn = _turn + 1
             st.rerun()
             return
         session_login(user)
+        persist_local_session(user, client=client)  # 새로고침해도 로그인 유지(2026-09-01)
         goto("start")
 
     with st.container(key="login_signup_link"):
@@ -93,14 +95,16 @@ def screen_signup() -> None:
             st.session_state.signup_form_turn = _turn + 1
             st.rerun()
             return
+        client = get_client()
         try:
-            user = auth.signup_local(username, password, client=get_client())
+            user = auth.signup_local(username, password, client=client)
         except auth.SignupError as exc:  # EC-01/EC-04/EC-08
             st.session_state["signup_error"] = str(exc)
             st.session_state.signup_form_turn = _turn + 1
             st.rerun()
             return
         session_login(user)
+        persist_local_session(user, client=client)  # 새로고침해도 로그인 유지(2026-09-01)
         goto("start")
 
 
