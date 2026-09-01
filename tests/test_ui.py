@@ -124,14 +124,25 @@ def main() -> None:
     if not steps_result.get("available"):
         st.warning(steps_result.get("message", "조리순서가 없어요."))
         return
+    # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py 참고).
+    # 화면 표시는 resolve_for_display()로 태그만 걷어내서 보여준다 — src/ui/screens/
+    # cooking.py의 render_step_card() 호출부와 같은 처리(theme.py 자체는 안 건드림).
+    from orchestration.term_dict import resolve_for_display, resolve_for_tts
+
     for step in steps_result["steps"]:
-        st.markdown(f"**{step['step_number']}.** {step['text']}")
+        st.markdown(f"**{step['step_number']}.** {resolve_for_display(step['text'])}")
 
     # ============================================================
     # 5단계: TTS (1단계 안내를 음성으로) — src/app.py의 speak()와 동일한 호출 방식
     # ============================================================
     st.header("5. TTS 음성 출력")
-    first_step_text = steps_result["steps"][0]["text"]
+    # 2026-09-01 수정 — 여기서 원래 raw step["text"]를 그대로 tts_synthesize()에 넘기고
+    # 있었는데, 그러면 "[TERM:편썰기]" 태그 문자열 자체가 글자 그대로 TTS에 들어가서
+    # 실제 서비스(cooking.py)가 하는 resolve_for_tts() 설명 확장과 다르게 동작한다 —
+    # 이 파일이 "src/app.py의 speak()와 동일한 호출 방식"이라고 스스로 명시한 목적과도
+    # 어긋남(직접 로컬 실행으로 실측 확인됨: TTS_DEBUG 로그에 "[TERM:편썰기]"가 문자
+    # 그대로 찍혔었음). resolve_for_tts()를 거쳐 실제 서비스와 같은 입력을 넣는다.
+    first_step_text = resolve_for_tts(steps_result["steps"][0]["text"])
     from tts.infer import tts_synthesize
 
     with st.spinner("TTS 합성 중..."):
