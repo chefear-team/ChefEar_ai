@@ -14,6 +14,7 @@ import streamlit as st
 
 from orchestration import gpu_worker_pool
 from orchestration.db import load_env
+from orchestration.term_dict import resolve_for_tts
 from theme import render_audio_autoplay, render_audio_player, render_loading_overlay, render_processing_chime
 
 # stt/infer.py·tts/infer.py·llm/infer.py와 같은 이유(각 모듈이 독립적으로 .env를 읽어야
@@ -591,7 +592,13 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
                 return  # 사용자가 이 레시피를 떠났음 — 남은 단계는 만들지 않고 중단
             step_num = step.get("step_number")
             audio_path = _AUDIO_DIR / str(recipe_id) / f"{step_num:02d}.wav"
-            _synthesize_and_cache(step["text"], audio_path)
+            # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py
+            # 참고). 이 프리페치가 speak()보다 먼저 이 경로에 캐시 파일을 써버리면(사용자가
+            # 이 화면에 들어오자마자 백그라운드로 바로 시작), speak()는 audio_path.exists()만
+            # 보고 재합성을 건너뛰므로 여기서 원본 태그를 안 풀면 dispatch.py의
+            # resolve_for_tts() 적용이 무의미해진다 — 나중에 어떤 경로로 speak()가
+            # 불려도 항상 이 캐시가 먼저 이긴다. 반드시 여기서 미리 풀어서 캐싱한다.
+            _synthesize_and_cache(resolve_for_tts(step["text"]), audio_path)
             # 2026-08-28 — 한 단계 합성이 끝나면 다음 단계로 바로 안 넘어가고 잠깐 쉰다.
             # 2026-09-01 — 이제 GPU 호출은 gpu_worker_pool의 프로세스 풀로 가지만, 워커
             # 개수는 유한하다(GPU_WORKER_COUNT). 이 프리페치가 쉬지 않고 계속 다음

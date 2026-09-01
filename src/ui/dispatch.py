@@ -13,6 +13,7 @@ import streamlit as st
 from orchestration import gpu_worker_pool
 from orchestration.db import get_client
 from orchestration.pipeline import manual_fallback
+from orchestration.term_dict import resolve_for_tts
 from ui.recipe_view import _fetch_recipe_view, _view_cache_fresh, refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, goto
 from ui.voice_io import _drain_mic_while, speak
@@ -574,8 +575,14 @@ def process_utterance(text: str) -> None:
             # 도착 화면(cooking_step)이 render_step_card()로 같은 단계 오디오를 캐시에서
             # 다시 찾아 들려주므로 hidden=True로 화면 없는 자동재생만 한다.
             st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
+            # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py
+            # 참고). 이 분기가 "다음"/"다시"/"이전" 음성 발화의 실제 처리 경로라(process_utterance()
+            # -> classify_intent()), resolve_for_tts()를 안 거치면 TTS와 채팅창 양쪽에
+            # "[TERM:...]" 문자열이 그대로 노출된다 — 실측 리포트로 발견됨(cooking.py의
+            # speak() 호출부만 고치고 여기를 놓쳤었음: 그쪽은 화면 진입 시 1회성 speak()
+            # 뿐이고, 실제 음성 탐색은 전부 이 경로를 탄다).
             speak(
-                step["text"],
+                resolve_for_tts(step["text"]),
                 recipe_id=session.get("current_recipe_id"),
                 step_number=step.get("step_number"),
                 hidden=True,
@@ -654,8 +661,11 @@ def fallback_buttons(key_prefix: str) -> None:
                         # render_step_card()로 같은 오디오를 캐시에서 다시 들려주므로, 여기서
                         # 그리는 재생바는 rerun에 곧장 지워지는 "떴다 사라짐" 깜빡임만 남긴다.
                         st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
+                        # 2026-09-01 — 위 process_utterance()의 같은 분기와 동일한 이유로
+                        # resolve_for_tts() 적용(버튼 경로도 [TERM:...] 원본을 그대로
+                        # 넘기고 있었음).
                         speak(
-                            result["step"]["text"],
+                            resolve_for_tts(result["step"]["text"]),
                             recipe_id=session.get("current_recipe_id"),
                             step_number=result["step"].get("step_number"),
                             hidden=True,
