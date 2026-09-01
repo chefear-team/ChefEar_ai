@@ -136,6 +136,12 @@ def restore_local_session(client=None) -> None:
         del st.query_params["session_token"]  # 만료/무효 토큰이면 주소창에서도 정리
         return
     st.session_state.current_user = user
+    # 2026-09-01 — current_user만 복원하고 screen은 안 건드리면, init_state()가 이미
+    # 채워둔 기본값("login")에 그대로 머문다 — 로그인은 돼 있는데 화면은 로그인
+    # 폼이라 사용자에게는 "새로고침하면 세션이 풀린다"로 보인다(리포트로 확인).
+    # handle_google_login_if_returned()도 같은 이유로 이미 "start"로 세팅하고
+    # 있어서, 로컬/구글 로그인 복원 동작을 맞춘다.
+    st.session_state.screen = "start"
 
 
 def logout() -> None:
