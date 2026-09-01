@@ -794,9 +794,13 @@ def _recover_dead_mic() -> None:
     "내 정보" 버튼으로 짧은 간격에 반복해서 왔다갔다 하는 화면들이다(등록 화면들은
     순서대로 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데(RunPod 배포 환경의
     ICE/TURN 왕복), 그 몇 초 사이에 또 다른 화면으로 나갔다 돌아오면 이 함수가 "아직
-    재협상 중이라 안 죽었다"와 "진짜 죽었다"를 구분 못 하고 바로 세대를 올렸다 — 새
-    세대 = 새 RTCPeerConnection(component.py::_get_or_create_context()의 orphan-reset
-    참고)이라, 이 왕복이 반복될수록(브라우저가 이전 연결들을 완전히 정리하는 속도보다
+    재협상 중이라 안 죽었다"와 "진짜 죽었다"를 구분 못 하고 바로 세대를 올렸다 — 세대가
+    바뀌면 _mic_component_key()가 이전에 한 번도 쓰인 적 없는 새 문자열을 돌려줘서,
+    component.py::_get_or_create_context()가 그 key를 st.session_state에서 못 찾고
+    완전히 새 WebRtcStreamerContext를 만든다(같은 key가 잠시 안 그려졌다 다시 그려질
+    때 도는 "orphan-reset" 분기와는 다른, 더 확실한 "그냥 처음 보는 key" 경로다) — 결국
+    새 RTCPeerConnection이 만들어진다는 결론은 같다. 이 왕복이 반복될수록(브라우저가
+    이전 연결들을 완전히 정리하는 속도보다
     빠르게) 연결이 계속 쌓여 결국 브라우저의 PeerConnection 개수 상한에 부딪혔다.
     "죽었다"는 판정을 한 번의 관측이 아니라 _MIC_DEAD_DEBOUNCE_S만큼 계속 죽어있는
     상태가 이어질 때만 확정하도록 바꾼다 — 진짜 재협상 중이면 그 사이 다시 살아있는
@@ -804,7 +808,7 @@ def _recover_dead_mic() -> None:
     정말 오래 돌아오지 않거나 실제로 끊긴 경우(네트워크 끊김, 탭 백그라운드 등)엔
     여전히 정상적으로(그냥 몇 초 늦게) 세대를 올려 복구한다.
     """
-    import time as _time2
+    import time
 
     context = st.session_state.get(_mic_component_key())
     state = getattr(context, "state", None)
@@ -819,9 +823,9 @@ def _recover_dead_mic() -> None:
         dead_since = st.session_state.get("_mic_dead_since")
         if dead_since is None:
             # 이번이 "죽어있다"는 첫 관측 — 바로 세대를 올리지 않고 시각만 남겨둔다.
-            st.session_state["_mic_dead_since"] = _time2.monotonic()
+            st.session_state["_mic_dead_since"] = time.monotonic()
             return
-        if _time2.monotonic() - dead_since < _MIC_DEAD_DEBOUNCE_S:
+        if time.monotonic() - dead_since < _MIC_DEAD_DEBOUNCE_S:
             # 아직 debounce 창 안 — 재협상이 정상적으로 진행 중일 수 있으니 좀 더 지켜본다.
             return
         st.session_state["_mic_gen"] = st.session_state.get("_mic_gen", 0) + 1

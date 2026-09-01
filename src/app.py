@@ -512,9 +512,11 @@ def main() -> None:
         # 화면과 짧은 간격을 두고 반복해서 왕복하는 화면들이다(등록 화면들은 순서대로
         # 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데, 그 몇 초 사이에
         # 왕복하면 _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을 구분 못 하고
-        # 매번 새 세대(=새 RTCPeerConnection, component.py::_get_or_create_context()의
-        # orphan-reset 참고)를 만들어냈다 — 왕복이 반복될수록 브라우저가 이전 연결을
-        # 정리하는 속도보다 빠르게 연결이 쌓여 결국 PeerConnection 개수 상한에
+        # 매번 새 세대(=한 번도 안 쓰인 새 컴포넌트 key라 component.py::
+        # _get_or_create_context()가 완전히 새 WebRtcStreamerContext를 만듦 -> 새
+        # RTCPeerConnection, voice_io._recover_dead_mic() 문서 참고)를 만들어냈다 —
+        # 왕복이 반복될수록 브라우저가 이전 연결을 정리하는 속도보다 빠르게 연결이
+        # 쌓여 결국 PeerConnection 개수 상한에
         # 부딪혔다. _recover_dead_mic()에 "죽었다" 판정을 debounce하는 로직을 추가해
         # 이 오판을 막았으므로, register_ingredients/steps와 동일한(이미 검증된) 안전한
         # 패턴으로 되돌린다 — 마이크를 안 그려서 매번 재연결시키는 대신, 연결은
