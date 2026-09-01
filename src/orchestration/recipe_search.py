@@ -348,26 +348,32 @@ def find_more_specific_containing_name(dish_name: str, utterance: str, client=No
     return None
 
 
-def _max_view_count(rows: list[dict]) -> dict:
-    """여러 후보 중 "표준"으로 뽑을 하나를 고른다. 6.1/EC-09/EC-19 규칙.
-
-    key=lambda r: (view_count, created_at) 는 파이썬 max()에게 "먼저
-    view_count(조회수)로 비교하고, 조회수가 같으면 created_at(등록일)으로
-    비교해라"라고 알려주는 것이다. 튜플은 앞자리부터 비교되기 때문에
-    (10, "2026-01-01") > (10, "2025-01-01")처럼 자연스럽게 2단계 정렬이 된다.
-    조회수가 전부 0인 신규 등록 레시피끼리는 결국 created_at만으로 비교되므로
-    EC-19("조회수 0이면 최신 등록일 우선")도 이 한 줄로 같이 처리된다.
-    """
-    return max(rows, key=lambda r: (r.get("view_count", 0), r.get("created_at", "")))
+# 2026-09-01 — 이 자리에 있던 _max_view_count()(조회수+등록일 기준으로 여러 후보 중
+# 1등을 겨루던 헬퍼) 제거. select_standard_recipe() 문서 참고 — 새 500개 표준
+# 데이터는 요리명당 api_standard가 정확히 1행뿐이라 겨룰 후보 자체가 없어져서
+# 유일한 호출부가 사라졌다(grep으로 다른 호출부 없음, 테스트도 이 함수를 직접
+# 테스트하지 않았음을 확인). 되돌리려면 git으로 이 커밋 이전 버전을 참고할 것.
 
 
 def select_standard_recipe(dish_name: str, client=None) -> dict | None:
     """요리명 하나를 받아서, 보여줄 "그 요리의 대표 레시피" 하나를 고른다.
 
-    같은 요리명이 여러 개 있을 수 있는 이유는 두 가지다.
-      1) api_standard 레시피가 조회수 기준으로 이미 여러 후보 중 1등만 골라
-         DB에 들어가 있으므로(작업1의 load_data.py) 보통 1개뿐이다.
-      2) 사용자가 직접 등록한 user_custom 버전이 추가로 있을 수 있다.
+    2026-09-01 — 500개 표준 데이터 전면 교체와 함께 조회수(view_count) 기반
+    "여러 후보 중 대표 선정" 로직을 제거했다(팀 결정, 되돌리려면 git으로 이 커밋
+    이전 버전 참고). 예전엔 api_standard 표준 데이터가 60,282건 원본 안에서
+    이미 "요리명당 여러 행"으로 존재할 수 있어서(만개레시피 원본에 같은 요리명이
+    여러 번 등록돼 있었음) 조회수로 그중 1등을 겨루는 로직이 필요했는데, 새
+    500개 데이터는 DB의 uq_recipes_dish_name_standard(unique index)가 요리명당
+    api_standard 행을 정확히 1개로 이미 강제하고 있어서 그 경쟁 자체가 구조적으로
+    발생할 수 없다.
+
+    같은 요리명이 여전히 여러 개 있을 수 있는 경우는 하나뿐이다: 사용자가 표준
+    요리와 같은 이름으로 직접 등록한(user_custom) 버전이 추가로 있는 경우(EC-17,
+    같은 이름으로 여러 버전 등록 허용). 이럴 땐 검증된 표준(api_standard)을
+    우선한다 — 사용자 임의 제출보다 신뢰도가 높다고 보는 게 자연스러운 기본값.
+    api_standard가 아예 없으면(사용자만 등록한 요리) 승인된 user_custom 중
+    가장 먼저 등록된 것(created_at 오름차순 첫 번째)을 결정론적으로 고른다 —
+    "먼저 등록한 사람 것을 우선"이라는 단순하고 예측 가능한 규칙.
 
     승인 여부(recipes.approved, 관리자 페이지 스펙 참고)로만 공개를 가른다 —
     등록한 사람이 누구인지는 추적하지 않는다(2026-08-27, 계정/쿠키 시스템 제거
@@ -377,16 +383,19 @@ def select_standard_recipe(dish_name: str, client=None) -> dict | None:
     반환값 셋 중 하나:
       - None: 이 요리명 자체가 DB에 아예 없음(6.5: 표준 데이터 밖 요리)
       - {"pending": True}: 이 요리명으로 등록된 행은 있지만 전부 승인 대기 중
-      - 대표 레시피 dict: 승인된 후보 중 1등
+      - 대표 레시피 dict: 승인된 후보 중 1등(api_standard 우선, 없으면 최초 등록)
     """
     client = client or get_client()
     # .eq("dish_name", ...) : dish_name이 정확히 일치하는 행만
     # .in_("source", [...]) : source가 두 값 중 하나인 행만 (SQL의 WHERE ... IN (...) 과 같음)
+    # .order("created_at") : api_standard가 없을 때 "가장 먼저 등록된 것"을 결정론적으로
+    # 고르기 위한 정렬 — 정렬 없이는 Supabase가 어떤 순서로 돌려줄지 보장이 없다.
     res = (
         client.table("recipes")
         .select("*")
         .eq("dish_name", dish_name)
         .in_("source", ["api_standard", "user_custom"])
+        .order("created_at")
         .execute()
     )
     rows = res.data
@@ -397,19 +406,15 @@ def select_standard_recipe(dish_name: str, client=None) -> dict | None:
     if not candidates:
         return {"pending": True}  # 있지만 전부 관리자 승인 대기 중
 
-    winner = _max_view_count(candidates)
+    # api_standard가 후보에 있으면 항상 그걸 우선(검증된 표준이라 신뢰도가 더 높음).
+    # 없으면(사용자만 등록한 요리) 위 order("created_at")로 이미 정렬돼 있으므로
+    # candidates[0]이 곧 "가장 먼저 등록된 승인 버전"이다.
+    winner = next((r for r in candidates if r.get("source") == "api_standard"), candidates[0])
 
-    # representativeness(대표성)는 "1등이 후보들 전체 조회수 중 몇 %를 차지하는가"다.
-    # `or 1`은 0으로 나누기(ZeroDivisionError)를 막기 위한 안전장치 —
-    # 모든 후보의 view_count가 0이면 total_view도 0이 되니, 그 대신 1로 나눠서
-    # representativeness를 그냥 0.0으로 만든다.
-    total_view = sum(r.get("view_count", 0) for r in candidates) or 1
     return {
         "recipe_id": winner["id"],
         "dish_name": winner["dish_name"],
         "view_count": winner.get("view_count", 0),
-        "total_candidates": len(candidates),
-        "representativeness": winner.get("view_count", 0) / total_view,
         # 2026-08-20 추가: ui/start.py가 실제 화면(recipe_confirm)에 "오늘의 재료" 미리보기를
         # 그리려면 원문 재료 텍스트가 필요한데, 이전엔 이 함수가 요약 정보만 돌려주고
         # ingredients는 빼놓고 있었다. winner는 이미 .select("*")로 전체 컬럼을 갖고

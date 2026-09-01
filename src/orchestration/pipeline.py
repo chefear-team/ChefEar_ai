@@ -30,6 +30,11 @@ def get_precomputed_steps(recipe_id: str, client=None) -> dict:
     그때그때 AI가 만들어내지 않고, 작업1에서 미리 DB에 다 넣어둔 실데이터를
     그냥 읽기만 한다(1.5 원칙 — LLM 실시간 생성 금지). 그래서 함수가 하는 일은
     사실 단순한 SELECT 하나뿐이다.
+
+    text에 담긴 값은 [TERM:용어] 태그가 그대로 남아있는 원본이다 — 여기서
+    resolve하지 않는다. 호출부(ui/screens/cooking.py)가 TTS로 읽을 땐
+    resolve_for_tts(), 화면에 자막으로 낼 땐 resolve_for_display()를 각각
+    거쳐서 써야 한다(term_dict.py 참고).
     """
     client = client or get_client()
     res = (
@@ -42,6 +47,12 @@ def get_precomputed_steps(recipe_id: str, client=None) -> dict:
     if not res.data:
         # recipe_steps에 이 recipe_id로 된 행이 하나도 없음 = 등록 안 된 레시피.
         # AC-13: 없으면 그냥 정직하게 "없다"고 말한다(1.5 원칙, 지어내지 않음).
+        # 2026-09-01 — 60,282건 API 데이터를 걷어내고 큐레이션된 500개 표준
+        # 레시피로 교체한 뒤로는, 이 분기가 걸리는 경우는 사실상 "사용자가
+        # 등록한 지 얼마 안 돼 아직 조리순서가 없는" user_custom 레시피뿐이다
+        # (500개는 recipe_steps까지 이미 다 같이 적재됐음 — load_500_recipes.py
+        # 참고). 옛날처럼 "표준 데이터인데 조리순서가 없는" 흔한 경우는 더 이상
+        # 없다.
         return {"available": False, "ingredients_only": False, "message": NOT_AVAILABLE_MESSAGE}
 
     return {
@@ -55,6 +66,9 @@ def get_current_step(recipe_id: str, step_number: int, client=None) -> dict | No
     """레시피의 "딱 한 단계"만 콕 집어서 가져온다. get_precomputed_steps()가
     "전체 목록"을 가져오는 것과 달리, 이건 "지금 몇 단계인지"가 이미 정해진
     상태에서 그 단계 텍스트만 필요할 때 쓴다(advance_step()이 이 함수를 부른다).
+
+    text는 여기서도 마찬가지로 [TERM:용어] 태그가 남은 원본 그대로 반환한다 —
+    resolve는 항상 호출부(cooking.py)의 몫이다.
     """
     client = client or get_client()
     res = (

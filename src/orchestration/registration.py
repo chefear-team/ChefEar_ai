@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 
 from orchestration.db import get_client
+from orchestration.term_dict import auto_tag_terms
 
 
 def _normalize_dish_name(value):
@@ -167,8 +168,12 @@ def save_recipe(
 
     # 순서 목록(instructions)은 recipe_steps 테이블에 "1단계, 2단계, ..."로 나눠 저장한다.
     # enumerate(instructions, start=1) 은 (1, 첫 문장), (2, 두 번째 문장), ... 을 만들어준다.
+    # 2026-09-01 — auto_tag_terms()로 "어슷하게 썰어" 같은 변형 표현을 감지해
+    # [TERM:...] 태그를 자동으로 붙인다(term_dict.py 참고). source는 그대로
+    # source(항상 "user_custom") — rule_generated는 500개 큐레이션 데이터
+    # 전용 값이라 사용자가 직접 등록한 레시피에는 절대 안 쓴다.
     step_payload = [
-        {"recipe_id": recipe_id, "step_number": i, "step_text": text, "source": source}
+        {"recipe_id": recipe_id, "step_number": i, "step_text": auto_tag_terms(text), "source": source}
         for i, text in enumerate(instructions, start=1)
     ]
     if step_payload:  # 혹시 순서가 하나도 없으면 빈 insert를 보내지 않는다

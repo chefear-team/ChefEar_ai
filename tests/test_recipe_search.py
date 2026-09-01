@@ -13,7 +13,13 @@ from fake_supabase import FakeSupabaseClient
 from orchestration.recipe_search import extract_dish_name, select_standard_recipe
 
 
-def test_ec18_single_candidate_full_representativeness():
+def test_single_candidate_selected():
+    """2026-09-01 — EC-18(조회수 기반 대표성) 테스트를 대체. 500개 표준 데이터는
+    DB unique index(uq_recipes_dish_name_standard)로 요리명당 api_standard가
+    정확히 1행만 있도록 이미 보장돼서, "여러 후보 중 대표 선정" 개념 자체가
+    없어졌다(select_standard_recipe() 문서 참고) — total_candidates/
+    representativeness 필드도 함께 제거됐다. 후보가 하나뿐일 때 그 하나가
+    그대로 선택되는지만 확인한다."""
     client = FakeSupabaseClient()
     row = client.table("recipes").seed(
         {"dish_name": "된장찌개", "ingredients": "두부", "source": "api_standard", "view_count": 1403370}
@@ -22,34 +28,39 @@ def test_ec18_single_candidate_full_representativeness():
     result = select_standard_recipe("된장찌개", client=client)
 
     assert result["recipe_id"] == row["id"]
-    assert result["total_candidates"] == 1
-    assert result["representativeness"] == 1.0
+    assert "total_candidates" not in result
+    assert "representativeness" not in result
 
 
-def test_ec19_all_zero_view_count_uses_latest_created_at():
+def test_api_standard_preferred_over_user_custom_same_name():
+    """2026-09-01 — EC-19(조회수 0일 때 최신 등록일 우선) 테스트를 대체. 다중
+    api_standard 후보 시나리오는 이제 DB 제약상 발생할 수 없어서(위 문서 참고)
+    그 규칙 자체가 무의미해졌다. 지금 실제로 남아있는 유일한 다중 후보 케이스—
+    같은 요리명으로 api_standard와 user_custom이 같이 있는 경우—를 대신
+    검증한다: 검증된 표준(api_standard)이 사용자 임의 제출보다 항상 우선해야
+    한다(select_standard_recipe() 문서 참고)."""
     client = FakeSupabaseClient()
     client.table("recipes").seed(
         {
             "dish_name": "신메뉴",
             "ingredients": "재료",
-            "source": "api_standard",
-            "view_count": 0,
+            "source": "user_custom",
+            "approved": "Y",
             "created_at": "2026-01-01T00:00:00",
         }
     )
-    newest = client.table("recipes").seed(
+    standard = client.table("recipes").seed(
         {
             "dish_name": "신메뉴",
             "ingredients": "재료",
             "source": "api_standard",
-            "view_count": 0,
             "created_at": "2026-06-01T00:00:00",
         }
     )
 
     result = select_standard_recipe("신메뉴", client=client)
 
-    assert result["recipe_id"] == newest["id"]
+    assert result["recipe_id"] == standard["id"]
 
 
 def test_not_found_dish_name_returns_none():
@@ -96,7 +107,6 @@ def test_approved_candidate_preferred_over_pending_ones():
     result = select_standard_recipe("된장찌개", client=client)
 
     assert result["recipe_id"] == approved["id"]
-    assert result["total_candidates"] == 1
 
 
 def test_extract_dish_name_exact_match():
