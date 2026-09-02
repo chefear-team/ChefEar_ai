@@ -355,7 +355,7 @@ def find_more_specific_containing_name(dish_name: str, utterance: str, client=No
 # 테스트하지 않았음을 확인). 되돌리려면 git으로 이 커밋 이전 버전을 참고할 것.
 
 
-def select_standard_recipe(dish_name: str, client=None) -> dict | None:
+def select_standard_recipe(dish_name: str, client=None, owner_id: str | None = None) -> dict | None:
     """요리명 하나를 받아서, 보여줄 "그 요리의 대표 레시피" 하나를 고른다.
 
     2026-09-01 — 500개 표준 데이터 전면 교체와 함께 조회수(view_count) 기반
@@ -375,15 +375,24 @@ def select_standard_recipe(dish_name: str, client=None) -> dict | None:
     가장 먼저 등록된 것(created_at 오름차순 첫 번째)을 결정론적으로 고른다 —
     "먼저 등록한 사람 것을 우선"이라는 단순하고 예측 가능한 규칙.
 
-    승인 여부(recipes.approved, 관리자 페이지 스펙 참고)로만 공개를 가른다 —
-    등록한 사람이 누구인지는 추적하지 않는다(2026-08-27, 계정/쿠키 시스템 제거
-    결정). api_standard는 항상 approved='Y'이고, 신규 user_custom은 관리자가
-    승인하기 전까지 approved='N'이라 아래 필터에서 제외된다.
+    2026-09-02 — docs/specs/private_recipe_visibility.md: 승인 여부(approved)만으로
+    공개를 가르던 걸 바꿔서, user_custom은 "조회자 본인이 등록한 것"일 때만 후보에
+    넣는다(owner_id 비교). api_standard는 조회자가 누구든(비로그인 포함) 항상 후보 —
+    이미 검수된 표준 데이터라 이 필터와 무관하다. 신규 user_custom은 이제 저장 시점에
+    바로 approved='Y'로 들어오므로(registration.py::save_recipe() 참고), 여기서
+    approved 필터는 주로 이 스펙 적용 전에 만들어진 레거시 approved='N' 행을 걸러내는
+    역할로 남는다.
+
+    owner_id는 조회자 식별값(ui.session.get_owner_id(), 비로그인이면 None)이다.
+    비로그인 조회자에게는 (레거시로 owner_id가 None인 행이 아닌 한) user_custom이
+    전혀 안 보인다 — 등록 자체가 로그인 필수로 바뀌어서(register.py) 신규 행은 항상
+    owner_id가 있기 때문.
 
     반환값 셋 중 하나:
-      - None: 이 요리명 자체가 DB에 아예 없음(6.5: 표준 데이터 밖 요리)
-      - {"pending": True}: 이 요리명으로 등록된 행은 있지만 전부 승인 대기 중
-      - 대표 레시피 dict: 승인된 후보 중 1등(api_standard 우선, 없으면 최초 등록)
+      - None: 이 요리명 자체가 DB에 아예 없음(6.5: 표준 데이터 밖 요리) — 또는 있어도
+        전부 승인된 남의 user_custom이라 이 조회자에게는 "없음"과 동일하게 취급
+      - {"pending": True}: 이 요리명으로 등록된 행은 있지만 전부 (레거시) 승인 대기 중
+      - 대표 레시피 dict: 이 조회자에게 보이는 후보 중 1등(api_standard 우선, 없으면 최초 등록)
     """
     client = client or get_client()
     # .eq("dish_name", ...) : dish_name이 정확히 일치하는 행만
@@ -402,9 +411,16 @@ def select_standard_recipe(dish_name: str, client=None) -> dict | None:
     if not rows:
         return None  # 이 요리명 자체가 DB에 아예 없음 (6.5: 표준 데이터 밖 요리)
 
-    candidates = [r for r in rows if r.get("approved") == "Y"]
+    approved_rows = [r for r in rows if r.get("approved") == "Y"]
+    if not approved_rows:
+        return {"pending": True}  # 있지만 전부 (레거시) 관리자 승인 대기 중
+
+    # 2026-09-02 — 승인된 행 중에서도 api_standard이거나 조회자 본인 소유인 것만
+    # 후보로 남긴다(private_recipe_visibility.md). 남의 user_custom은 여기서 조용히
+    # 제외되고, 아래에서 후보가 하나도 안 남으면 "아예 없음"과 동일하게 None을 돌려준다.
+    candidates = [r for r in approved_rows if r.get("source") == "api_standard" or r.get("owner_id") == owner_id]
     if not candidates:
-        return {"pending": True}  # 있지만 전부 관리자 승인 대기 중
+        return None  # 존재는 하지만 전부 남의 user_custom — 이 조회자에겐 "없음"과 동일
 
     # api_standard가 후보에 있으면 항상 그걸 우선(검증된 표준이라 신뢰도가 더 높음).
     # 없으면(사용자만 등록한 요리) 위 order("created_at")로 이미 정렬돼 있으므로

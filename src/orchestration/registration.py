@@ -138,11 +138,15 @@ def save_recipe(
     (owner_id는 항상 None). 2026-09-01 로그인 재도입(docs/specs/
     user_accounts_google_login.md)으로 다시 채우기 시작한다 — 로그인 상태면
     호출부(ui/screens/register.py)가 ui.session.get_owner_id()의 값을 넘기고,
-    비로그인이면 여전히 None이라 기존과 동작이 같다. 승인(approved) 컬럼으로
-    공개 여부를 가리는 건 그대로다 — 신규 user_custom은 관리자가 승인
-    (`approved='Y'`)하기 전까진 아무도(등록한 사람 포함) 조회할 수 없다
-    (admin_recipe_approval.md). api_standard는 load_data.py가 적재 시점에
-    이미 approved='Y'로 넣는다.
+    비로그인이면 여전히 None이라 기존과 동작이 같다.
+
+    2026-09-02 — docs/specs/private_recipe_visibility.md: 관리자 승인 대기
+    (`approved='N'`) 대신 즉시 `approved='Y'`로 저장한다. 대신 조회(select_
+    standard_recipe())가 owner_id로 "등록한 본인만" 걸러서 보여준다 — 검수는
+    관리자가 아니라 "본인 소유 여부"가 대신한다. 등록 화면(register.py) 자체를
+    로그인 필수로 바꿔서 owner_id 없는(비로그인) user_custom이 새로 생기지
+    않게 막는다. api_standard는 load_data.py가 적재 시점에 이미 approved='Y'로
+    넣는다(이 값도 변화 없음).
     """
     client = client or get_client()
     # .insert({...}) 는 딕셔너리 하나(행 하나)를 즉시 넣고, .execute().data는
@@ -154,10 +158,15 @@ def save_recipe(
         .insert(
             {
                 "dish_name": dish_name,
-                "ingredients": ", ".join(ingredients),  # 리스트를 콤마로 이어붙여 텍스트 컬럼에 저장
+                # 2026-09-02 — 콤마 대신 "|"로 이어붙인다. ui/recipe_view.py::
+                # _ingredients_to_chips()가 "오늘의 재료" 칩을 그릴 때 "|" 기준으로
+                # 쪼갠다(만개의레시피 원본 표준 데이터가 이미 이 구분자를 씀,
+                # load_data.py 참고) — 콤마로 저장하면 그 함수가 하나로 못 쪼개서
+                # user_custom 레시피만 재료 칩이 안 나뉘는 문제가 있었다.
+                "ingredients": "|".join(ingredients),
                 "source": source,
                 "origin_id": origin_id,
-                "approved": "N",  # 관리자 승인 대기 — 승인 전까진 조회에서 제외됨
+                "approved": "Y",  # 2026-09-02 — 소유자 전용 공개(위 문서 참고), 승인 대기 없음
                 "owner_id": owner_id,
             }
         )
@@ -172,8 +181,9 @@ def save_recipe(
     # [TERM:...] 태그를 자동으로 붙인다(term_dict.py 참고). source는 그대로
     # source(항상 "user_custom") — rule_generated는 500개 큐레이션 데이터
     # 전용 값이라 사용자가 직접 등록한 레시피에는 절대 안 쓴다.
+    # 2026-09-02 — step_text 앞에 "N. " 순번을 직접 박아 저장한다(요청).
     step_payload = [
-        {"recipe_id": recipe_id, "step_number": i, "step_text": auto_tag_terms(text), "source": source}
+        {"recipe_id": recipe_id, "step_number": i, "step_text": f"{i}. {auto_tag_terms(text)}", "source": source}
         for i, text in enumerate(instructions, start=1)
     ]
     if step_payload:  # 혹시 순서가 하나도 없으면 빈 insert를 보내지 않는다
@@ -203,13 +213,16 @@ def update_recipe(
     ui/screens/my_recipes.py::screen_edit_recipe()가 진입 시점에 이미 확인한다(EC-04).
     """
     client = client or get_client()
+    # 2026-09-02 — save_recipe()와 같은 이유로 "|" 구분자(ingredients)와 "N. " 순번
+    # 접두어(step_text)를 여기도 맞춘다. ui/screens/my_recipes.py::screen_edit_recipe()가
+    # 프리필/재저장 시 이 형식과 어긋나지 않게 변환해준다(그쪽 문서 참고).
     client.table("recipes").update(
-        {"dish_name": _normalize_dish_name(dish_name), "ingredients": ", ".join(ingredients)}
+        {"dish_name": _normalize_dish_name(dish_name), "ingredients": "|".join(ingredients)}
     ).eq("id", recipe_id).execute()
 
     client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
     step_payload = [
-        {"recipe_id": recipe_id, "step_number": i, "step_text": text, "source": "user_custom"}
+        {"recipe_id": recipe_id, "step_number": i, "step_text": f"{i}. {text}", "source": "user_custom"}
         for i, text in enumerate(instructions, start=1)
     ]
     if step_payload:

@@ -15,7 +15,7 @@ from orchestration.db import get_client
 from orchestration.pipeline import manual_fallback
 from orchestration.term_dict import resolve_for_tts
 from ui.recipe_view import _fetch_recipe_view, _view_cache_fresh, refresh_recipe_view
-from ui.session import _DEFAULT_PIPELINE_SESSION, goto
+from ui.session import _DEFAULT_PIPELINE_SESSION, get_owner_id, goto
 from ui.voice_io import _close_loading_overlay, _drain_mic_while, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
@@ -196,6 +196,11 @@ def process_utterance(text: str) -> None:
 
     session = st.session_state.pipeline_session
     client = get_client()
+    # 2026-09-02 — docs/specs/private_recipe_visibility.md: 조회 결과가 이제 조회자
+    # (owner_id)에 따라 달라지므로(같은 발화라도 A/B가 서로 다른 user_custom을 봄),
+    # 아래 요리명 조회 캐시 키에도 섞어 넣는다 — 안 그러면 A로 조회 성공한 캐시를 같은
+    # 탭에서 로그아웃 후 로그인한 B가 그대로 재사용해 A의 비공개 레시피를 보게 된다.
+    owner_id = get_owner_id()
 
     # 2026-08-28 — 세션 요리명 조회 캐시(_recipe_lookup_cache). 조리 중이 아닐 때(start
     # 화면 등) 이번 세션에서 이미 조회에 성공한 발화를 그대로 다시 말하면, 아래
@@ -207,7 +212,7 @@ def process_utterance(text: str) -> None:
     # ui/recipe_view.py)가 받쳐줘서 DB 왕복 0회. 조리 중(current_recipe_id 있음)에는 이
     # 캐시를 안 탄다 — 그땐 "다시"/"다음" 같은 진행 명령이라 조회 캐시가 방해만 된다.
     # 캐시는 reset_to_start()가 안 지운다. staleness는 _LOOKUP_CACHE_TTL_S(5분)로 묶는다.
-    lookup_key = _normalize_for_lookup(text)
+    lookup_key = f"{owner_id}:{_normalize_for_lookup(text)}"
     lookup_cache = st.session_state.setdefault("_recipe_lookup_cache", {})
     _hit = lookup_cache.get(lookup_key)
     _hit_fresh = _hit is not None and (time.monotonic() - _hit.get("_ts", 0.0)) < _LOOKUP_CACHE_TTL_S
@@ -334,6 +339,7 @@ def process_utterance(text: str) -> None:
                     text,
                     dish_name=job["llm_result"]["dish_name"],
                     steps=steps_cache,
+                    owner_id=owner_id,
                 ).result()
                 print(f"[PERF] handle_utterance(intent+DB) {time.monotonic() - _hu_t0:.2f}s", flush=True)
             except ValueError:

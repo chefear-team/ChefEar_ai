@@ -141,7 +141,17 @@ def screen_register_dish_name() -> None:
     """FR-06 1단계: 요리명 질문. 다른 경로(LLM wants_register 등)에서 넘어온
     추측값(pending_dish_name)을 그대로 쓰지 않고 사용자가 직접 확인/수정하게 한다 —
     규칙 기반 추출은 틀릴 수 있어서
-    (entity_extract.py 참고) 등록처럼 DB에 실제로 남는 데이터는 검증 없이 넘기면 안 된다."""
+    (entity_extract.py 참고) 등록처럼 DB에 실제로 남는 데이터는 검증 없이 넘기면 안 된다.
+
+    2026-09-02 — docs/specs/private_recipe_visibility.md: 등록이 로그인 필수로
+    바뀌면서 이 화면이 그 게이트 역할을 한다. "등록" 빠른 단어/LLM 등록의도/
+    register_intro 버튼 등 모든 등록 진입 경로가 결국 이 화면(register_dish_name)으로
+    수렴하므로(dispatch.py/register_intro.py 참고), 각 진입 경로마다 따로 확인할 필요
+    없이 여기 한 곳만 지키면 된다 — ui/screens/my_recipes.py의 로그인 가드와 같은
+    패턴(조용히 login으로 리다이렉트, 별도 안내 문구 없음)."""
+    if not st.session_state.get("current_user"):
+        goto("login")
+        return
     if render_back_link("처음 화면으로"):
         goto("start")
     st.markdown('<p class="ce-hint">새 레시피 등록 · 1 / 3 · 요리명</p>', unsafe_allow_html=True)

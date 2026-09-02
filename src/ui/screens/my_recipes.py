@@ -14,6 +14,8 @@ ui.session.get_owner_id())에 맞춰 되살린다 — 카드 레이아웃/삭제
 """
 from __future__ import annotations
 
+import re
+
 import streamlit as st
 
 from theme import ICON_BASKET_SM, ICON_INBOX, render_back_link, render_badge, render_spacer, truncate_display_name
@@ -34,6 +36,18 @@ def _my_recipes(user_id: str, client) -> list[dict]:
         or []
     )
     return sorted(rows, key=lambda r: r.get("created_at", ""), reverse=True)
+
+
+_STEP_PREFIX_RE = re.compile(r"^\d+\.\s*")
+
+
+def _strip_step_prefix(step_text: str) -> str:
+    """수정 폼 프리필용 — registration.py::save_recipe()/update_recipe()가 저장 시
+    붙이는 "N. " 순번 접두어를 뗀다(2026-09-02). 안 떼고 그대로 프리필하면 사용자가
+    안 건드리고 그대로 저장해도 update_recipe()가 또 새 순번을 앞에 붙여
+    "1. 1. 재료를 볶는다"처럼 매번 겹쳐 쌓인다. 접두어가 없는(이 변경 이전에 저장된)
+    레거시 행은 패턴이 안 맞아 그대로 반환된다."""
+    return _STEP_PREFIX_RE.sub("", step_text, count=1)
 
 
 def _approval_label(row: dict) -> str:
@@ -183,12 +197,16 @@ def screen_edit_recipe() -> None:
     st.markdown(f'**{recipe["dish_name"]} 수정**')
 
     dish_name = st.text_input("요리명", value=recipe["dish_name"], key="edit_recipe_dish_name")
+    # 2026-09-02 — registration.py가 이제 "|"로 저장하므로(private_recipe_visibility.md),
+    # 화면엔 이 폼 라벨("쉼표로 구분")과 맞게 ", "로 되돌려 보여준다. "|"가 없는(레거시)
+    # 행은 replace가 아무것도 안 바꿔서 그대로 나온다.
     ingredients_text = st.text_area(
-        "재료 (쉼표로 구분)", value=recipe.get("ingredients") or "", key="edit_recipe_ingredients"
+        "재료 (쉼표로 구분)", value=(recipe.get("ingredients") or "").replace("|", ", "), key="edit_recipe_ingredients"
     )
     instructions_text = st.text_area(
         "조리 순서 (한 줄에 한 단계씩)",
-        value="\n".join(s["step_text"] for s in steps),
+        # "N. " 순번 접두어를 떼고 프리필 — _strip_step_prefix() 문서 참고.
+        value="\n".join(_strip_step_prefix(s["step_text"]) for s in steps),
         key="edit_recipe_instructions",
         height=200,
     )

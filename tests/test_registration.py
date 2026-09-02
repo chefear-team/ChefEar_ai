@@ -20,10 +20,9 @@ def test_ac06_full_flow_confirms_and_saves_as_user_custom():
     saved = client.table("recipes").rows[result["recipe_id"]]
     assert saved["dish_name"] == "문어초무침"
     assert saved["source"] == "user_custom"
-    # 2026-08-27 — 계정/쿠키 시스템 삭제로 등록자를 추적하지 않는다(owner_id 안 채움).
-    # 대신 관리자 승인 전까진 조회에서 제외되도록 approved='N'으로 저장된다
-    # (admin_recipe_approval.md).
-    assert saved["approved"] == "N"
+    # 2026-09-02 — docs/specs/private_recipe_visibility.md: 관리자 승인 대기 대신
+    # 즉시 approved='Y'로 저장되고, 대신 조회 시 owner_id로 본인 소유만 걸러진다.
+    assert saved["approved"] == "Y"
     steps = [r for r in client.table("recipe_steps").rows.values() if r["recipe_id"] == result["recipe_id"]]
     assert len(steps) == 2
 
@@ -93,7 +92,8 @@ def test_ac02_update_recipe_replaces_steps_and_keeps_recipe_id():
         (r for r in client.table("recipe_steps").rows.values() if r["recipe_id"] == recipe_id),
         key=lambda r: r["step_number"],
     )
-    assert [s["step_text"] for s in steps] == ["새 1단계", "새 2단계"]
+    # 2026-09-02 — update_recipe()도 save_recipe()와 같은 "N. " 순번 접두어를 붙인다.
+    assert [s["step_text"] for s in steps] == ["1. 새 1단계", "2. 새 2단계"]
 
 
 def test_update_recipe_preserves_owner_id_and_approved():
@@ -106,7 +106,7 @@ def test_update_recipe_preserves_owner_id_and_approved():
 
     row = client.table("recipes").rows[recipe_id]
     assert row["owner_id"] == "sha256-user-id"
-    assert row["approved"] == "N"  # save_recipe()가 넣은 값 그대로, update_recipe()가 안 바꿈
+    assert row["approved"] == "Y"  # save_recipe()가 넣은 값 그대로, update_recipe()가 안 바꿈
 
 
 def test_register_recipe_confirm_passes_owner_id_through_to_save_recipe():
@@ -141,17 +141,18 @@ def test_save_recipe_auto_tags_variant_phrases_for_tts():
         for r in client.table("recipe_steps").rows.values()
         if r["recipe_id"] == result["recipe_id"]
     }
-    assert steps[1]["step_text"] == "무를 나박하게 썰어주세요\n[TERM:나박썰기]"
-    assert steps[2]["step_text"] == "양파는 어슷하게 썰어주세요\n[TERM:어슷썰기]"
+    # 2026-09-02 — save_recipe()가 태깅 뒤에 "N. " 순번 접두어를 붙인다.
+    assert steps[1]["step_text"] == "1. 무를 나박하게 썰어주세요\n[TERM:나박썰기]"
+    assert steps[2]["step_text"] == "2. 양파는 어슷하게 썰어주세요\n[TERM:어슷썰기]"
     # 매칭되는 용어가 없는 문장은 태그 없이 그대로 저장돼야 한다.
-    assert steps[3]["step_text"] == "그릇에 담아주세요"
+    assert steps[3]["step_text"] == "3. 그릇에 담아주세요"
     # source는 여전히 user_custom 그대로다 — rule_generated는 500개 큐레이션
     # 데이터 전용이라 사용자 등록 경로에서는 절대 쓰이면 안 된다.
     assert steps[1]["source"] == "user_custom"
 
     assert resolve_for_tts(steps[1]["step_text"]) == (
-        "무를 나박하게 썰어주세요 나박썰기란 얇고 네모지게 써는 방법이에요."
+        "1. 무를 나박하게 썰어주세요 나박썰기란 얇고 네모지게 써는 방법이에요."
     )
     assert resolve_for_tts(steps[2]["step_text"]) == (
-        "양파는 어슷하게 썰어주세요 어슷썰기란 칼을 비스듬히 기울여 사선으로 써는 방법이에요."
+        "2. 양파는 어슷하게 썰어주세요 어슷썰기란 칼을 비스듬히 기울여 사선으로 써는 방법이에요."
     )

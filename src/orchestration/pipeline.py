@@ -157,6 +157,7 @@ def handle_utterance(
     registration_value=None,
     client=None,
     steps: list[dict] | None = None,
+    owner_id: str | None = None,
 ) -> dict:
     """STT 결과 텍스트 하나를 받아 의도별로 라우팅하는 최종 조립 함수(7.1 진입점).
 
@@ -177,6 +178,11 @@ def handle_utterance(
     steps: "진행"/"재청취"/"이전" 의도일 때만 advance_step()으로 그대로
     전달한다 — 넘기면 그 함수가 DB 재조회 없이 여기서 찾아 쓴다(advance_step()
     문서 참고).
+
+    owner_id: 2026-09-02 추가(docs/specs/private_recipe_visibility.md) — 조회자
+    식별값(ui.session.get_owner_id(), 비로그인이면 None). "조회" 의도의 모든
+    select_standard_recipe() 호출에 그대로 전달해 user_custom 후보를 본인 소유로만
+    좁힌다.
     """
     client = client or get_client()
     context_recipe_id = session.get("current_recipe_id")
@@ -205,7 +211,7 @@ def handle_utterance(
         resolved_dish_name = dish_name or extract_dish_name(utterance, client=client)
         if resolved_dish_name is None:
             return {"intent": intent, "message": DISH_NOT_FOUND_MESSAGE}
-        found = select_standard_recipe(resolved_dish_name, client=client)
+        found = select_standard_recipe(resolved_dish_name, client=client, owner_id=owner_id)
         # 2026-08-26 — dish_name(로컬 LLM 추측)이 완전일치 실패하면 extract_dish_name()으로
         # 발화 원문을 한 번 더 보정 시도하는 안전망을 잠깐 넣었다가 되돌렸다. "우리엄마가
         # 만든 된장찌개."처럼 DB 문자열과 토씨 하나 다른 진짜 매칭 실패는 구해줬지만,
@@ -225,7 +231,7 @@ def handle_utterance(
         if found is None:
             space_corrected = find_dish_name_ignoring_spaces(resolved_dish_name, client=client)
             if space_corrected and space_corrected != resolved_dish_name:
-                found = select_standard_recipe(space_corrected, client=client)
+                found = select_standard_recipe(space_corrected, client=client, owner_id=owner_id)
         if found is None:
             # 2026-08-26 추가 — 위 공백 안전망과 나란히, LLM이 준 dish_name이 STT
             # 반복 아티팩트를 그대로 옮긴 경우(예: "된장찌장찌개") 대응. fuzzy 매칭이
@@ -233,7 +239,7 @@ def handle_utterance(
             # (find_dish_name_ignoring_repetition() 문서 참고).
             repetition_corrected = find_dish_name_ignoring_repetition(resolved_dish_name, client=client)
             if repetition_corrected and repetition_corrected != resolved_dish_name:
-                found = select_standard_recipe(repetition_corrected, client=client)
+                found = select_standard_recipe(repetition_corrected, client=client, owner_id=owner_id)
         if found is None:
             # 2026-08-27 추가 — 위 두 안전망과 나란히, LLM이 "레시피"류 질의 접미사를
             # dish_name에서 못 떼고 그대로 돌려준 경우(예: "멸치볶음레시피") 대응.
@@ -244,7 +250,7 @@ def handle_utterance(
             # 수도 있음)라면 접미사를 떼도 DB에 없으니 그대로 "없다"고 정직하게 답한다.
             suffix_corrected = find_dish_name_stripping_query_suffix(resolved_dish_name, client=client)
             if suffix_corrected and suffix_corrected != resolved_dish_name:
-                found = select_standard_recipe(suffix_corrected, client=client)
+                found = select_standard_recipe(suffix_corrected, client=client, owner_id=owner_id)
         if found is None:
             return {"intent": intent, "message": DISH_NOT_FOUND_MESSAGE}
         if found.get("pending"):
@@ -264,7 +270,7 @@ def handle_utterance(
         # 다름).
         more_specific = find_more_specific_containing_name(found["dish_name"], utterance, client=client)
         if more_specific:
-            upgraded = select_standard_recipe(more_specific, client=client)
+            upgraded = select_standard_recipe(more_specific, client=client, owner_id=owner_id)
             if upgraded is not None and not upgraded.get("pending"):
                 found = upgraded
             elif upgraded is not None and upgraded.get("pending"):

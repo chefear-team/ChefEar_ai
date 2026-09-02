@@ -148,7 +148,7 @@ def _worker_extract_intent_llm(utterance: str) -> dict:
     return extract_intent_llm(utterance)
 
 
-def _worker_handle_utterance(session: dict, utterance: str, *, dish_name, steps) -> dict:
+def _worker_handle_utterance(session: dict, utterance: str, *, dish_name, steps, owner_id=None) -> dict:
     # client를 안 넘긴다 — orchestration.pipeline.handle_utterance()는 client=None이면
     # 내부에서 `client = client or get_client()`로 알아서 채운다(pipeline.py 확인됨).
     # get_client()는 db.py에서 @lru_cache 프로세스 싱글턴이라, 이 워커 프로세스
@@ -157,7 +157,7 @@ def _worker_handle_utterance(session: dict, utterance: str, *, dish_name, steps)
     # supabase 클라이언트는 애초에 pickle 가능하다는 보장도 없음).
     from orchestration.pipeline import handle_utterance
 
-    return handle_utterance(session, utterance, dish_name=dish_name, steps=steps)
+    return handle_utterance(session, utterance, dish_name=dish_name, steps=steps, owner_id=owner_id)
 
 
 # ============================================================
@@ -244,7 +244,7 @@ def submit_llm_extract(utterance: str) -> Future:
     return get_pool().submit(_worker_extract_intent_llm, utterance)
 
 
-def submit_handle_utterance(session: dict, utterance: str, *, dish_name, steps) -> Future:
+def submit_handle_utterance(session: dict, utterance: str, *, dish_name, steps, owner_id=None) -> Future:
     return get_pool().submit(
-        _worker_handle_utterance, session, utterance, dish_name=dish_name, steps=steps
+        _worker_handle_utterance, session, utterance, dish_name=dish_name, steps=steps, owner_id=owner_id
     )

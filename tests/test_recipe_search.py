@@ -7,6 +7,10 @@ FakeSupabaseClient(인메모리)로 필터링/선정 로직만 검증한다. 실
 search_by_ingredient_content() 테스트를 걷어냈다. 계정/쿠키 시스템 삭제(remove_user_accounts.md)로
 owner_id 기반 개인화 테스트도 걷어내고, 대신 관리자 승인(approved) 워크플로우
 (admin_recipe_approval.md) 테스트로 교체했다.
+
+2026-09-02 — docs/specs/private_recipe_visibility.md: 로그인 재도입으로 owner_id가 다시
+쓰이면서, "승인되면 전체 공개" 테스트를 "승인 + 본인 소유일 때만 공개"로 되돌린다(approved
+자체는 레거시 approved='N' 행을 걸러내는 역할로 남아 관련 테스트는 그대로 유지).
 """
 from fake_supabase import FakeSupabaseClient
 
@@ -81,17 +85,36 @@ def test_pending_when_only_unapproved_user_custom_exists():
     assert result == {"pending": True}
 
 
-def test_approved_user_custom_is_visible_to_everyone():
-    """승인(approved='Y')되면 등록한 사람이 누구인지와 무관하게 전체 공개된다 —
-    더 이상 owner_id로 소유자를 가리지 않는다(2026-08-27 결정)."""
+def test_approved_user_custom_visible_only_to_owner():
+    """2026-09-02 — 승인(approved='Y')만으로는 더 이상 전체 공개되지 않는다. 등록한
+    본인(owner_id 일치)만 조회되고, 다른 사용자·비로그인 조회자에게는 안 보인다
+    (private_recipe_visibility.md)."""
     client = FakeSupabaseClient()
     row = client.table("recipes").seed(
-        {"dish_name": "고등어라테", "ingredients": "고등어, 우유", "source": "user_custom", "approved": "Y"}
+        {
+            "dish_name": "고등어라테",
+            "ingredients": "고등어|우유",
+            "source": "user_custom",
+            "approved": "Y",
+            "owner_id": "user-a",
+        }
     )
 
-    result = select_standard_recipe("고등어라테", client=client)
+    assert select_standard_recipe("고등어라테", client=client, owner_id="user-a")["recipe_id"] == row["id"]
+    assert select_standard_recipe("고등어라테", client=client, owner_id="user-b") is None
+    assert select_standard_recipe("고등어라테", client=client, owner_id=None) is None
 
-    assert result["recipe_id"] == row["id"]
+
+def test_approved_api_standard_visible_to_everyone_regardless_of_owner():
+    """api_standard는 owner_id 필터와 무관하게 항상 전체 공개 — 이미 검수된 표준
+    데이터라 이번 소유자 제한 대상이 아니다."""
+    client = FakeSupabaseClient()
+    row = client.table("recipes").seed(
+        {"dish_name": "된장찌개", "ingredients": "두부", "source": "api_standard", "approved": "Y"}
+    )
+
+    assert select_standard_recipe("된장찌개", client=client, owner_id=None)["recipe_id"] == row["id"]
+    assert select_standard_recipe("된장찌개", client=client, owner_id="아무개")["recipe_id"] == row["id"]
 
 
 def test_approved_candidate_preferred_over_pending_ones():

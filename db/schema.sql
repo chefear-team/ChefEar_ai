@@ -110,6 +110,12 @@ create table if not exists users (
 -- 아무도(등록한 사람 포함) 조회할 수 없다. api_standard는 처음부터 검수된 데이터라
 -- 기본값을 'Y'로 두고, 신규 user_custom은 registration.py::save_recipe()가 매번
 -- 명시적으로 'N'을 넣는다(테이블 기본값만 믿으면 그 코드를 깜빡했을 때 바로 공개돼버림).
+--
+-- 2026-09-02 갱신(docs/specs/private_recipe_visibility.md): save_recipe()가 이제 'N' 대신
+-- 이 컬럼의 테이블 기본값과 같은 'Y'를 명시적으로 넣는다 — 관리자 승인 대신 owner_id로
+-- "등록한 본인만 조회"를 가린다(select_standard_recipe() 참고). 컬럼/체크 제약 자체는
+-- 안 바뀐다 — 이 스펙 이전에 등록된 레거시 approved='N' 행이 여전히 있을 수 있고, 그
+-- 행들은 기존처럼 관리자 페이지(admin.py)에서 개별 승인/삭제한다.
 alter table recipes add column if not exists approved text not null default 'Y' check (approved in ('Y', 'N'));
 
 -- 이미 있던 행(이 컬럼이 생기기 전에 적재된 api_standard/user_custom)은 전부 승인된

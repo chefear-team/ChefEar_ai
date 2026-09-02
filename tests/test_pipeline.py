@@ -197,6 +197,37 @@ def test_handle_utterance_search_pending_approval_gets_distinct_message():
     assert "current_recipe_id" not in session
 
 
+def test_handle_utterance_search_owner_id_restricts_user_custom_to_owner():
+    """2026-09-02 — docs/specs/private_recipe_visibility.md AC-01/02: handle_utterance()가
+    받은 owner_id를 select_standard_recipe()까지 그대로 전달해야, 등록자 본인은 바로
+    조회되고 다른 사람은 "아예 없음"과 같은 안내를 받는다."""
+    client = FakeSupabaseClient()
+    client.table("recipes").seed(
+        {
+            "dish_name": "고등어라테",
+            "ingredients": "고등어|우유",
+            "source": "user_custom",
+            "approved": "Y",
+            "owner_id": "user-a",
+        }
+    )
+
+    owner_session: dict = {}
+    owner_result = handle_utterance(
+        owner_session, "고등어라테 어떻게 만들어?", dish_name="고등어라테", client=client, owner_id="user-a"
+    )
+    assert owner_result["intent"] == "조회"
+    assert "message" not in owner_result
+    assert owner_session["current_recipe_id"] is not None
+
+    stranger_session: dict = {}
+    stranger_result = handle_utterance(
+        stranger_session, "고등어라테 어떻게 만들어?", dish_name="고등어라테", client=client, owner_id="user-b"
+    )
+    assert stranger_result["message"] == DISH_NOT_FOUND_MESSAGE
+    assert "current_recipe_id" not in stranger_session
+
+
 def test_handle_utterance_search_llm_dish_name_mismatch_is_honest_not_recovered():
     """2026-08-26 — dish_name(로컬 LLM 추측)이 DB의 정확한 문자열과 한 글자라도 다르면
     (여기선 "된장찌개"의 흔한 오인식 "된장치개") 완전일치가 실패하고, 그대로 "표준
