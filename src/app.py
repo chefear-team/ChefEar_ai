@@ -499,19 +499,38 @@ def main() -> None:
         text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
-    elif screen in ("login", "signup", "my_recipes", "edit_recipe"):
+    elif screen in ("login", "signup"):
+        # 2026-09-02 요청 — 로그인/회원가입은 폼(아이디·비밀번호) 입력 전용 화면이라
+        # 마이크 자체가 필요 없다는 판단으로, my_recipes/edit_recipe와 분리해 listen()을
+        # 아예 안 부른다(마이크 컴포넌트를 안 그림).
+        #
+        # 주의(재도입 시 참고) — 2026-09-01엔 이 넷(login/signup/my_recipes/edit_recipe)을
+        # 하나로 묶어 listen_for_speech=False로 마이크 연결만 유지했었다. "처음 화면으로"/
+        # "내 정보" 버튼으로 다른 화면과 왔다갔다를 반복하면 WebRTC 재협상(몇 초) 중에
+        # _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을 구분 못 해 매번 새
+        # RTCPeerConnection을 만들어내고, 그게 브라우저 정리 속도보다 빠르게 쌓여
+        # "Cannot create so many PeerConnections" 크래시로 이어졌던 이력이 있다(당시엔
+        # _recover_dead_mic()에 debounce가 없어 이 오판이 실제로 재현됨 — 지금은 고쳐짐).
+        # login/signup은 "로그인 화면으로"/"회원가입" 링크로 서로 왕복 가능해서 이론상
+        # 같은 패턴에 노출될 수 있지만, my_recipes/edit_recipe(카드 여러 개를 수정하며
+        # 반복 왕복)만큼 빈번하지 않다고 보고 여기서는 마이크를 아예 뺀다 — login에서
+        # start로 넘어갈 때(로그인 성공 직후)나 signup에서 나갈 때 마이크가 새로
+        # 연결되는 비용은 감수한다(관리자 페이지 전환과 같은 트레이드오프).
+        pass
+    elif screen in ("my_recipes", "edit_recipe"):
         # 2026-09-01 — 원래 register_ingredients와 같은 이유로 listen_for_speech=False로
         # 마이크 연결만 유지하려 했으나, 실사용 중 "Failed to construct
         # 'RTCPeerConnection': Cannot create so many PeerConnections"가 재현돼 마이크
         # 자체를 아예 안 그리는 쪽으로 후퇴했었다(이 주석의 이전 버전, login.py 문서
         # 참고 — 근본 원인 미해결 워크어라운드였음).
         #
-        # 근본 원인 규명(voice_io._recover_dead_mic() 문서 참고): 이 넷은 이
-        # 프로젝트에서 유일하게 사용자가 "처음 화면으로"/"내 정보" 버튼으로 다른
-        # 화면과 짧은 간격을 두고 반복해서 왕복하는 화면들이다(등록 화면들은 순서대로
-        # 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데, 그 몇 초 사이에
-        # 왕복하면 _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을 구분 못 하고
-        # 매번 새 세대(=한 번도 안 쓰인 새 컴포넌트 key라 component.py::
+        # 근본 원인 규명(voice_io._recover_dead_mic() 문서 참고): 이 화면들은(원래는
+        # login/signup도 포함해 넷이었으나 2026-09-02 로그인/회원가입은 마이크를 아예
+        # 안 그리는 쪽으로 분리됨, 위 분기 참고) "처음 화면으로"/"내 정보" 버튼으로
+        # 다른 화면과 짧은 간격을 두고 반복해서 왕복하는 화면들이다(등록 화면들은
+        # 순서대로 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데, 그 몇 초
+        # 사이에 왕복하면 _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을
+        # 구분 못 하고 매번 새 세대(=한 번도 안 쓰인 새 컴포넌트 key라 component.py::
         # _get_or_create_context()가 완전히 새 WebRtcStreamerContext를 만듦 -> 새
         # RTCPeerConnection, voice_io._recover_dead_mic() 문서 참고)를 만들어냈다 —
         # 왕복이 반복될수록 브라우저가 이전 연결을 정리하는 속도보다 빠르게 연결이
