@@ -125,7 +125,9 @@ def _init_worker() -> None:
 #  top-level 함수여야 한다 — 클로저/람다/메서드는 안 됨)
 # ============================================================
 
-def _worker_stt_transcribe(audio, *, sample_rate, ingredient_context=None, vad_filter=True):
+def _worker_stt_transcribe(
+    audio, *, sample_rate, ingredient_context=None, vad_filter=True, session_id=None
+):
     from stt.infer import stt_transcribe
 
     return stt_transcribe(
@@ -133,13 +135,14 @@ def _worker_stt_transcribe(audio, *, sample_rate, ingredient_context=None, vad_f
         sample_rate=sample_rate,
         ingredient_context=ingredient_context,
         vad_filter=vad_filter,
+        session_id=session_id,
     )
 
 
-def _worker_tts_synthesize(text: str):
+def _worker_tts_synthesize(text: str, session_id=None):
     from tts.infer import tts_synthesize
 
-    return tts_synthesize(text)
+    return tts_synthesize(text, session_id=session_id)
 
 
 def _worker_extract_intent_llm(utterance: str) -> dict:
@@ -226,18 +229,21 @@ def _noop() -> None:
 # 호출부(voice_io.py/dispatch.py/admin_auth.py)가 쓰는 공개 함수
 # ============================================================
 
-def submit_stt(audio, *, sample_rate, ingredient_context=None, vad_filter=True) -> Future:
+def submit_stt(
+    audio, *, sample_rate, ingredient_context=None, vad_filter=True, session_id=None
+) -> Future:
     return get_pool().submit(
         _worker_stt_transcribe,
         audio,
         sample_rate=sample_rate,
         ingredient_context=ingredient_context,
         vad_filter=vad_filter,
+        session_id=session_id,
     )
 
 
-def submit_tts(text: str) -> Future:
-    return get_pool().submit(_worker_tts_synthesize, text)
+def submit_tts(text: str, session_id: str | None = None) -> Future:
+    return get_pool().submit(_worker_tts_synthesize, text, session_id=session_id)
 
 
 def submit_llm_extract(utterance: str) -> Future:

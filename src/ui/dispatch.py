@@ -162,7 +162,13 @@ def process_utterance(text: str) -> None:
     # 전체 분기에 빠짐없이 추가). 이 줄이 매 발화 처리의 진입점이라 [PERF]/
     # [STT_CONF_DEBUG]/[GOTO]와 시간순으로 나란히 놓고 보면 "어떤 발화가 어떤
     # 분기를 타서 어디로 갔는지"를 끝까지 추적할 수 있다.
-    print(f"[DISPATCH] process_utterance 진입: text={text!r} screen={st.session_state.get('screen')!r}", flush=True)
+    # 2026-09-02 — sid(ui.session.init_state() 문서 참고)를 같이 찍어서, 접속자 여럿이
+    # 섞인 로그 스트림에서도 이 발화가 누구 것인지 grep으로 구분할 수 있게 한다.
+    print(
+        f"[DISPATCH] process_utterance 진입: sid={st.session_state.get('_sid')} "
+        f"text={text!r} screen={st.session_state.get('screen')!r}",
+        flush=True,
+    )
     if is_home_word(text):
         print(f"[DISPATCH] 분기=is_home_word -> reset_to_start()", flush=True)
         reset_to_start()

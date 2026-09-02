@@ -9,6 +9,8 @@ speak()/listen() 같은 STT/TTS 연결은 ui/voice_io.py, 화면별 함수는 ui
 """
 from __future__ import annotations
 
+import secrets
+
 import streamlit as st
 
 # handle_utterance()/advance_step()/register_recipe()가 그대로 받아쓰는 딕셔너리 — 이
@@ -25,6 +27,16 @@ def init_state() -> None:
     # 화면으로 바꾼다. login 화면의 "처음 화면으로" 뒤로가기 링크로 start에 그대로
     # 갈 수 있으므로, 비로그인 이용 자체를 막는 건 아니다 — 세션이 새로 시작될 때
     # 맨 처음 보이는 화면만 바뀐다.
+    # 2026-09-02 요청 — 서버 콘솔 로그가 접속자 전원의 출력을 한 스트림에 그대로
+    # 섞어서 찍어서(세션 구분 태그가 없음), 실사용 중 "이 발화/이 로그가 진짜 내
+    # 것인지 다른 접속자 것인지" 구분이 안 되는 문제가 실측 확인됐다(예: 조용한 방인데
+    # 이상한 텍스트가 STT 로그에 찍혀서 "혹시 다른 사람이 동시 테스트 중이었나" 되물어야
+    # 했던 사례). 세션 시작 시 짧은 랜덤 식별자를 하나 만들어 세션 내내 그대로 쓴다
+    # (6 hex문자, 동시접속 몇 명 구분에 충분 — 완전한 유일성 보장이 목적이 아니라 "이
+    # 줄들끼리는 같은 세션"이라는 grep 가능한 표시가 목적). GPU 워커 풀은 별도
+    # *프로세스*라 이 session_state를 직접 못 읽으므로(gpu_worker_pool.py 문서 참고),
+    # STT/TTS 호출부(voice_io.py)가 이 값을 인자로 명시적으로 넘긴다.
+    st.session_state.setdefault("_sid", secrets.token_hex(3))
     st.session_state.setdefault("screen", "login")
     st.session_state.setdefault("pipeline_session", dict(_DEFAULT_PIPELINE_SESSION))
     st.session_state.setdefault("chat_log", [])
@@ -80,8 +92,16 @@ def goto(screen: str) -> None:
     각 분기, handle_recipe_confirm() 등)에서 왔는지는 이 로그 바로 위/아래에 찍히는
     다른 [PERF]/[STT_CONF_DEBUG]/각 함수 자체 로그와 맞춰봐야 알 수 있다 — 이 줄
     자체는 "무엇으로 바뀌었나"만 확정해준다.
+
+    2026-09-02 — sid=(세션 짧은 식별자, init_state() 문서 참고)를 같이 찍어서, 접속자
+    여럿이 섞인 로그 스트림에서도 "이 화면 전환들은 같은 세션"인지 grep으로 구분할
+    수 있게 한다.
     """
-    print(f"[GOTO] {st.session_state.get('screen')!r} -> {screen!r}", flush=True)
+    print(
+        f"[GOTO] sid={st.session_state.get('_sid')} "
+        f"{st.session_state.get('screen')!r} -> {screen!r}",
+        flush=True,
+    )
     st.session_state.screen = screen
     st.rerun()
 

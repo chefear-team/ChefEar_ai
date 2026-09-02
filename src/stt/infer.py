@@ -821,6 +821,7 @@ def stt_transcribe(
     sample_rate: int | None = None,
     ingredient_context: Optional[Union[str, Sequence[str]]] = None,
     vad_filter: bool = True,
+    session_id: str | None = None,
 ) -> str:
     """오디오 하나 -> 인식된 텍스트. faster-whisper(int8) 기반, HF Spaces 배포용.
 
@@ -848,6 +849,14 @@ def stt_transcribe(
         faster-whisper 내부 VAD로 한 번 더 무음을 거를지 여부(기본 True). 아래 model.transcribe()
         호출부 주석 참고 — 상시 마이크 실시간 경로(voice_io.py)처럼 호출부가 이미 자체 VAD
         (ui/mic_vad.py::MicVadSegmenter)로 발화 구간을 잘라서 넘기는 경우엔 False로 부른다.
+
+    session_id
+        2026-09-02 추가 — 접속자 여럿이 섞인 서버 콘솔 로그(gpu_worker_pool 워커 프로세스는
+        전원의 요청을 처리하는 공유 프로세스라 이 함수 자체는 "누구 것인지" 모름)에서
+        아래 [STT_CONF_DEBUG]/[STT_EMPTY_DEBUG] 줄이 어느 브라우저 세션의 발화인지 grep으로
+        구분할 수 있게 호출부(voice_io.py)가 넘기는 짧은 식별자. 순수 로그 태그일 뿐 인식
+        로직과는 무관 — None이면 태그 없이 그대로 동작한다(orchestration.gpu_worker_pool의
+        다른 호출부처럼 기본값 생략도 안전).
 
     Returns
     -------
@@ -910,7 +919,7 @@ def stt_transcribe(
     if segments:
         for seg in segments:
             print(
-                f"[STT_CONF_DEBUG] text={seg.text.strip()!r} "
+                f"[STT_CONF_DEBUG] sid={session_id} text={seg.text.strip()!r} "
                 f"avg_logprob={seg.avg_logprob:.3f} no_speech_prob={seg.no_speech_prob:.3f}",
                 flush=True,
             )
@@ -930,10 +939,13 @@ def stt_transcribe(
     if text and segments:
         max_no_speech = max((s.no_speech_prob for s in segments), default=0.0)
         if max_no_speech > 0.85:
-            print(f"[STT] 환각 방어: no_speech_prob={max_no_speech:.3f} > 0.85 — 버림 text={text!r}", flush=True)
+            print(
+                f"[STT] sid={session_id} 환각 방어: no_speech_prob={max_no_speech:.3f} > 0.85 — 버림 text={text!r}",
+                flush=True,
+            )
             text = ""
     if text and _looks_like_hallucination(text):
-        print(f"[STT] 환각 방어: 상투구 매칭 — 버림 text={text!r}", flush=True)
+        print(f"[STT] sid={session_id} 환각 방어: 상투구 매칭 — 버림 text={text!r}", flush=True)
         text = ""
 
     # 2026-08-26 임시 진단 — "오징어볶음 레시피"처럼 vad_filter=False에서도, 큰소리로
@@ -943,7 +955,7 @@ def stt_transcribe(
     # 말이 아니다"로 보고 스킵할 수 있음)를 눈으로 확인하기 위함. 원인 확인되면 지울 것.
     if not text:
         print(
-            f"[STT_EMPTY_DEBUG] segments={len(segments)} "
+            f"[STT_EMPTY_DEBUG] sid={session_id} segments={len(segments)} "
             f"language={_info.language} language_probability={_info.language_probability:.3f} "
             f"duration={_info.duration:.2f}s duration_after_vad="
             f"{getattr(_info, 'duration_after_vad', None)}",
