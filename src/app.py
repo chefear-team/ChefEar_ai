@@ -358,14 +358,16 @@ def main() -> None:
     # 재도입했다. 관리자 접근은 이 버튼과 무관하게 별도 게이트(admin_recipe_approval.md)로
     # 그대로 유지.
     _current_user = st.session_state.get("current_user")
-    if st.session_state.screen == "login":
-        # 2026-09-01 요청 — 로그인 화면 자체에서는 로고 옆 로그인 아이콘 버튼이
-        # 불필요하다(이미 로그인 화면이라 눌러도 갈 곳이 없음) 해서 뺀다. 다른
-        # 화면은 전부 기존대로 show_login=True를 유지.
+    # 2026-09-01 재요청 — 로고 옆 계정 버튼(로그인 아이콘/내 아이디)을 "start" 화면
+    # 에서만 보이게 한다. 조리 진행 중이나 등록/조회 도중에 실수로 눌러 마이레시피로
+    # 새 화면이 훅 넘어가는 걸 막기 위함 — 로그인 화면은 원래도 이 버튼이 필요 없다는
+    # 이전 요청(바로 위 이력)과 결과가 같아 별도 예외 처리 없이 이 조건 하나로 같이
+    # 커버된다(login도 "start"가 아니므로 자연히 안 보임).
+    if st.session_state.screen == "start":
+        _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
+    else:
         render_brand()
         _brand_clicked = False
-    else:
-        _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
     if _brand_clicked:
         if _current_user:
             # 로그인 아이콘이 아이디로 바뀐 뒤 다시 누르면 마이레시피로 이동한다
@@ -498,16 +500,28 @@ def main() -> None:
         if text:
             process_utterance(text)
     elif screen in ("login", "signup", "my_recipes", "edit_recipe"):
-        # 2026-09-01 — 다른 화면과 달리 이 넷은 listen()을 아예 안 부른다(= 마이크
-        # 컴포넌트 자체를 안 그림). 원래는 register_ingredients/register_steps처럼
-        # listen_for_speech=False로 연결만 유지하려 했으나, 실사용 중 브라우저에서
-        # "Failed to construct 'RTCPeerConnection': Cannot create so many
-        # PeerConnections"가 재현됐다 — 비밀번호 입력 중엔 애초에 마이크가 전혀
-        # 필요 없는 화면이라, 재연결 비용(다음 화면 진입 시 한 번 더 협상)을 감수하고
-        # 아예 안 그리는 쪽으로 바꿨다. my_recipes/edit_recipe(2026-09-01 도입,
-        # docs/specs/my_recipes.md)도 폼/버튼 조작 전용 화면이라 같은 이유로 처음부터
-        # 이 예외에 포함시킨다. 다른 화면들처럼 "항상 listen() 호출" 규칙의 의도적 예외.
-        pass
+        # 2026-09-01 — 원래 register_ingredients와 같은 이유로 listen_for_speech=False로
+        # 마이크 연결만 유지하려 했으나, 실사용 중 "Failed to construct
+        # 'RTCPeerConnection': Cannot create so many PeerConnections"가 재현돼 마이크
+        # 자체를 아예 안 그리는 쪽으로 후퇴했었다(이 주석의 이전 버전, login.py 문서
+        # 참고 — 근본 원인 미해결 워크어라운드였음).
+        #
+        # 근본 원인 규명(voice_io._recover_dead_mic() 문서 참고): 이 넷은 이
+        # 프로젝트에서 유일하게 사용자가 "처음 화면으로"/"내 정보" 버튼으로 다른
+        # 화면과 짧은 간격을 두고 반복해서 왕복하는 화면들이다(등록 화면들은 순서대로
+        # 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데, 그 몇 초 사이에
+        # 왕복하면 _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을 구분 못 하고
+        # 매번 새 세대(=한 번도 안 쓰인 새 컴포넌트 key라 component.py::
+        # _get_or_create_context()가 완전히 새 WebRtcStreamerContext를 만듦 -> 새
+        # RTCPeerConnection, voice_io._recover_dead_mic() 문서 참고)를 만들어냈다 —
+        # 왕복이 반복될수록 브라우저가 이전 연결을 정리하는 속도보다 빠르게 연결이
+        # 쌓여 결국 PeerConnection 개수 상한에 부딪혔다. _recover_dead_mic()에 "죽었다"
+        # 판정을 debounce하는 로직을 추가해 이 오판을 막았으므로, register_ingredients와
+        # 동일한(이미 검증된) 안전한 패턴으로 되돌린다 — register_steps는
+        # listen_for_speech를 안 넘겨서 실제로는 STT까지 계속 돌리고 결과만 버리는
+        # 별개의(더 무거운) 패턴이라 정확히 같지는 않다. 마이크를 안 그려서 매번
+        # 재연결시키는 대신, 연결은 유지하고 음성 처리만 건너뛴다.
+        listen(screen, listen_for_speech=False, show_text_fallback=False)
 
 
 def _run_with_error_notice(label: str, fn) -> None:

@@ -321,7 +321,70 @@ def _render_cached_speech(message: str, *, nonce: int | str = 0) -> None:
 # 진행/재청취/이전/취소/등록 등 결과가 뭐가 될지 모르는 모든 처리 대기 구간에 공통으로
 # 쓰여서 특정 동작을 전제로 한 문구는 안 맞고, "내 말을 들었다"는 확인 + "기다려달라"는
 # 요청, 이 두 가지가 사용자가 실제로 궁금해하는 것이라는 판단으로 골랐다.
-def _drain_mic_while(job: dict, *, loading_message: str | None = "말씀 잘 들었어요, 잠시만요...") -> None:
+
+_LOADING_OVERLAY_SHOW_DELAY_S = 0.4
+_LOADING_OVERLAY_MIN_VISIBLE_S = 0.3
+
+
+class _LoadingOverlay:
+    """_drain_mic_while() 호출 여러 번에 걸쳐 로딩 팝업 하나를 이어 쓰기 위한 핸들.
+
+    2026-09-01 리포트 — "무엇을 만들고 싶으세요?에서 왜 조회 로딩이 두번 돌까"/
+    "로딩바가 두 번 켜졌다 꺼진다": 발화 한 번 처리에 실제로 블로킹 대기 구간이
+    두 번(1. process_utterance()의 LLM 추출+handle_utterance, 2. speak()의 TTS
+    합성) 있는데, 각자 자기 몫의 _drain_mic_while()을 따로 호출해서 각자 팝업을
+    한 번씩 껐다 켰다 하고 있었다 — 두 구간 사이는 세션 갱신 등 순수 파이썬 코드라
+    실제로는 수십~수백 ms뿐인데도 그 잠깐 사이에 껐다 켜지는 게 "깜박깜박 두 번
+    뜬다"로 눈에 띄었다. 이 핸들을 process_utterance()가 첫 대기 구간에서 만들어
+    speak() 호출까지 그대로 넘기면, 두 구간이 팝업 하나(같은 st.empty() 슬롯, 같은
+    "떴다"/"떴던 시각" 상태)를 이어서 쓰게 되어 중간에 꺼졌다 켜지는 순간이 없어진다.
+    """
+
+    __slots__ = ("slot", "shown", "shown_at", "start")
+
+    def __init__(self) -> None:
+        import time
+
+        self.slot = st.empty()
+        self.shown = False
+        self.shown_at = 0.0
+        self.start = time.monotonic()
+
+
+def _close_loading_overlay(overlay: "_LoadingOverlay") -> None:
+    """열려 있는 로딩 팝업을 닫는다 — _drain_mic_while(close=True)가 스스로 부르는
+    것과 같은 로직이라 별도 함수로 뺐다. close=False로 팝업을 열어둔 채 반환받은
+    호출부가, 결국 다음 _drain_mic_while() 단계 없이(예: speak() 없이 바로 goto())
+    끝나는 분기에서 직접 불러 마무리를 책임진다 — 안 그러면 팝업이 화면에 계속
+    남는다.
+
+    2026-09-02 자체 재검토 — 닫은 뒤 overlay.shown을 다시 False로 되돌린다. 원래는
+    한 번 닫으면 그걸로 끝(같은 overlay를 또 닫을 일이 없다는 전제)이라 안 건드렸는데,
+    process_utterance()에 안전망으로 추가한 try/finally(아래 dispatch.py 참고)가 이미
+    정상적으로 닫힌 overlay를 또 한 번 닫을 수 있어 이 함수 자체를 멱등하게(두 번
+    불러도 안전하게) 만들 필요가 생겼다 — shown을 False로 되돌리면 두 번째 호출은
+    `if overlay.shown:` 자체가 걸리지 않아 그냥 조용히 아무 것도 안 한다.
+    """
+    import time
+
+    if overlay.shown:
+        remaining = _LOADING_OVERLAY_MIN_VISIBLE_S - (time.monotonic() - overlay.shown_at)
+        if remaining > 0:
+            time.sleep(remaining)
+        overlay.slot.empty()
+        overlay.shown = False
+        # 2026-08-25 리포트 — 아래 _drain_mic_while()의 같은 주석 참고("지워라"/
+        # "다시 그려라" 신호가 너무 붙어 도착하면 잔상이 남는 문제) — 임시 완화책.
+        time.sleep(0.05)
+
+
+def _drain_mic_while(
+    job: dict,
+    *,
+    loading_message: str | None = "말씀 잘 들었어요, 잠시만요...",
+    overlay: "_LoadingOverlay | None" = None,
+    close: bool = True,
+) -> "_LoadingOverlay":
     """job["done"]가 True가 될 때까지 상시 마이크(webrtc)의 오디오 큐를 계속 비워준다.
 
     2026-08-23 리포트 실측 확인 — "된장찌개 레시피 알려줘"로 recipe_confirm까지는
@@ -367,29 +430,36 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "말씀 잘 들
     보장한다 — 뜨자마자 바로 지워지는 경우가 없어져서 눈에 실제로 "안내가 있었다"고
     인지할 시간을 준다. 표시 여부(뜨는 시점)는 안 건드린다 — 처리 시간 자체를 더
     기다리게 만드는 게 아니라, 이미 뜨기로 결정된 뒤의 "얼마나 오래 보이는가"만 바꾼다.
+
+    overlay/close(2026-09-01 추가, "로딩바가 두 번 켜졌다 꺼진다" 리포트 대응) — 위
+    _LoadingOverlay 문서 참고. overlay를 안 넘기면(기본값) 지금까지와 완전히 같게
+    이 호출 안에서 팝업을 새로 만들고 끝날 때 스스로 닫는다. 이전 단계가 만든
+    _LoadingOverlay를 넘기면 그 슬롯/표시 상태를 그대로 이어 쓴다 — close=False면
+    끝나도 닫지 않고 그대로 반환하므로, 이어받은 다음 단계(speak() 등)가 마무리
+    책임을 진다. 반환값은 항상 이번에 실제로 쓴 _LoadingOverlay(새로 만들었든
+    넘겨받았든)라, 호출부가 close=False로 부른 뒤 그대로 다음 단계에 넘기면 된다.
     """
     import queue
     import time
 
-    _SHOW_DELAY_S = 0.4
-    _MIN_VISIBLE_S = 0.3
-
-    overlay_slot = st.empty()
-    overlay_shown = False
-    shown_at = 0.0
-    start = time.monotonic()
+    if overlay is None:
+        overlay = _LoadingOverlay()
 
     while not job["done"]:
-        if loading_message and not overlay_shown and (time.monotonic() - start) >= _SHOW_DELAY_S:
-            with overlay_slot:
+        if (
+            loading_message
+            and not overlay.shown
+            and (time.monotonic() - overlay.start) >= _LOADING_OVERLAY_SHOW_DELAY_S
+        ):
+            with overlay.slot:
                 render_loading_overlay(loading_message)
             # 2026-08-26 요청 — 화면을 안 보고 있어도(핵심 컨셉이 "화면 안 보고 음성만으로")
             # 처리 중이라는 걸 알 수 있게, 같은 지점에서 짧은 효과음도 한 번 같이 울린다
             # (render_processing_chime() 문서 참고). start(이 드레인 호출의 시작 시각)를
             # nonce로 그대로 넘기면 호출마다 자연히 값이 달라져 autoplay가 매번 재실행된다.
-            render_processing_chime(nonce=start)
-            overlay_shown = True
-            shown_at = time.monotonic()
+            render_processing_chime(nonce=overlay.start)
+            overlay.shown = True
+            overlay.shown_at = time.monotonic()
 
         context = st.session_state.get(_mic_component_key())
         receiver = getattr(context, "audio_receiver", None) if context is not None else None
@@ -405,19 +475,9 @@ def _drain_mic_while(job: dict, *, loading_message: str | None = "말씀 잘 들
             # audio_receiver가 None으로 바뀔 수 있다. 조용히 다음 루프에서 다시 확인.
             pass
 
-    if overlay_shown:
-        remaining = _MIN_VISIBLE_S - (time.monotonic() - shown_at)
-        if remaining > 0:
-            time.sleep(remaining)
-        overlay_slot.empty()
-        # 2026-08-25 리포트 — 이 함수를 부른 쪽(process_utterance()의 미분류 분기 등)이
-        # 바로 다음 줄에서 st.rerun()을 부르는 경우, "지워라"(위 empty())와 "전체를 새로
-        # 그려라"(뒤이은 rerun) 두 신호가 브라우저에 너무 붙어서 도착하면 첫 신호가 다
-        # 반영되기 전에 두 번째가 덮쳐서 팝업이 지워지다 만 채로 남는 잔상이 실측
-        # 확인됐다. 정확한 프론트엔드 내부 메커니즘은 확정 못 했지만(화면 전환 잔상
-        # 전반과 같은 부류의 문제로 추정), 아주 짧은 간격을 둬서 "지워라" 델타가 먼저
-        # 반영될 시간을 벌어주는 임시 완화책 — 근본 fix는 아니다.
-        time.sleep(0.05)
+    if close:
+        _close_loading_overlay(overlay)
+    return overlay
 
 
 def speak(
@@ -426,9 +486,17 @@ def speak(
     recipe_id: str | None = None,
     step_number: int | None = None,
     hidden: bool = False,
+    _loading_overlay: "_LoadingOverlay | None" = None,
 ) -> None:
     """TTS로 응답을 재생하고 채팅 로그에 남긴다. 합성 실패는 조용히 삼키지 않는다(EC-05) —
     화면 텍스트는 항상 남고, 음성만 실패했다는 걸 사용자에게 알린다.
+
+    _loading_overlay(2026-09-01 추가, "로딩바가 두 번 켜졌다 꺼진다" 리포트 대응) —
+    process_utterance()가 자신의 LLM/DB 대기 단계에서 만든 _LoadingOverlay를 넘겨
+    받으면, 이 함수의 TTS 합성 대기도 같은 팝업을 이어 쓰고 여기서 마지막으로 닫는다
+    (voice_io._LoadingOverlay/_drain_mic_while() 문서 참고). 기본값 None은 지금까지
+    처럼 이 함수 혼자 팝업을 만들고 닫는 단독 호출이다 — dispatch.py 외 다른
+    호출부(cooking.py/register.py 등)는 이 인자를 안 넘겨서 동작이 그대로다.
 
     2026-08-21: st.audio()는 Streamlit이 rerun마다 <audio> 태그를 새로 만드는 방식이라
     자동재생·수동 재생 버튼 둘 다 안 먹히는 문제가 실측으로 확인됐다(브라우저에서 재생
@@ -498,9 +566,18 @@ def speak(
                     job["done"] = True
 
             threading.Thread(target=_run_synthesis, daemon=True).start()
-            _drain_mic_while(job)
+            # 2026-09-01 — 이 대기가 process_utterance()의 앞 단계(LLM/DB)와 이어붙는
+            # 두 번째 단계일 수 있다(_loading_overlay 문서 참고) — 넘겨받았으면 그
+            # 팝업을 그대로 이어 쓰고, 여기가(TTS 합성이) 항상 마지막 단계이므로
+            # close=True로 여기서 닫는다.
+            _drain_mic_while(job, overlay=_loading_overlay, close=True)
             if job["error"] is not None:
                 raise job["error"]
+        elif _loading_overlay is not None:
+            # 2026-09-01 — TTS 캐시 히트라 이 함수 안에서는 대기가 필요 없지만, 호출부가
+            # 앞 단계에서 열어둔 팝업을 이 speak() 호출이 마지막 단계로서 닫아줄 걸로
+            # 기대하고 있다(process_utterance() 각 분기 참고) — 여기서 대신 닫는다.
+            _close_loading_overlay(_loading_overlay)
 
         # 2026-08-25 — hidden=True에서도 render_audio_autoplay()로 실제로 한 번 틀고
         # 있었다. hidden=True는 항상 "이 문구를 goto() 직전에 미리 합성/캐싱만 해두고,
@@ -694,6 +771,12 @@ def mic_is_playing() -> bool:
     return _mic_truly_alive(st.session_state.get(_mic_component_key()))
 
 
+# 2026-09-01 — 아래 _recover_dead_mic() 문서 참고. "죽었다" 판정을 debounce하는
+# 최소 지속 시간 — 이보다 짧게 죽어있다 살아나면(정상 재협상 중이었던 것) 세대를
+# 아예 안 올린다.
+_MIC_DEAD_DEBOUNCE_S = 2.0
+
+
 def _recover_dead_mic() -> None:
     """한 번은 정상 연결됐던 마이크가 완전히 끊긴 채(_mic_truly_alive()가 False —
     "checking" 중이 아니라 진짜 종료됐거나 워커가 사라진 상태) 저절로 안 돌아오면,
@@ -708,18 +791,74 @@ def _recover_dead_mic() -> None:
     인스턴스를 만들어 강제로 처음부터 다시 시작시키는 더 확실한 방법을 쓴다 — 이미
     한 번 연결에 성공했던 세션에서만 적용한다(아직 한 번도 연결 안 된 상태, 즉 최초
     로딩 중이거나 사용자가 권한을 아직 안 줬을 뿐인 정상 대기 상태를 오작동으로 착각해
-    불필요하게 재마운트하지 않기 위함)."""
+    불필요하게 재마운트하지 않기 위함).
+
+    2026-09-01 추가 — "Cannot create so many PeerConnections" 크래시 원인 규명.
+    login/my_recipes/edit_recipe/signup에서 register_ingredients와 똑같이
+    listen_for_speech=False로 마이크를 계속 그렸는데도(app.py::main()의 해당 분기 옛
+    주석, login.py 문서 참고 — register_steps는 listen_for_speech를 안 넘겨서 실제로는
+    STT까지 계속 돌리고 결과만 버리는 더 무거운 경로라 정확히 같은 패턴은 아니다) 실사용
+    중 이 크래시가 재현돼 결국 마이크 자체를 안 그리는 쪽으로 후퇴했었다.
+    streamlit_webrtc 프론트엔드 소스를 직접 읽어 확인한 진짜 메커니즘: 이 넷은 이
+    프로젝트에서 유일하게 사용자가 "처음 화면으로"/"내 정보" 버튼으로 짧은 간격에
+    반복해서 왔다갔다 하는 화면들이다(등록 화면들은 순서대로 한 번만 지나감). WebRTC
+    재협상은 몇 초 걸릴 수 있는데(RunPod 배포 환경의 ICE/TURN 왕복), 그 몇 초 사이에
+    또 다른 화면으로 나갔다 돌아오면 이 함수가 "아직 재협상 중이라 안 죽었다"와 "진짜
+    죽었다"를 구분 못 하고 바로 세대를 올렸다 — 세대가 바뀌면 _mic_component_key()가
+    이전에 한 번도 쓰인 적 없는 새 문자열을 돌려줘서, component.py::
+    _get_or_create_context()가 그 key를 st.session_state에서 못 찾고 완전히 새
+    WebRtcStreamerContext를 만든다(같은 key가 잠시 안 그려졌다 다시 그려질 때 도는
+    "orphan-reset" 분기와는 다른, 더 확실한 "그냥 처음 보는 key" 경로다) — 결국 새
+    RTCPeerConnection이 만들어진다는 결론은 같다. 이 왕복이 반복될수록(브라우저가 이전
+    연결들을 완전히 정리하는 속도보다 빠르게) 연결이 계속 쌓여 결국 브라우저의
+    PeerConnection 개수 상한에 부딪혔다.
+
+    "죽었다"는 판정을 한 번의 관측이 아니라 _MIC_DEAD_DEBOUNCE_S만큼 계속 죽어있는
+    상태가 이어질 때만 확정하도록 바꾼다 — 진짜 재협상 중이면 그 사이 다시 살아있는
+    걸로 관측되는 순간(아래 _mic_truly_alive() 분기) 바로 리셋된다.
+
+    2026-09-02 자체 재검토(서브에이전트 리뷰)로 찾은 한계 — 아래 마지막 문단은 원래
+    "실제로 끊긴 경우도 여전히 정상적으로(그냥 몇 초 늦게) 세대를 올려 복구한다"고
+    적었는데, 정확하지 않다. _run_mic_loop()이 연결 안 됨을 감지하면 매번
+    _rate_limited_rerun()(1초당 최대 1회)으로 재실행을 강제하는데, 이 debounce 로직이
+    "죽었다"를 확정하려면 그 재실행이 최소 두 번 더(_mic_dead_since가 찍힌 뒤 2초 이상
+    지나서) 일어나야 한다 — 그런데 _rate_limited_rerun()이 첫 재실행을 곧바로 걸고 나면
+    그 직후 재실행에서는 "마지막 강제 재실행 뒤 1초가 안 지났다"는 이유로 더 이상
+    재실행을 걸지 않는다. 이후로는 브라우저(프론트엔드)가 스스로 새 컴포넌트 값을
+    보내와 on_change 콜백이 재실행을 걸어주는 경우에만 이 함수가 다시 불려서 2초
+    debounce를 마저 채울 수 있다 — 마이크 연결이 사용자 상호작용도, 프론트엔드 쪽
+    상태 변화 이벤트도 전혀 없이 완전히 조용한 채로 죽어있으면(예: 로그인 화면에서
+    비밀번호를 입력하는 동안 네트워크가 끊긴 경우), 이 함수가 다시 불릴 계기 자체가
+    당분간 없어서 세대 교체가 늦어질 수 있다(무한정 멈추는 건 아니다 — 사용자가 아무
+    조작이나 하면 그 rerun이 다시 이 함수를 부른다). st.fragment(run_every=...)로
+    확실한 폴링을 붙이는 방안도 검토했으나, 이 라이브러리는 st.fragment 자체가 연결을
+    죽이는 걸로 이미 확인된 바 있어(_run_mic_loop() 문서의 2026-08-23 리포트 참고) 그
+    방향은 피했다 — 실측 재현 없이 이 타이밍 메커니즘을 더 손대는 위험을 감수하기보다,
+    이 한계를 있는 그대로 남겨둔다.
+    """
+    import time
+
     context = st.session_state.get(_mic_component_key())
     state = getattr(context, "state", None)
     signalling = bool(getattr(state, "signalling", False))
 
     if _mic_truly_alive(context):
         st.session_state["_mic_ever_connected"] = True
+        st.session_state["_mic_dead_since"] = None
         return
 
     if st.session_state.get("_mic_ever_connected") and not signalling:
+        dead_since = st.session_state.get("_mic_dead_since")
+        if dead_since is None:
+            # 이번이 "죽어있다"는 첫 관측 — 바로 세대를 올리지 않고 시각만 남겨둔다.
+            st.session_state["_mic_dead_since"] = time.monotonic()
+            return
+        if time.monotonic() - dead_since < _MIC_DEAD_DEBOUNCE_S:
+            # 아직 debounce 창 안 — 재협상이 정상적으로 진행 중일 수 있으니 좀 더 지켜본다.
+            return
         st.session_state["_mic_gen"] = st.session_state.get("_mic_gen", 0) + 1
         st.session_state["_mic_ever_connected"] = False
+        st.session_state["_mic_dead_since"] = None
         # 2026-08-28 — 세대별 임시 타이밍 키(_mic_connect_start_<gen>/_mic_connect_logged_<gen>,
         # _run_mic_loop() 참고)가 재연결마다 2개씩 session_state에 쌓이기만 하고 아무도 안
         # 지웠다("화면 전환마다 재연결"이라 한 세션에 수십 개). 세대가 바뀌는 지금 옛 세대

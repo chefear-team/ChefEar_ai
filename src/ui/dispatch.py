@@ -16,7 +16,7 @@ from orchestration.pipeline import manual_fallback
 from orchestration.term_dict import resolve_for_tts
 from ui.recipe_view import _fetch_recipe_view, _view_cache_fresh, refresh_recipe_view
 from ui.session import _DEFAULT_PIPELINE_SESSION, goto
-from ui.voice_io import _drain_mic_while, speak
+from ui.voice_io import _close_loading_overlay, _drain_mic_while, speak
 
 # cooking_step에서 "다음"으로 마지막 단계를 넘어가면(advance_step()이 step=None을
 # 돌려줌, orchestration/pipeline.py 참고) 안내만 하고 같은 화면에 머무르는 대신 별도
@@ -372,291 +372,332 @@ def process_utterance(text: str) -> None:
             job["done"] = True
 
     threading.Thread(target=_compute, daemon=True).start()
-    _drain_mic_while(job)
+    # 2026-09-01 — "로딩바가 두 번 켜졌다 꺼진다" 리포트 대응. close=False로 팝업을
+    # 안 닫고 그대로 돌려받아, 아래 각 분기의 speak() 호출까지 넘겨서 팝업 하나로
+    # 이어붙인다(voice_io._drain_mic_while()/_LoadingOverlay 문서 참고). speak()
+    # 없이 끝나는 분기(등록 의도, value_error, 미분류/감탄사 등)는 그 자리에서
+    # 직접 _close_loading_overlay(overlay)를 불러 닫아야 한다 — 안 그러면 팝업이
+    # 화면에 계속 남는다.
+    overlay = _drain_mic_while(job, close=False)
 
-    llm_result = job["llm_result"]
-    dish_name_guess = llm_result["dish_name"]
+    # 2026-09-02 자체 재검토(서브에이전트 리뷰) — 이 지점부터 아래 각 분기의
+    # _close_loading_overlay(overlay)/speak(_loading_overlay=overlay) 호출까지
+    # 사이에서 예상 못 한 예외(예: result 딕셔너리의 계약 위반, refresh_recipe_view()의
+    # 처리 안 된 Supabase 오류 등)가 나면, 그 예외가 각 분기의 마무리 호출을 건너뛰고
+    # 그대로 위(app.py::_run_with_error_notice())까지 올라가버려서 overlay(st.empty()
+    # 슬롯)가 닫히지 않은 채 남는다. 이 팝업은 화면 전환 잔상 방지용 st.empty() 스왑
+    # 구조(app.py::main()의 _screen_slot) *밖*에서 그려지므로, 이 프로젝트가 이미 여러 번
+    # 겪은 Streamlit#8360류 잔상 문제에 그대로 노출된다 — try/finally로 어떤 경로로
+    # 함수를 벗어나든 반드시 한 번은 닫히게 보장한다. 정상 경로는 각 분기가 이미 명시적으로
+    # 닫거나 speak()에 넘겨서 여기 도달할 때 이미 닫혀있는 게 보통이고(overlay.shown이
+    # False), _close_loading_overlay()는 그 상태에서 다시 불러도 아무 것도 안 하므로
+    # (위 _close_loading_overlay() 문서 참고) 안전하다.
+    try:
+        llm_result = job["llm_result"]
+        dish_name_guess = llm_result["dish_name"]
 
-    print(f"[DISPATCH] LLM 추출 결과: dish_name={dish_name_guess!r} wants_register={llm_result['wants_register']!r}", flush=True)
-    if llm_result["wants_register"] and not session.get("current_recipe_id"):
-        print(f"[DISPATCH] 분기=wants_register(LLM) -> register_dish_name", flush=True)
-        # 2026-08-22 추가 — classify_intent()(임베딩 유사도)가 "등록" 같은 짧은 단일
-        # 발화를 "진행"/"이전"과 헷갈려 margin 미충족으로 미분류 처리하는 사례가 실측
-        # 확인됐다(기준예문.csv 보강으로 그 구체 사례는 고쳤지만, 임베딩 분류기가 커버
-        # 못하는 새 표현은 또 나올 수 있음). classify_intent()를 거치지 않고, LLM이 이미
-        # "등록하고 싶다"를 명확히 확인해줬으면 바로 등록으로 보낸다.
-        #
-        # register_intro(표준 레시피에 없어서 짐작으로 등록을 유도하는 확인 화면)는 안
-        # 거친다(2026-08-22 요청) — "등록"이라고 직접 말한 건 시스템의 짐작이 아니라
-        # 사용자의 확정된 요청이라 다시 확인받을 필요가 없으므로, register_dish_name
-        # (새 레시피 등록 1/3 요리명)으로 바로 보낸다.
-        # 2026-08-27 — 로그인 개념 자체가 없어져서 게이트도 같이 없앴다.
-        st.session_state.pending_dish_name = dish_name_guess
-        goto("register_dish_name")
-        return
-    # intent_classifier.py의 "등록"(임베딩 매칭)은 context_recipe_id가 있으면(=이미
-    # 조리 중) 무시하도록 이미 고쳤는데, 이 LLM 경로(wants_register)는 완전히 별개
-    # 판정이라 그 보호를 못 받고 있었다 — 위 if 조건에 `and not session.get("current_recipe_id")`를
-    # 추가해서 조리 중엔 이 경로 자체를 안 타게 막았다 — 여기로 떨어지면(조리 중에
-    # wants_register가 True) 그냥 무시하고 원래 화면에 머무른다("등록은 첫 페이지 아니면
-    # 의미없는 문구다" 원칙, classify_intent() 쪽과 동일).
-    elif llm_result["wants_register"]:
-        print(f"[DISPATCH] 분기=wants_register(조리중이라 무시) -> 화면 그대로, rerun만", flush=True)
-        st.rerun()
-        return
-
-    if job["network_error"]:
-        # 2026-08-26 추가 — "40x/50x 에러 다 잡고 있나?" 재요청으로 발견/수정. Supabase
-        # 조회(4xx/5xx, 타임아웃, 연결 끊김 등)가 실패한 경우 서비스가 죽는 대신 "알 수
-        # 없는 intent" 분기와 같은 안전한 경로(speak+unclassified)로 보낸다 — 그 화면이
-        # chat_log의 마지막 ai 메시지를 다시 찾아 들려주므로 hidden=True. unclassified
-        # 화면 자체의 고정 문구("잘 이해하지 못했어요")는 이 케이스(실제로는 인식은
-        # 됐지만 서버 오류)엔 살짝 안 맞지만, 음성 응답은 정확한 이유를 말해주고 화면
-        # 기능(재시도 버튼 등)은 그대로 동작해서 이번엔 이 경로를 재사용한다.
-        print(f"[DISPATCH] 분기=network_error -> unclassified", flush=True)
-        speak("일시적인 오류가 발생했어요. 잠시 후 다시 이용해 주세요.", hidden=True)
-        goto("unclassified")
-        return
-
-    if job["value_error"]:
-        print(f"[DISPATCH] 분기=value_error(등록 의도인데 registration_step 없음) -> register_dish_name", flush=True)
-        # 위 배경 스레드의 _compute() 안에서 handle_utterance()가 ValueError를 던진 경우 —
-        # "등록" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
-        # 죽이는 대신 신규 등록으로 안전하게 보낸다. classify_intent()가 이미 "등록"으로
-        # 확정 분류한 경우라 위 wants_register 분기와 같은 이유로 register_intro(확인
-        # 화면)는 안 거치고 바로 register_dish_name으로 보낸다.
-        st.session_state.pending_dish_name = dish_name_guess
-        goto("register_dish_name")
-        return
-
-    result = job["result"]
-    intent = result.get("intent")
-    print(f"[DISPATCH] classify_intent 결과: intent={intent!r} result={result!r}", flush=True)
-
-    if intent == "미분류" or intent == "감탄사":
-        print(f"[DISPATCH] 분기=미분류/감탄사 -> 무시(화면 그대로, rerun만)", flush=True)
-        # 2026-08-26 추가 — "감탄사"(감사합니다/아멘/고마워요 등, 기준예문.csv 참고):
-        # classify_intent()가 이 실제 매칭시킨 진짜 의도라 "미분류"는 아니지만, 이
-        # 발화들은 애초에 아무 명령도 아니라서 처리할 게 없다 — 실측: "감사합니다"가
-        # "재청취"(다시 한번요)와 0.65로 헷갈려 다시듣기가 잘못 트리거되는 문제가
-        # 있었다(임베딩이 짧고 단순한 문장 구조만 보고 헷갈림, 의미와 무관). THRESHOLD를
-        # 올려서 막으려 하면 "좋아"(0.71) 같은 진짜 확정 발화까지 같이 막혀서, 대신
-        # 이 표현들을 자기 카테고리로 분리해 자기 자신과 거의 1.0으로 매칭시켜 이기게
-        # 하고, 여기서 "미분류"와 완전히 동일하게(화면 전환도 응답도 없이 무시) 처리한다.
-        #
-        # 문장 패턴 분류(classify_intent)가 기준예문.csv의 어떤 의도와도 못 매칭한
-        # 경우 전부 여기로 온다. 2026-08-24 재요청 — 기준예문에 없는 발화는 화면 전환도,
-        # 음성 응답도 없이 그냥 무시한다(예전엔 register_intro로 등록을 유도하거나
-        # unclassified 화면에서 "못 알아들었다"고 되물었는데, 조회 예문을 크게 넓힌
-        # 뒤로는 진짜 잡담/잡음만 여기로 남아서 매번 반응할 필요가 없다는 판단).
-        # register_intro/unclassified 화면 자체는 다른 경로(_REGISTER_WORD, "알 수
-        # 없는 intent" 방어 분기 등)로 여전히 갈 수 있다.
-        #
-        # 2026-08-25 추가 — 이 분기만 유일하게 goto()(=st.rerun())를 안 불렀다. 다른
-        # 모든 분기는 화면을 옮기며 rerun이 걸리고, 그 rerun이 다시 listen()을 호출해
-        # _run_mic_loop()의 프레임 드레인 루프가 곧장 이어지는데, 여기는 그냥 return해서
-        # 이번 스크립트 실행이 끝나버린다 — 그 순간부터 아무도 get_frames()를 안 불러서
-        # (다음 rerun이 우연히 다른 이유로 트리거될 때까지) 마이크 큐가 쌓이기만 하다
-        # 넘친다("Queue overflow" 반복 + 그 직후 발화가 씹히는 리포트, 실측 확인 —
-        # "여기까지하면"/"좋아?"처럼 margin 미충족으로 미분류 처리된 직후에만 정확히
-        # 재현됨). 화면은 그대로 두고 같은 화면으로 rerun만 걸어서 드레인 루프가
-        # 끊기지 않게 한다.
-        st.rerun()
-        return
-
-    # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제 의도와
-    # 매칭시켜서 뭔가 처리됐으면) 대화 기록에 남겨야 한다." (중간에 "다음 페이지로
-    # 안 넘어가면 기록 안 함"으로 더 좁혔다가, 사용자가 "내 기록은 아예 기록 안
-    # 한다고?"로 되물어서 원래 기준으로 되돌림 — 아래 각 분기의 "2026-08-26 재요청"
-    # 주석 참고.) 여기 도달한 시점(미분류/감탄사를 이미 걸러낸 뒤)은 전부 성공
-    # 케이스라, 화면이 실제로 바뀌든(조회/등록 등) 같은 화면에 머물든(다시/이전
-    # 단계 없음 등) 상관없이 각 분기 안에서 기록한다 — speak()의 AI 응답 기록은
-    # 이 규칙과 별개로 원래부터 항상 그대로 남는다.
-
-    if intent == "조회":
-        if "message" in result:  # DISH_NOT_FOUND_MESSAGE 또는 PENDING_MESSAGE
-            print(f"[DISPATCH] 분기=조회(실패) message={result['message']!r} -> 현재 화면 유지, rerun만", flush=True)
-            # 2026-08-27 — no_match 화면 자체를 없앴다(잔상 문제 다발). 화면 전환
-            # 없이 현재 화면(start)에 그대로 머무른 채 안내만 1회 들려준다 — 대화
-            # 기록에도 안 남기고(같은 요리를 계속 물어봐도 채팅창이 안 쌓임), 재생을
-            # 대신해줄 도착 화면이 없으므로 hidden 없이 직접 들려준다.
+        print(f"[DISPATCH] LLM 추출 결과: dish_name={dish_name_guess!r} wants_register={llm_result['wants_register']!r}", flush=True)
+        if llm_result["wants_register"] and not session.get("current_recipe_id"):
+            print(f"[DISPATCH] 분기=wants_register(LLM) -> register_dish_name", flush=True)
+            # 2026-08-22 추가 — classify_intent()(임베딩 유사도)가 "등록" 같은 짧은 단일
+            # 발화를 "진행"/"이전"과 헷갈려 margin 미충족으로 미분류 처리하는 사례가 실측
+            # 확인됐다(기준예문.csv 보강으로 그 구체 사례는 고쳤지만, 임베딩 분류기가 커버
+            # 못하는 새 표현은 또 나올 수 있음). classify_intent()를 거치지 않고, LLM이 이미
+            # "등록하고 싶다"를 명확히 확인해줬으면 바로 등록으로 보낸다.
             #
-            # 2026-08-27 실측 리포트 — 조회 실패 한 번에 "Queue overflow" 반복 발생.
-            # goto() 없이 그냥 return하면 이 스크립트 실행이 여기서 끝나버려서, "미분류"
-            # 분기가 이미 겪었던 것과 똑같은 문제가 재현된다(그쪽 2026-08-25 주석 참고) —
-            # rerun이 안 걸리니 아무도 get_frames()를 안 불러 마이크 큐가 쌓이기만 하다
-            # 넘친다. 화면은 그대로 두되(goto 아님) rerun만 걸어서 드레인 루프를 잇는다.
-            #
-            # 2026-08-28 수정 — 같은 "없는 요리"를 두 번 연속 물으면 두 번째가 완전 무음이던
-            # 버그. DISH_NOT_FOUND_MESSAGE/PENDING_MESSAGE는 고정 문구라, screen_start()가
-            # _render_cached_speech(msg, nonce=_audio_replay_nonce)로 재생할 때 nonce가
-            # 안 바뀌면 브라우저가 "이미 로드된 오디오"로 보고 autoplay를 재실행하지 않는다
-            # (screen_start()가 chat_log도 안 그리므로 텍스트 피드백도 없음). nonce를 올려
-            # 매번 새로 재생되게 한다.
-            st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
-            # hidden=True — 도착 화면(현재 화면 그대로, 대개 start)이 _render_cached_speech()로
-            # 재생을 맡는다. 여기서 render_audio_player()를 그리면 바로 뒤 st.rerun()에 곧장
-            # 지워지는 "떴다 사라짐" 깜빡임만 남는다(이 파일 다른 분기들과 동일 패턴).
-            speak(result["message"], hidden=True)
+            # register_intro(표준 레시피에 없어서 짐작으로 등록을 유도하는 확인 화면)는 안
+            # 거친다(2026-08-22 요청) — "등록"이라고 직접 말한 건 시스템의 짐작이 아니라
+            # 사용자의 확정된 요청이라 다시 확인받을 필요가 없으므로, register_dish_name
+            # (새 레시피 등록 1/3 요리명)으로 바로 보낸다.
+            # 2026-08-27 — 로그인 개념 자체가 없어져서 게이트도 같이 없앴다.
+            st.session_state.pending_dish_name = dish_name_guess
+            # 2026-09-01 — speak() 없이 끝나는 분기라 여기서 직접 팝업을 닫는다(위
+            # overlay 문서 참고).
+            _close_loading_overlay(overlay)
+            goto("register_dish_name")
+            return
+        # intent_classifier.py의 "등록"(임베딩 매칭)은 context_recipe_id가 있으면(=이미
+        # 조리 중) 무시하도록 이미 고쳤는데, 이 LLM 경로(wants_register)는 완전히 별개
+        # 판정이라 그 보호를 못 받고 있었다 — 위 if 조건에 `and not session.get("current_recipe_id")`를
+        # 추가해서 조리 중엔 이 경로 자체를 안 타게 막았다 — 여기로 떨어지면(조리 중에
+        # wants_register가 True) 그냥 무시하고 원래 화면에 머무른다("등록은 첫 페이지 아니면
+        # 의미없는 문구다" 원칙, classify_intent() 쪽과 동일).
+        elif llm_result["wants_register"]:
+            print(f"[DISPATCH] 분기=wants_register(조리중이라 무시) -> 화면 그대로, rerun만", flush=True)
+            _close_loading_overlay(overlay)
             st.rerun()
             return
-        # 2026-08-26 요청 — "제육복근"이라고 잘못 들려도 recipe_search.py::extract_dish_name()
-        # 3단계(편집거리, 자모 분해 difflib)가 "제육볶음"으로 보정해서 정상 매칭시키는데,
-        # 정작 채팅창엔 보정 전 원문(text)이 그대로 남아서 "AI는 제육볶음이라 답하는데
-        # 내 말풍선은 제육복근"이라는 불일치가 생겼다. AI 응답(바로 아래 speak())과
-        # 같은 값(result["dish_name"], 실제로 DB에서 찾은 표준 요리명)을 써서 맞춘다.
-        print(f"[DISPATCH] 분기=조회(성공) dish_name={result['dish_name']!r} recipe_id={result['recipe_id']!r} -> recipe_confirm", flush=True)
-        st.session_state.chat_log.append(("user", result["dish_name"]))
-        # 2026-09-01 — 위 "진행"/"재청취"/"이전" 분기와 완전히 같은 원인의 버그.
-        # handle_utterance()가 조회 성공 시 session["current_recipe_id"]/["step_number"]를
-        # 그 자리에서 직접 바꾸는 방식으로 짜여 있는데(orchestration/pipeline.py
-        # 참고), 이 호출이 gpu_worker_pool.submit_handle_utterance(session, ...)로
-        # 별도 프로세스에 넘어가서 그 프로세스 안의 pickle된 복사본만 바뀌고 여기
-        # 이 session(=st.session_state.pipeline_session)은 안 바뀐다 — 캐시 히트
-        # 경로(위 _hit_fresh 분기)는 메인 스레드에서 직접 실행돼 이미 명시적으로
-        # 쓰고 있던 것과 같은 이유로, 여기(캐시 미스 = 첫 조회)도 명시적으로 다시
-        # 써서 프로세스 경계를 건너 세션에 반영한다.
-        session["current_recipe_id"] = result["recipe_id"]
-        session["step_number"] = 1
-        # 2026-08-28 — 이 발화 -> 이 레시피 매칭을 세션 캐시에 남긴다(위 process_utterance()
-        # 상단 lookup_cache 주석 참고). 다음에 같은 발화를 다시 말하면 LLM/임베딩/DB를
-        # 전부 건너뛴다. result["recipe_id"]는 handle_utterance()가 방금 DB에서 확정한 값.
-        lookup_cache[lookup_key] = {
-            "recipe_id": result["recipe_id"],
-            "dish_name": result["dish_name"],
-            "_ts": time.monotonic(),
-        }
-        # 2026-08-28 (A) — recipe_view의 DB 왕복은 위 _compute() 배경 스레드가
-        # _drain_mic_while() 우산 안에서 이미 끝냈다("Queue overflow" 대응). 그 결과를
-        # 그대로 반영하고 세션 캐시도 채운다. 배경 조회가 못 됐으면(스레드 예외 등)
-        # 기존대로 메인에서 refresh_recipe_view()로 폴백한다.
-        if job["recipe_view"] is not None:
-            st.session_state.recipe_view = job["recipe_view"]
-            view_cache[job["recipe_view_id"]] = job["recipe_view"]
-        else:
-            refresh_recipe_view(force=True)
-        # 위와 같은 이유 — 도착 화면(recipe_confirm)이 chat_log의 마지막 ai 메시지를
-        # _render_cached_speech()로 다시 들려준다.
-        speak(f'{result["dish_name"]}, 조회수 1위 표준 레시피예요. 이걸로 시작할까요?', hidden=True)
-        goto("recipe_confirm")
-        return
 
-    if intent in ("진행", "재청취", "이전"):
-        # 2026-09-01 — 실측 리포트("챗박스는 2단계로 정상 표시되는데 화면 카드와
-        # 음성은 계속 1단계 그대로") 원인 발견: handle_utterance()(-> advance_step())가
-        # session["step_number"]를 "그 자리에서 직접 바꾸는" 방식으로 동작하는데,
-        # 2026-09-01 GPU 워커 풀을 멀티프로세스(ProcessPoolExecutor)로 전환하면서 이
-        # 호출이 gpu_worker_pool.submit_handle_utterance(session, ...)로 별도
-        # *프로세스*에 넘어가게 됐다 — 그 프로세스 안에서 session을 바꿔봐야 pickle된
-        # 복사본만 바뀌고, 여기 이 session(=st.session_state.pipeline_session 그 자체)
-        # 은 전혀 안 바뀐다. .result()로 돌아오는 건 반환값(result 딕셔너리)뿐이라
-        # 챗박스(아래 speak() 텍스트)는 result["step"] 기준이라 맞게 나오는데, 화면
-        # 카드/오디오 캐시 경로는 여전히 이 session["step_number"](갱신 안 됨, 1단계
-        # 그대로)를 보고 그려져서 어긋났다. advance_step()은 항상 최상위에 "step_number"
-        # 를 돌려주므로(orchestration/pipeline.py 문서 참고, no_previous/완료 케이스
-        # 포함 전부) 여기서 명시적으로 다시 써서 프로세스 경계를 건너 세션에 반영한다.
-        session["step_number"] = result["step_number"]
-        step = result.get("step")
-        print(
-            f"[DISPATCH] 분기={intent} step_number(반영후)={session['step_number']!r} "
-            f"no_previous={result.get('no_previous')!r} step_is_none={step is None!r}",
-            flush=True,
-        )
-        if result.get("no_previous"):
-            print(f"[DISPATCH]   -> no_previous 안내, cooking_step 유지", flush=True)
-            # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제
-            # 의도와 매칭시켰으면) 기록에 남겨야 한다"로 다시 확정. "다음 페이지로
-            # 안 넘어가면 기록 안 함"으로 한 번 더 좁혔다가(이전 커밋), 사용자가
-            # "내 기록은 아예 기록 안 한다고?"로 되물어서 원래 기준(성공 매칭 여부)
-            # 으로 되돌린다 — 여기(이전 단계 없음)도 "이전"이 정상적으로 인식·처리된
-            # 결과라 기록한다.
-            # 2026-08-26 요청 — 표시는 원문 대신 _INTENT_DISPLAY_LABEL(위 정의 참고)의
-            # 짧은 단어로. 아래 두 곳(elif/else)도 동일.
-            st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
-            # 2026-08-28 수정 — "'이전'이라고 해도 안내 음성이 안 들린다" 실측 리포트.
-            # 원인: hidden=True가 빠져서 여기서 그린 재생 위젯이 바로 아래 goto()의
-            # rerun에 곧장 지워졌다(이 파일 다른 분기들이 이미 겪고 고친 것과 같은
-            # 패턴인데 이 분기만 빠져있었음) — 게다가 screen_cooking_step()엔
-            # start()/recipe_confirm()과 달리 "도착 화면이 chat_log의 마지막 안내를
-            # 다시 찾아 들려주는" 로직 자체가 없어서, hidden=True로만 고치면 이번엔
-            # 아예 아무 데서도 재생을 안 하게 된다. 아래에서 새로 추가한 전용 nonce
-            # (_cooking_notice_nonce)를 올려서 screen_cooking_step()이 이 안내를
-            # 재생하게 한다 — 기존 _audio_replay_nonce를 같이 올리면 화면에 그대로
-            # 남아있는 조리 단계 카드의 캐시 오디오까지 덩달아 다시 재생되어 이 안내
-            # 음성과 겹쳐 들리므로(위 else 분기 주석 참고) 반드시 별도 변수를 쓴다.
-            st.session_state["_cooking_notice_nonce"] = st.session_state.get("_cooking_notice_nonce", 0) + 1
-            speak("1단계예요, 이전 단계가 없어요.", hidden=True)
-            goto("cooking_step")
-        elif step is None:
-            print(f"[DISPATCH]   -> 마지막 단계 이후 -> cooking_complete", flush=True)
-            st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
-            # 마지막 단계에서 "다음" -> advance_step()이 더 이상 존재하지 않는 단계를
-            # 찾다 step=None을 돌려준 경우(2026-08-22 요청) — 안내만 하고 cooking_step에
-            # 머무르는 대신 완료 화면으로 보낸다. screen_cooking_complete()가 이 문구를
-            # _render_cached_speech()로 다시 찾아 들려주므로 여기서는 hidden=True로 화면
-            # 없는 자동재생만 하고, 실제로 들리는 소리는 도착 화면 쪽에 맡긴다(recipe_confirm/
-            # register_steps와 같은 패턴).
-            # 2026-08-25 — 이번에 새로 도착하는 완료 화면이 한 번은 재생할 수 있게
-            # 플래그를 여기서 리셋한다(screen_cooking_complete()의 "화면 진입당 한 번만
-            # 재생" 가드 참고 — 이 플래그가 없으면 그 가드가 매번 True로 막혀버린다).
-            st.session_state["_cooking_complete_audio_played"] = False
-            speak(COOKING_COMPLETE_MESSAGE, hidden=True)
-            goto("cooking_complete")
-        else:
-            print(f"[DISPATCH]   -> 정상 진행, step_number={step.get('step_number')!r} -> cooking_step", flush=True)
-            # 2026-08-26 재요청 — 위 no_previous 분기와 같은 이유로 되돌림: "재청취"
-            # (다시)도 classify_intent()가 정상적으로 매칭시킨 성공 케이스라 기록한다
-            # (한때 "다음 페이지로 안 넘어가면 제외"로 뺐다가 사용자 재확인으로 복구).
-            st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
-            # "다시"는 같은 파일을 다시 재생하는 거라 오디오 콘텐츠 자체가 안 바뀌어서
-            # nonce 없이는 iframe이 안 바뀐 걸로 보고 autoplay가 재실행되지 않는다. "다음"/
-            # "이전"도 이전에 방문했던 단계로 돌아갈 때(예: 2단계->1단계->2단계) 같은 문제가
-            # 재현될 수 있어 실제 단계 오디오를 다시 들려줄 때만 nonce를 올려 항상 새로
-            # 로드되게 한다(theme.py render_audio_player() 참고).
+        if job["network_error"]:
+            # 2026-08-26 추가 — "40x/50x 에러 다 잡고 있나?" 재요청으로 발견/수정. Supabase
+            # 조회(4xx/5xx, 타임아웃, 연결 끊김 등)가 실패한 경우 서비스가 죽는 대신 "알 수
+            # 없는 intent" 분기와 같은 안전한 경로(speak+unclassified)로 보낸다 — 그 화면이
+            # chat_log의 마지막 ai 메시지를 다시 찾아 들려주므로 hidden=True. unclassified
+            # 화면 자체의 고정 문구("잘 이해하지 못했어요")는 이 케이스(실제로는 인식은
+            # 됐지만 서버 오류)엔 살짝 안 맞지만, 음성 응답은 정확한 이유를 말해주고 화면
+            # 기능(재시도 버튼 등)은 그대로 동작해서 이번엔 이 경로를 재사용한다.
+            print(f"[DISPATCH] 분기=network_error -> unclassified", flush=True)
+            speak("일시적인 오류가 발생했어요. 잠시 후 다시 이용해 주세요.", hidden=True, _loading_overlay=overlay)
+            goto("unclassified")
+            return
+
+        if job["value_error"]:
+            print(f"[DISPATCH] 분기=value_error(등록 의도인데 registration_step 없음) -> register_dish_name", flush=True)
+            # 위 배경 스레드의 _compute() 안에서 handle_utterance()가 ValueError를 던진 경우 —
+            # "등록" 의도인데 registration_step 없이 자유발화로 들어온 경우 등. 서비스를
+            # 죽이는 대신 신규 등록으로 안전하게 보낸다. classify_intent()가 이미 "등록"으로
+            # 확정 분류한 경우라 위 wants_register 분기와 같은 이유로 register_intro(확인
+            # 화면)는 안 거치고 바로 register_dish_name으로 보낸다.
+            st.session_state.pending_dish_name = dish_name_guess
+            # 2026-09-01 — speak() 없이 끝나는 분기라 여기서 직접 팝업을 닫는다(위
+            # overlay 문서 참고).
+            _close_loading_overlay(overlay)
+            goto("register_dish_name")
+            return
+
+        result = job["result"]
+        intent = result.get("intent")
+        print(f"[DISPATCH] classify_intent 결과: intent={intent!r} result={result!r}", flush=True)
+
+        if intent == "미분류" or intent == "감탄사":
+            print(f"[DISPATCH] 분기=미분류/감탄사 -> 무시(화면 그대로, rerun만)", flush=True)
+            # 2026-08-26 추가 — "감탄사"(감사합니다/아멘/고마워요 등, 기준예문.csv 참고):
+            # classify_intent()가 이 실제 매칭시킨 진짜 의도라 "미분류"는 아니지만, 이
+            # 발화들은 애초에 아무 명령도 아니라서 처리할 게 없다 — 실측: "감사합니다"가
+            # "재청취"(다시 한번요)와 0.65로 헷갈려 다시듣기가 잘못 트리거되는 문제가
+            # 있었다(임베딩이 짧고 단순한 문장 구조만 보고 헷갈림, 의미와 무관). THRESHOLD를
+            # 올려서 막으려 하면 "좋아"(0.71) 같은 진짜 확정 발화까지 같이 막혀서, 대신
+            # 이 표현들을 자기 카테고리로 분리해 자기 자신과 거의 1.0으로 매칭시켜 이기게
+            # 하고, 여기서 "미분류"와 완전히 동일하게(화면 전환도 응답도 없이 무시) 처리한다.
             #
-            # 2026-08-22 리포트: 이 nonce 증가를 "1단계예요..."/"마지막 단계까지..." 안내
-            # 분기 앞에서 공통으로 하고 있었는데, 그 두 경우엔 현재 화면의 단계 번호가
-            # 안 바뀐다 — 그런데도 nonce를 올리면 goto()의 rerun 직후 screen_cooking_step()이
-            # 화면에 그대로 남아있는 그 단계 카드의 캐시 오디오를 "새로 로드된 것"으로 보고
-            # 다시 자동재생해서, 방금 speak()로 들려준 안내 음성과 동시에 겹쳐 들렸다. 실제
-            # 단계 오디오를 다시 보여주는 이 분기에서만 nonce를 올려서 막는다.
+            # 문장 패턴 분류(classify_intent)가 기준예문.csv의 어떤 의도와도 못 매칭한
+            # 경우 전부 여기로 온다. 2026-08-24 재요청 — 기준예문에 없는 발화는 화면 전환도,
+            # 음성 응답도 없이 그냥 무시한다(예전엔 register_intro로 등록을 유도하거나
+            # unclassified 화면에서 "못 알아들었다"고 되물었는데, 조회 예문을 크게 넓힌
+            # 뒤로는 진짜 잡담/잡음만 여기로 남아서 매번 반응할 필요가 없다는 판단).
+            # register_intro/unclassified 화면 자체는 다른 경로(_REGISTER_WORD, "알 수
+            # 없는 intent" 방어 분기 등)로 여전히 갈 수 있다.
             #
-            # 2026-08-22 추가 리포트: 여기서 그리는 speak()의 재생바도 recipe_confirm과
-            # 같은 이유로 goto()의 rerun에 곧장 지워져 "떴다 사라짐" 깜빡임만 남긴다 —
-            # 도착 화면(cooking_step)이 render_step_card()로 같은 단계 오디오를 캐시에서
-            # 다시 찾아 들려주므로 hidden=True로 화면 없는 자동재생만 한다.
-            st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
-            # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py
-            # 참고). 이 분기가 "다음"/"다시"/"이전" 음성 발화의 실제 처리 경로라(process_utterance()
-            # -> classify_intent()), resolve_for_tts()를 안 거치면 TTS와 채팅창 양쪽에
-            # "[TERM:...]" 문자열이 그대로 노출된다 — 실측 리포트로 발견됨(cooking.py의
-            # speak() 호출부만 고치고 여기를 놓쳤었음: 그쪽은 화면 진입 시 1회성 speak()
-            # 뿐이고, 실제 음성 탐색은 전부 이 경로를 탄다).
+            # 2026-09-01 — speak() 없이 끝나는 분기라 여기서 직접 팝업을 닫는다(위
+            # overlay 문서 참고).
+            #
+            # 2026-08-25 추가 — 이 분기만 유일하게 goto()(=st.rerun())를 안 불렀다. 다른
+            # 모든 분기는 화면을 옮기며 rerun이 걸리고, 그 rerun이 다시 listen()을 호출해
+            # _run_mic_loop()의 프레임 드레인 루프가 곧장 이어지는데, 여기는 그냥 return해서
+            # 이번 스크립트 실행이 끝나버린다 — 그 순간부터 아무도 get_frames()를 안 불러서
+            # (다음 rerun이 우연히 다른 이유로 트리거될 때까지) 마이크 큐가 쌓이기만 하다
+            # 넘친다("Queue overflow" 반복 + 그 직후 발화가 씹히는 리포트, 실측 확인 —
+            # "여기까지하면"/"좋아?"처럼 margin 미충족으로 미분류 처리된 직후에만 정확히
+            # 재현됨). 화면은 그대로 두고 같은 화면으로 rerun만 걸어서 드레인 루프가
+            # 끊기지 않게 한다.
+            _close_loading_overlay(overlay)
+            st.rerun()
+            return
+
+        # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제 의도와
+        # 매칭시켜서 뭔가 처리됐으면) 대화 기록에 남겨야 한다." (중간에 "다음 페이지로
+        # 안 넘어가면 기록 안 함"으로 더 좁혔다가, 사용자가 "내 기록은 아예 기록 안
+        # 한다고?"로 되물어서 원래 기준으로 되돌림 — 아래 각 분기의 "2026-08-26 재요청"
+        # 주석 참고.) 여기 도달한 시점(미분류/감탄사를 이미 걸러낸 뒤)은 전부 성공
+        # 케이스라, 화면이 실제로 바뀌든(조회/등록 등) 같은 화면에 머물든(다시/이전
+        # 단계 없음 등) 상관없이 각 분기 안에서 기록한다 — speak()의 AI 응답 기록은
+        # 이 규칙과 별개로 원래부터 항상 그대로 남는다.
+
+        if intent == "조회":
+            if "message" in result:  # DISH_NOT_FOUND_MESSAGE 또는 PENDING_MESSAGE
+                print(f"[DISPATCH] 분기=조회(실패) message={result['message']!r} -> 현재 화면 유지, rerun만", flush=True)
+                # 2026-08-27 — no_match 화면 자체를 없앴다(잔상 문제 다발). 화면 전환
+                # 없이 현재 화면(start)에 그대로 머무른 채 안내만 1회 들려준다 — 대화
+                # 기록에도 안 남기고(같은 요리를 계속 물어봐도 채팅창이 안 쌓임), 재생을
+                # 대신해줄 도착 화면이 없으므로 hidden 없이 직접 들려준다.
+                #
+                # 2026-08-27 실측 리포트 — 조회 실패 한 번에 "Queue overflow" 반복 발생.
+                # goto() 없이 그냥 return하면 이 스크립트 실행이 여기서 끝나버려서, "미분류"
+                # 분기가 이미 겪었던 것과 똑같은 문제가 재현된다(그쪽 2026-08-25 주석 참고) —
+                # rerun이 안 걸리니 아무도 get_frames()를 안 불러 마이크 큐가 쌓이기만 하다
+                # 넘친다. 화면은 그대로 두되(goto 아님) rerun만 걸어서 드레인 루프를 잇는다.
+                #
+                # 2026-08-28 수정 — 같은 "없는 요리"를 두 번 연속 물으면 두 번째가 완전 무음이던
+                # 버그. DISH_NOT_FOUND_MESSAGE/PENDING_MESSAGE는 고정 문구라, screen_start()가
+                # _render_cached_speech(msg, nonce=_audio_replay_nonce)로 재생할 때 nonce가
+                # 안 바뀌면 브라우저가 "이미 로드된 오디오"로 보고 autoplay를 재실행하지 않는다
+                # (screen_start()가 chat_log도 안 그리므로 텍스트 피드백도 없음). nonce를 올려
+                # 매번 새로 재생되게 한다.
+                st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
+                # hidden=True — 도착 화면(현재 화면 그대로, 대개 start)이 _render_cached_speech()로
+                # 재생을 맡는다. 여기서 render_audio_player()를 그리면 바로 뒤 st.rerun()에 곧장
+                # 지워지는 "떴다 사라짐" 깜빡임만 남는다(이 파일 다른 분기들과 동일 패턴).
+                speak(result["message"], hidden=True, _loading_overlay=overlay)
+                st.rerun()
+                return
+            # 2026-08-26 요청 — "제육복근"이라고 잘못 들려도 recipe_search.py::extract_dish_name()
+            # 3단계(편집거리, 자모 분해 difflib)가 "제육볶음"으로 보정해서 정상 매칭시키는데,
+            # 정작 채팅창엔 보정 전 원문(text)이 그대로 남아서 "AI는 제육볶음이라 답하는데
+            # 내 말풍선은 제육복근"이라는 불일치가 생겼다. AI 응답(바로 아래 speak())과
+            # 같은 값(result["dish_name"], 실제로 DB에서 찾은 표준 요리명)을 써서 맞춘다.
+            print(f"[DISPATCH] 분기=조회(성공) dish_name={result['dish_name']!r} recipe_id={result['recipe_id']!r} -> recipe_confirm", flush=True)
+            st.session_state.chat_log.append(("user", result["dish_name"]))
+            # 2026-09-01 — 위 "진행"/"재청취"/"이전" 분기와 완전히 같은 원인의 버그.
+            # handle_utterance()가 조회 성공 시 session["current_recipe_id"]/["step_number"]를
+            # 그 자리에서 직접 바꾸는 방식으로 짜여 있는데(orchestration/pipeline.py
+            # 참고), 이 호출이 gpu_worker_pool.submit_handle_utterance(session, ...)로
+            # 별도 프로세스에 넘어가서 그 프로세스 안의 pickle된 복사본만 바뀌고 여기
+            # 이 session(=st.session_state.pipeline_session)은 안 바뀐다 — 캐시 히트
+            # 경로(위 _hit_fresh 분기)는 메인 스레드에서 직접 실행돼 이미 명시적으로
+            # 쓰고 있던 것과 같은 이유로, 여기(캐시 미스 = 첫 조회)도 명시적으로 다시
+            # 써서 프로세스 경계를 건너 세션에 반영한다.
+            session["current_recipe_id"] = result["recipe_id"]
+            session["step_number"] = 1
+            # 2026-08-28 — 이 발화 -> 이 레시피 매칭을 세션 캐시에 남긴다(위 process_utterance()
+            # 상단 lookup_cache 주석 참고). 다음에 같은 발화를 다시 말하면 LLM/임베딩/DB를
+            # 전부 건너뛴다. result["recipe_id"]는 handle_utterance()가 방금 DB에서 확정한 값.
+            lookup_cache[lookup_key] = {
+                "recipe_id": result["recipe_id"],
+                "dish_name": result["dish_name"],
+                "_ts": time.monotonic(),
+            }
+            # 2026-08-28 (A) — recipe_view의 DB 왕복은 위 _compute() 배경 스레드가
+            # _drain_mic_while() 우산 안에서 이미 끝냈다("Queue overflow" 대응). 그 결과를
+            # 그대로 반영하고 세션 캐시도 채운다. 배경 조회가 못 됐으면(스레드 예외 등)
+            # 기존대로 메인에서 refresh_recipe_view()로 폴백한다.
+            if job["recipe_view"] is not None:
+                st.session_state.recipe_view = job["recipe_view"]
+                view_cache[job["recipe_view_id"]] = job["recipe_view"]
+            else:
+                refresh_recipe_view(force=True)
+            # 위와 같은 이유 — 도착 화면(recipe_confirm)이 chat_log의 마지막 ai 메시지를
+            # _render_cached_speech()로 다시 들려준다.
             speak(
-                resolve_for_tts(step["text"]),
-                recipe_id=session.get("current_recipe_id"),
-                step_number=step.get("step_number"),
+                f'{result["dish_name"]}, 조회수 1위 표준 레시피예요. 이걸로 시작할까요?',
                 hidden=True,
+                _loading_overlay=overlay,
             )
-            goto("cooking_step")
-        return
+            goto("recipe_confirm")
+            return
 
-    if intent == "등록":
-        print(f"[DISPATCH] 분기=등록(분류) -> register_intro", flush=True)
-        st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
-        prompt = result.get("prompt") or result.get("summary") or result.get("message")
-        if prompt:
-            speak(prompt)
-        goto("register_intro")
-        return
+        if intent in ("진행", "재청취", "이전"):
+            # 2026-09-01 — 실측 리포트("챗박스는 2단계로 정상 표시되는데 화면 카드와
+            # 음성은 계속 1단계 그대로") 원인 발견: handle_utterance()(-> advance_step())가
+            # session["step_number"]를 "그 자리에서 직접 바꾸는" 방식으로 동작하는데,
+            # 2026-09-01 GPU 워커 풀을 멀티프로세스(ProcessPoolExecutor)로 전환하면서 이
+            # 호출이 gpu_worker_pool.submit_handle_utterance(session, ...)로 별도
+            # *프로세스*에 넘어가게 됐다 — 그 프로세스 안에서 session을 바꿔봐야 pickle된
+            # 복사본만 바뀌고, 여기 이 session(=st.session_state.pipeline_session 그 자체)
+            # 은 전혀 안 바뀐다. .result()로 돌아오는 건 반환값(result 딕셔너리)뿐이라
+            # 챗박스(아래 speak() 텍스트)는 result["step"] 기준이라 맞게 나오는데, 화면
+            # 카드/오디오 캐시 경로는 여전히 이 session["step_number"](갱신 안 됨, 1단계
+            # 그대로)를 보고 그려져서 어긋났다. advance_step()은 항상 최상위에 "step_number"
+            # 를 돌려주므로(orchestration/pipeline.py 문서 참고, no_previous/완료 케이스
+            # 포함 전부) 여기서 명시적으로 다시 써서 프로세스 경계를 건너 세션에 반영한다.
+            session["step_number"] = result["step_number"]
+            step = result.get("step")
+            print(
+                f"[DISPATCH] 분기={intent} step_number(반영후)={session['step_number']!r} "
+                f"no_previous={result.get('no_previous')!r} step_is_none={step is None!r}",
+                flush=True,
+            )
+            if result.get("no_previous"):
+                print(f"[DISPATCH]   -> no_previous 안내, cooking_step 유지", flush=True)
+                # 2026-08-26 재요청 — "내 발화가 성공하면(=classify_intent()가 실제
+                # 의도와 매칭시켰으면) 기록에 남겨야 한다"로 다시 확정. "다음 페이지로
+                # 안 넘어가면 기록 안 함"으로 한 번 더 좁혔다가(이전 커밋), 사용자가
+                # "내 기록은 아예 기록 안 한다고?"로 되물어서 원래 기준(성공 매칭 여부)
+                # 으로 되돌린다 — 여기(이전 단계 없음)도 "이전"이 정상적으로 인식·처리된
+                # 결과라 기록한다.
+                # 2026-08-26 요청 — 표시는 원문 대신 _INTENT_DISPLAY_LABEL(위 정의 참고)의
+                # 짧은 단어로. 아래 두 곳(elif/else)도 동일.
+                st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
+                # 2026-08-28 수정 — "'이전'이라고 해도 안내 음성이 안 들린다" 실측 리포트.
+                # 원인: hidden=True가 빠져서 여기서 그린 재생 위젯이 바로 아래 goto()의
+                # rerun에 곧장 지워졌다(이 파일 다른 분기들이 이미 겪고 고친 것과 같은
+                # 패턴인데 이 분기만 빠져있었음) — 게다가 screen_cooking_step()엔
+                # start()/recipe_confirm()과 달리 "도착 화면이 chat_log의 마지막 안내를
+                # 다시 찾아 들려주는" 로직 자체가 없어서, hidden=True로만 고치면 이번엔
+                # 아예 아무 데서도 재생을 안 하게 된다. 아래에서 새로 추가한 전용 nonce
+                # (_cooking_notice_nonce)를 올려서 screen_cooking_step()이 이 안내를
+                # 재생하게 한다 — 기존 _audio_replay_nonce를 같이 올리면 화면에 그대로
+                # 남아있는 조리 단계 카드의 캐시 오디오까지 덩달아 다시 재생되어 이 안내
+                # 음성과 겹쳐 들리므로(위 else 분기 주석 참고) 반드시 별도 변수를 쓴다.
+                st.session_state["_cooking_notice_nonce"] = st.session_state.get("_cooking_notice_nonce", 0) + 1
+                speak("1단계예요, 이전 단계가 없어요.", hidden=True, _loading_overlay=overlay)
+                goto("cooking_step")
+            elif step is None:
+                print(f"[DISPATCH]   -> 마지막 단계 이후 -> cooking_complete", flush=True)
+                st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
+                # 마지막 단계에서 "다음" -> advance_step()이 더 이상 존재하지 않는 단계를
+                # 찾다 step=None을 돌려준 경우(2026-08-22 요청) — 안내만 하고 cooking_step에
+                # 머무르는 대신 완료 화면으로 보낸다. screen_cooking_complete()가 이 문구를
+                # _render_cached_speech()로 다시 찾아 들려주므로 여기서는 hidden=True로 화면
+                # 없는 자동재생만 하고, 실제로 들리는 소리는 도착 화면 쪽에 맡긴다(recipe_confirm/
+                # register_steps와 같은 패턴).
+                # 2026-08-25 — 이번에 새로 도착하는 완료 화면이 한 번은 재생할 수 있게
+                # 플래그를 여기서 리셋한다(screen_cooking_complete()의 "화면 진입당 한 번만
+                # 재생" 가드 참고 — 이 플래그가 없으면 그 가드가 매번 True로 막혀버린다).
+                st.session_state["_cooking_complete_audio_played"] = False
+                speak(COOKING_COMPLETE_MESSAGE, hidden=True, _loading_overlay=overlay)
+                goto("cooking_complete")
+            else:
+                print(f"[DISPATCH]   -> 정상 진행, step_number={step.get('step_number')!r} -> cooking_step", flush=True)
+                # 2026-08-26 재요청 — 위 no_previous 분기와 같은 이유로 되돌림: "재청취"
+                # (다시)도 classify_intent()가 정상적으로 매칭시킨 성공 케이스라 기록한다
+                # (한때 "다음 페이지로 안 넘어가면 제외"로 뺐다가 사용자 재확인으로 복구).
+                st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
+                # "다시"는 같은 파일을 다시 재생하는 거라 오디오 콘텐츠 자체가 안 바뀌어서
+                # nonce 없이는 iframe이 안 바뀐 걸로 보고 autoplay가 재실행되지 않는다. "다음"/
+                # "이전"도 이전에 방문했던 단계로 돌아갈 때(예: 2단계->1단계->2단계) 같은 문제가
+                # 재현될 수 있어 실제 단계 오디오를 다시 들려줄 때만 nonce를 올려 항상 새로
+                # 로드되게 한다(theme.py render_audio_player() 참고).
+                #
+                # 2026-08-22 리포트: 이 nonce 증가를 "1단계예요..."/"마지막 단계까지..." 안내
+                # 분기 앞에서 공통으로 하고 있었는데, 그 두 경우엔 현재 화면의 단계 번호가
+                # 안 바뀐다 — 그런데도 nonce를 올리면 goto()의 rerun 직후 screen_cooking_step()이
+                # 화면에 그대로 남아있는 그 단계 카드의 캐시 오디오를 "새로 로드된 것"으로 보고
+                # 다시 자동재생해서, 방금 speak()로 들려준 안내 음성과 동시에 겹쳐 들렸다. 실제
+                # 단계 오디오를 다시 보여주는 이 분기에서만 nonce를 올려서 막는다.
+                #
+                # 2026-08-22 추가 리포트: 여기서 그리는 speak()의 재생바도 recipe_confirm과
+                # 같은 이유로 goto()의 rerun에 곧장 지워져 "떴다 사라짐" 깜빡임만 남긴다 —
+                # 도착 화면(cooking_step)이 render_step_card()로 같은 단계 오디오를 캐시에서
+                # 다시 찾아 들려주므로 hidden=True로 화면 없는 자동재생만 한다.
+                st.session_state["_audio_replay_nonce"] = st.session_state.get("_audio_replay_nonce", 0) + 1
+                # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py
+                # 참고). 이 분기가 "다음"/"다시"/"이전" 음성 발화의 실제 처리 경로라(process_utterance()
+                # -> classify_intent()), resolve_for_tts()를 안 거치면 TTS와 채팅창 양쪽에
+                # "[TERM:...]" 문자열이 그대로 노출된다 — 실측 리포트로 발견됨(cooking.py의
+                # speak() 호출부만 고치고 여기를 놓쳤었음: 그쪽은 화면 진입 시 1회성 speak()
+                # 뿐이고, 실제 음성 탐색은 전부 이 경로를 탄다).
+                speak(
+                    resolve_for_tts(step["text"]),
+                    recipe_id=session.get("current_recipe_id"),
+                    step_number=step.get("step_number"),
+                    hidden=True,
+                    _loading_overlay=overlay,
+                )
+                goto("cooking_step")
+            return
 
-    # 알 수 없는 intent(방어적 처리) — 서비스가 죽는 대신 fallback으로.
-    print(f"[DISPATCH] 분기=알수없는intent({intent!r}, 방어적처리) -> unclassified", flush=True)
-    st.session_state.chat_log.append(("user", text))
-    # 위와 같은 이유(2026-08-22) — unclassified가 chat_log의 마지막 ai 메시지를 다시
-    # 들려주므로 hidden=True.
-    speak("죄송해요, 잘 처리하지 못했어요. 다시 한 번 말씀해주시겠어요?", hidden=True)
-    goto("unclassified")
+        if intent == "등록":
+            print(f"[DISPATCH] 분기=등록(분류) -> register_intro", flush=True)
+            st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
+            prompt = result.get("prompt") or result.get("summary") or result.get("message")
+            if prompt:
+                speak(prompt, _loading_overlay=overlay)
+            else:
+                # 2026-09-01 — speak()를 안 부르는 경우라 여기서 직접 팝업을 닫는다(위
+                # overlay 문서 참고).
+                _close_loading_overlay(overlay)
+            goto("register_intro")
+            return
+
+        # 알 수 없는 intent(방어적 처리) — 서비스가 죽는 대신 fallback으로.
+        print(f"[DISPATCH] 분기=알수없는intent({intent!r}, 방어적처리) -> unclassified", flush=True)
+        st.session_state.chat_log.append(("user", text))
+        # 위와 같은 이유(2026-08-22) — unclassified가 chat_log의 마지막 ai 메시지를 다시
+        # 들려주므로 hidden=True.
+        speak("죄송해요, 잘 처리하지 못했어요. 다시 한 번 말씀해주시겠어요?", hidden=True, _loading_overlay=overlay)
+        goto("unclassified")
+    finally:
+        _close_loading_overlay(overlay)
 
 
 def fallback_buttons(key_prefix: str) -> None:
