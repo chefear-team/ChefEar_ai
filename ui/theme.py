@@ -2024,11 +2024,31 @@ _CE_SWEEP_JS = r"""
           a.removeAttribute("data-ce-muted");
           a.muted = false;
           a.volume = 1;
+          console.log("[AUDIO_SWEEP] recover(was-wrongly-paused) owner=" + owner +
+            " paused=" + a.paused + " ended=" + a.ended +
+            " currentTime=" + a.currentTime.toFixed(2) + " duration=" + (a.duration || 0).toFixed(2));
           if (a.paused && !a.ended) a.play().catch(function () {});
         }
         continue; // 지금 화면 소속 — 정상
       }
-      if (!a.paused) {
+      // 2026-09-02 — "끝음절 1~2글자가 잘려 들린다" 리포트 조사. 아직 실측으로 확정은
+      // 못 했지만(1.5 원칙 — 지어내지 않되 잠정 대응임을 밝힘), 코드에 이미 문서화된
+      // 레이스(2026-08-27 주석, 위 owner===CURRENT 분기 참고) — 화면 전환 찰나에 이
+      // 감시 인터벌이 실제로는 지금 화면 소속인 오디오를 "낡은 화면 소속"으로 오판해
+      // pause()를 걸었다가 다음 틱에서야 정정하는 경우가 있음 — 가 유력한 후보다.
+      // 정정이 안 따라잡으면 그 지점에서 멈춘 채 다시 안 이어질 수 있다. 오디오가
+      // 자연히 끝나기 1초도 안 남았으면(진짜 stale이든 오판이든) pause()를 걸지 않고
+      // 그냥 끝까지 재생되게 둔다 — 진짜 stale 오디오가 1초 더 들리는 부작용은
+      // 미미하지만, 라이브 오디오가 실수로 멈춰서 영영 안 이어지는 쪽이 훨씬 나쁘다.
+      // console.log는 다음 실측 때 이 판단이 실제로 발동하는지(오판인지 진짜 stale인지)
+      // 바로 확인하기 위한 진단용 — 원인 확정되면 정리할 것.
+      var nearEnd = a.duration && !isNaN(a.duration) && (a.duration - a.currentTime) < 1.0;
+      if (!a.paused && nearEnd) {
+        console.log("[AUDIO_SWEEP] skip-pause(near-end) owner=" + owner + " current=" + CURRENT +
+          " currentTime=" + a.currentTime.toFixed(2) + " duration=" + a.duration.toFixed(2));
+      } else if (!a.paused) {
+        console.log("[AUDIO_SWEEP] pause(stale) owner=" + owner + " current=" + CURRENT +
+          " currentTime=" + a.currentTime.toFixed(2) + " duration=" + (a.duration || 0).toFixed(2));
         a.pause();
         a.muted = true;
         a.volume = 0;
