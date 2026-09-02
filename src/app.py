@@ -500,12 +500,11 @@ def main() -> None:
         if text:
             process_utterance(text)
     elif screen in ("login", "signup", "my_recipes", "edit_recipe"):
-        # 2026-09-01 — 원래 register_ingredients/register_steps와 같은 이유로
-        # listen_for_speech=False로 마이크 연결만 유지하려 했으나, 실사용 중
-        # "Failed to construct 'RTCPeerConnection': Cannot create so many
-        # PeerConnections"가 재현돼 마이크 자체를 아예 안 그리는 쪽으로 후퇴했었다
-        # (이 주석의 이전 버전, login.py 문서 참고 — 근본 원인 미해결 워크어라운드
-        # 였음).
+        # 2026-09-01 — 원래 register_ingredients와 같은 이유로 listen_for_speech=False로
+        # 마이크 연결만 유지하려 했으나, 실사용 중 "Failed to construct
+        # 'RTCPeerConnection': Cannot create so many PeerConnections"가 재현돼 마이크
+        # 자체를 아예 안 그리는 쪽으로 후퇴했었다(이 주석의 이전 버전, login.py 문서
+        # 참고 — 근본 원인 미해결 워크어라운드였음).
         #
         # 근본 원인 규명(voice_io._recover_dead_mic() 문서 참고): 이 넷은 이
         # 프로젝트에서 유일하게 사용자가 "처음 화면으로"/"내 정보" 버튼으로 다른
@@ -516,11 +515,12 @@ def main() -> None:
         # _get_or_create_context()가 완전히 새 WebRtcStreamerContext를 만듦 -> 새
         # RTCPeerConnection, voice_io._recover_dead_mic() 문서 참고)를 만들어냈다 —
         # 왕복이 반복될수록 브라우저가 이전 연결을 정리하는 속도보다 빠르게 연결이
-        # 쌓여 결국 PeerConnection 개수 상한에
-        # 부딪혔다. _recover_dead_mic()에 "죽었다" 판정을 debounce하는 로직을 추가해
-        # 이 오판을 막았으므로, register_ingredients/steps와 동일한(이미 검증된) 안전한
-        # 패턴으로 되돌린다 — 마이크를 안 그려서 매번 재연결시키는 대신, 연결은
-        # 유지하고 음성 처리만 건너뛴다.
+        # 쌓여 결국 PeerConnection 개수 상한에 부딪혔다. _recover_dead_mic()에 "죽었다"
+        # 판정을 debounce하는 로직을 추가해 이 오판을 막았으므로, register_ingredients와
+        # 동일한(이미 검증된) 안전한 패턴으로 되돌린다 — register_steps는
+        # listen_for_speech를 안 넘겨서 실제로는 STT까지 계속 돌리고 결과만 버리는
+        # 별개의(더 무거운) 패턴이라 정확히 같지는 않다. 마이크를 안 그려서 매번
+        # 재연결시키는 대신, 연결은 유지하고 음성 처리만 건너뛴다.
         listen(screen, listen_for_speech=False, show_text_fallback=False)
 
 

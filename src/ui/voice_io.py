@@ -357,6 +357,13 @@ def _close_loading_overlay(overlay: "_LoadingOverlay") -> None:
     호출부가, 결국 다음 _drain_mic_while() 단계 없이(예: speak() 없이 바로 goto())
     끝나는 분기에서 직접 불러 마무리를 책임진다 — 안 그러면 팝업이 화면에 계속
     남는다.
+
+    2026-09-02 자체 재검토 — 닫은 뒤 overlay.shown을 다시 False로 되돌린다. 원래는
+    한 번 닫으면 그걸로 끝(같은 overlay를 또 닫을 일이 없다는 전제)이라 안 건드렸는데,
+    process_utterance()에 안전망으로 추가한 try/finally(아래 dispatch.py 참고)가 이미
+    정상적으로 닫힌 overlay를 또 한 번 닫을 수 있어 이 함수 자체를 멱등하게(두 번
+    불러도 안전하게) 만들 필요가 생겼다 — shown을 False로 되돌리면 두 번째 호출은
+    `if overlay.shown:` 자체가 걸리지 않아 그냥 조용히 아무 것도 안 한다.
     """
     import time
 
@@ -365,6 +372,7 @@ def _close_loading_overlay(overlay: "_LoadingOverlay") -> None:
         if remaining > 0:
             time.sleep(remaining)
         overlay.slot.empty()
+        overlay.shown = False
         # 2026-08-25 리포트 — 아래 _drain_mic_while()의 같은 주석 참고("지워라"/
         # "다시 그려라" 신호가 너무 붙어 도착하면 잔상이 남는 문제) — 임시 완화책.
         time.sleep(0.05)
@@ -786,27 +794,47 @@ def _recover_dead_mic() -> None:
     불필요하게 재마운트하지 않기 위함).
 
     2026-09-01 추가 — "Cannot create so many PeerConnections" 크래시 원인 규명.
-    login/my_recipes/edit_recipe/signup에서 register_ingredients/register_steps와
-    똑같이 listen_for_speech=False로 마이크를 계속 그렸는데도(app.py::main()의
-    해당 분기 옛 주석, login.py 문서 참고) 실사용 중 이 크래시가 재현돼 결국 마이크
-    자체를 안 그리는 쪽으로 후퇴했었다. streamlit_webrtc 프론트엔드 소스를 직접 읽어
-    확인한 진짜 메커니즘: 이 넷은 이 프로젝트에서 유일하게 사용자가 "처음 화면으로"/
-    "내 정보" 버튼으로 짧은 간격에 반복해서 왔다갔다 하는 화면들이다(등록 화면들은
-    순서대로 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데(RunPod 배포 환경의
-    ICE/TURN 왕복), 그 몇 초 사이에 또 다른 화면으로 나갔다 돌아오면 이 함수가 "아직
-    재협상 중이라 안 죽었다"와 "진짜 죽었다"를 구분 못 하고 바로 세대를 올렸다 — 세대가
-    바뀌면 _mic_component_key()가 이전에 한 번도 쓰인 적 없는 새 문자열을 돌려줘서,
-    component.py::_get_or_create_context()가 그 key를 st.session_state에서 못 찾고
-    완전히 새 WebRtcStreamerContext를 만든다(같은 key가 잠시 안 그려졌다 다시 그려질
-    때 도는 "orphan-reset" 분기와는 다른, 더 확실한 "그냥 처음 보는 key" 경로다) — 결국
-    새 RTCPeerConnection이 만들어진다는 결론은 같다. 이 왕복이 반복될수록(브라우저가
-    이전 연결들을 완전히 정리하는 속도보다
-    빠르게) 연결이 계속 쌓여 결국 브라우저의 PeerConnection 개수 상한에 부딪혔다.
+    login/my_recipes/edit_recipe/signup에서 register_ingredients와 똑같이
+    listen_for_speech=False로 마이크를 계속 그렸는데도(app.py::main()의 해당 분기 옛
+    주석, login.py 문서 참고 — register_steps는 listen_for_speech를 안 넘겨서 실제로는
+    STT까지 계속 돌리고 결과만 버리는 더 무거운 경로라 정확히 같은 패턴은 아니다) 실사용
+    중 이 크래시가 재현돼 결국 마이크 자체를 안 그리는 쪽으로 후퇴했었다.
+    streamlit_webrtc 프론트엔드 소스를 직접 읽어 확인한 진짜 메커니즘: 이 넷은 이
+    프로젝트에서 유일하게 사용자가 "처음 화면으로"/"내 정보" 버튼으로 짧은 간격에
+    반복해서 왔다갔다 하는 화면들이다(등록 화면들은 순서대로 한 번만 지나감). WebRTC
+    재협상은 몇 초 걸릴 수 있는데(RunPod 배포 환경의 ICE/TURN 왕복), 그 몇 초 사이에
+    또 다른 화면으로 나갔다 돌아오면 이 함수가 "아직 재협상 중이라 안 죽었다"와 "진짜
+    죽었다"를 구분 못 하고 바로 세대를 올렸다 — 세대가 바뀌면 _mic_component_key()가
+    이전에 한 번도 쓰인 적 없는 새 문자열을 돌려줘서, component.py::
+    _get_or_create_context()가 그 key를 st.session_state에서 못 찾고 완전히 새
+    WebRtcStreamerContext를 만든다(같은 key가 잠시 안 그려졌다 다시 그려질 때 도는
+    "orphan-reset" 분기와는 다른, 더 확실한 "그냥 처음 보는 key" 경로다) — 결국 새
+    RTCPeerConnection이 만들어진다는 결론은 같다. 이 왕복이 반복될수록(브라우저가 이전
+    연결들을 완전히 정리하는 속도보다 빠르게) 연결이 계속 쌓여 결국 브라우저의
+    PeerConnection 개수 상한에 부딪혔다.
+
     "죽었다"는 판정을 한 번의 관측이 아니라 _MIC_DEAD_DEBOUNCE_S만큼 계속 죽어있는
     상태가 이어질 때만 확정하도록 바꾼다 — 진짜 재협상 중이면 그 사이 다시 살아있는
-    걸로 관측되는 순간(아래 _mic_truly_alive() 분기) 바로 리셋되고, 화면을 벗어났다
-    정말 오래 돌아오지 않거나 실제로 끊긴 경우(네트워크 끊김, 탭 백그라운드 등)엔
-    여전히 정상적으로(그냥 몇 초 늦게) 세대를 올려 복구한다.
+    걸로 관측되는 순간(아래 _mic_truly_alive() 분기) 바로 리셋된다.
+
+    2026-09-02 자체 재검토(서브에이전트 리뷰)로 찾은 한계 — 아래 마지막 문단은 원래
+    "실제로 끊긴 경우도 여전히 정상적으로(그냥 몇 초 늦게) 세대를 올려 복구한다"고
+    적었는데, 정확하지 않다. _run_mic_loop()이 연결 안 됨을 감지하면 매번
+    _rate_limited_rerun()(1초당 최대 1회)으로 재실행을 강제하는데, 이 debounce 로직이
+    "죽었다"를 확정하려면 그 재실행이 최소 두 번 더(_mic_dead_since가 찍힌 뒤 2초 이상
+    지나서) 일어나야 한다 — 그런데 _rate_limited_rerun()이 첫 재실행을 곧바로 걸고 나면
+    그 직후 재실행에서는 "마지막 강제 재실행 뒤 1초가 안 지났다"는 이유로 더 이상
+    재실행을 걸지 않는다. 이후로는 브라우저(프론트엔드)가 스스로 새 컴포넌트 값을
+    보내와 on_change 콜백이 재실행을 걸어주는 경우에만 이 함수가 다시 불려서 2초
+    debounce를 마저 채울 수 있다 — 마이크 연결이 사용자 상호작용도, 프론트엔드 쪽
+    상태 변화 이벤트도 전혀 없이 완전히 조용한 채로 죽어있으면(예: 로그인 화면에서
+    비밀번호를 입력하는 동안 네트워크가 끊긴 경우), 이 함수가 다시 불릴 계기 자체가
+    당분간 없어서 세대 교체가 늦어질 수 있다(무한정 멈추는 건 아니다 — 사용자가 아무
+    조작이나 하면 그 rerun이 다시 이 함수를 부른다). st.fragment(run_every=...)로
+    확실한 폴링을 붙이는 방안도 검토했으나, 이 라이브러리는 st.fragment 자체가 연결을
+    죽이는 걸로 이미 확인된 바 있어(_run_mic_loop() 문서의 2026-08-23 리포트 참고) 그
+    방향은 피했다 — 실측 재현 없이 이 타이밍 메커니즘을 더 손대는 위험을 감수하기보다,
+    이 한계를 있는 그대로 남겨둔다.
     """
     import time
 

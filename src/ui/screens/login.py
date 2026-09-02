@@ -5,8 +5,9 @@
 대고 소리 내어 말하게 하는 건 보안상 부적절하다.
 
 app.py::main()이 이 둘을 포함한 4개 화면(login/signup/my_recipes/edit_recipe)에서
-register_ingredients/register_steps와 같은 방식으로 listen_for_speech=False를 부른다
-— 마이크 연결은 유지하되 음성 처리는 건너뛴다(비밀번호를 마이크에 대고 말하게 하는
+register_ingredients와 같은 방식으로 listen_for_speech=False를 부른다(register_steps는
+listen_for_speech를 안 넘겨서 실제로는 STT까지 계속 돌리고 결과만 버리는 별개의 패턴이라
+정확히 같지는 않음) — 마이크 연결은 유지하되 음성 처리는 건너뛴다(비밀번호를 마이크에 대고 말하게 하는
 건 보안상 부적절하므로 폼으로만 받는다는 원래 취지는 그대로). 한때 "Cannot create so
 many PeerConnections" 크래시로 마이크를 아예 안 그리는 쪽으로 후퇴했었으나, 진짜
 원인(이 넷만 화면을 짧은 간격으로 반복 왕복해 재협상 중인 연결을 죽은 걸로 오판)을

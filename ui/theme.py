@@ -1583,8 +1583,12 @@ _NO_TEXT_FALLBACK_SCREENS = (
     "register_steps",
     "login",
     "signup",
-    # 2026-09-01 — my_recipes/edit_recipe도 listen() 자체를 안 부르므로(app.py 참고)
-    # 범용 텍스트 입력칸이 만들어질 일이 없다.
+    # 2026-09-02 — my_recipes/edit_recipe도 login/signup과 같은 이유(바로 위 주석)로
+    # app.py::main()이 listen(..., show_text_fallback=False)로 부른다 — 한때(2026-09-01)
+    # 이 넷 다 listen() 자체를 안 부르는 워크어라운드였던 적이 있어 이 주석도 그때는
+    # 맞았지만, PeerConnection 크래시 근본 원인을 고치면서(voice_io._recover_dead_mic()
+    # 문서 참고) listen()을 다시 부르는 쪽으로 되돌아갔다 — 지금은 다른 화면들과 같은
+    # 이유(show_text_fallback=False)로 범용 텍스트 입력칸이 안 만들어지는 것.
     "my_recipes",
     "edit_recipe",
 )
