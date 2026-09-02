@@ -15,17 +15,19 @@
 | `db.py` | 완성 | `get_client()` — Supabase 자격증명 없으면 자동으로 `mock_client.py`로 폴백. 프로세스당 client 하나만 재사용(캐싱이 실제로 히트하게) |
 | `mock_client.py` | 완성 | 로컬 개발용 가짜 Supabase 클라이언트 |
 | `intent_classifier.py` | 완성 | `classify_intent()` — `jhgan/ko-sroberta-multitask` 임베딩 유사도, `THRESHOLD`(0.5)+`MARGIN`(0.05) 판정. 의도 집합: 조회/등록/진행/재청취/이전/감탄사(+미분류) — 재료대체/취소는 2026-08-27 제거 |
-| `recipe_search.py` | 완성 | `select_standard_recipe()`(`approved='Y'`만 후보) / `extract_dish_name()`(완전일치→부분일치→편집거리 3단계 + 공백무시·반복축약 안전망) |
-| `registration.py` | 완성 | `register_recipe()`(다단계 세션) / `save_recipe()`(최종 저장, `approved='N'`으로) / `delete_recipe()`(관리자 삭제용) |
+| `recipe_search.py` | 완성 | `select_standard_recipe()`(`approved='Y'`이고 `api_standard`이거나 조회자 본인 소유(`owner_id`)인 행만 후보, 2026-09-02) / `extract_dish_name()`(완전일치→부분일치→편집거리 3단계 + 공백무시·반복축약 안전망) |
+| `registration.py` | 완성 | `register_recipe()`(다단계 세션) / `save_recipe()`(최종 저장, 2026-09-02부터 `approved='Y'`로 즉시) / `update_recipe()`(마이레시피 수정) / `delete_recipe()`(관리자 삭제용) |
 | `speaker_verify.py` | **신규(2026-08-28)** | 관리자 화자검증(ECAPA-TDNN, CPU) — `embed()`/`verify()`/`enroll()`/`remove_admin()`. 성문은 Supabase가 아니라 로컬 파일(`data/admin_voiceprints.json`)에 저장 |
 | `load_data.py` | 완성 | CSV → Supabase 적재 CLI. `python src/orchestration/load_data.py --csv <경로> [--dry-run]` |
 | `pipeline.py` | 완성 | `get_precomputed_steps`/`get_current_step`/`advance_step`/`manual_fallback` + `handle_utterance()`(STT 텍스트 → `classify_intent()` → 의도별 라우팅 → 응답, `app.py`가 호출할 최종 진입점) |
 | `entity_extract.py` | **죽은 코드** | 자유발화에서 요리명을 뽑는 규칙 기반 v1(`extract_dish_name`, 접미사 rstrip 방식). 원래는 `app.py`가 호출했지만, `recipe_search.py::extract_dish_name()`(편집거리 보정 포함)과 `entity_extract_llm.py`(로컬 LLM)로 완전히 대체돼 지금은 어디서도 호출되지 않는다. 재료명 추출 함수(`extract_substitution_ingredients`)는 재료대체 기능과 함께 삭제됨 |
 | `entity_extract_llm.py` | 완성 | 요리명 추정 + 등록 의도 판단을 로컬 LLM(EXAONE-3.5-2.4B-Instruct, `../llm/infer.py`)으로 한 번에 처리 — `extract_intent_llm(text) -> {"dish_name": str\|None, "wants_register": bool}`. 실패/형식오류/불확실 응답이면 안전한 기본값으로 폴백(지어내지 않음). 상세: `docs/specs/llm_dish_name_extract.md`, `../llm/README.md` |
 
-## 관리자 승인 워크플로우 (2026-08-27, `docs/specs/admin_recipe_approval.md`)
+## 소유자 전용 조회 (2026-09-02, `docs/specs/private_recipe_visibility.md`) — 관리자 승인 대체
 
-`recipes.approved`('Y'/'N') 컬럼으로 공개 여부를 가른다. `api_standard`(표준 데이터)는 적재 시점에 항상 'Y'. `user_custom`(신규 등록)은 `save_recipe()`가 항상 'N'으로 저장하고, `src/ui/screens/admin.py`의 승인 버튼이 'Y'로 바꾼다. `select_standard_recipe()`는 `approved='Y'`인 행만 후보로 본다 — 승인 대기만 있으면 `{"pending": True}`를 돌려줘 "심사 중"이라고 정직하게 안내할 수 있게 한다.
+`user_custom`(신규 등록)은 이제 `save_recipe()`가 저장 시점에 바로 `approved='Y'`로 넣는다(관리자 승인 대기 없음). 대신 `select_standard_recipe()`가 `owner_id`(조회자, `ui.session.get_owner_id()`)를 받아서, `api_standard`가 아닌 `user_custom` 행은 "조회자 본인이 등록한 것"일 때만 후보로 본다 — 다른 사용자·비로그인 조회자에게는 안 보인다. 등록 화면(`ui/screens/register.py::screen_register_dish_name()`)도 로그인 필수로 바뀌어서, owner_id 없는(비로그인) `user_custom`이 새로 생기지 않는다.
+
+`recipes.approved`('Y'/'N') 컬럼 자체와 `src/ui/screens/admin.py`의 승인/삭제 워크플로우(`docs/specs/admin_recipe_approval.md`)는 코드 그대로 남아있지만, 이제는 **이 스펙 이전에 등록된 레거시 `approved='N'` 행**을 처리할 때만 쓰인다 — 새 행은 이 상태를 거치지 않는다. `select_standard_recipe()`는 그런 레거시 행만 있으면 여전히 `{"pending": True}`를 돌려줘 "심사 중"이라고 안내한다(`PENDING_MESSAGE`).
 
 ## 진행 방법
 

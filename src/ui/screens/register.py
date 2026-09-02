@@ -21,7 +21,7 @@ import streamlit as st
 
 from theme import (
     ICON_CHECK_CIRCLE,
-    ICON_CHECK_SMALL,
+    # ICON_CHECK_SMALL,  # 2026-09-02 — "심사 대기 중" 배지와 함께 주석 처리(screen_complete() 참고)
     ICON_QUESTION_CIRCLE,
     ICON_SPARKLE,
     render_back_link,
@@ -369,24 +369,26 @@ def screen_register_steps() -> None:
 
 
 def screen_complete() -> None:
-    # 2026-08-27 — 관리자 승인(Y/N) 워크플로우 도입으로 문구 갱신. 예전엔 owner_id
-    # 기반 개인화("회원님 버전으로 먼저 안내") + 즉시 조회 가능을 전제로 한 문구였는데,
-    # 이제 신규 등록은 관리자가 승인하기 전까진 아무도(등록한 사람 포함) 조회할 수
-    # 없다(admin_recipe_approval.md 참고) — 그 사실을 정직하게 안내한다.
+    # 2026-09-02 — docs/specs/private_recipe_visibility.md: 관리자 승인 대기 문구/배지를
+    # 없앤다. 이제 저장 즉시 approved='Y'로 들어가고, 등록한 본인 계정으로는 바로
+    # 조회된다(다른 사용자에게는 여전히 안 보임 — select_standard_recipe() 참고) —
+    # "관리자 승인 후에 검색할 수 있어요"는 더 이상 사실이 아니라서 문구를 바꿨다.
+    # 예전 배지(<span class="ce-status-badge">...심사 대기 중</span>)는 완전히 지우지
+    # 않고 주석으로 남겨둔다(요청).
     dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
     st.markdown(
         f'<div class="ce-center"><h1>저장이 완료됐어요!</h1>'
-        f"<p>{dish_name}, 관리자 승인 후에 검색할 수 있어요.</p></div>",
+        f"<p>{dish_name}, 등록한 계정으로 바로 조회할 수 있어요.</p></div>",
         unsafe_allow_html=True,
     )
     _render_cached_speech(_REGISTER_SAVED_MESSAGE)
-    st.markdown(
-        '<div style="text-align:center;">'
-        f'<span class="ce-status-badge">{ICON_CHECK_SMALL} 심사 대기 중</span></div>',
-        unsafe_allow_html=True,
-    )
+    # st.markdown(
+    #     '<div style="text-align:center;">'
+    #     f'<span class="ce-status-badge">{ICON_CHECK_SMALL} 심사 대기 중</span></div>',
+    #     unsafe_allow_html=True,
+    # )
     render_spacer()
 
     if st.button("처음 화면으로", type="primary", use_container_width=True):
