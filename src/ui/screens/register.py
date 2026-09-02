@@ -152,8 +152,13 @@ def screen_register_dish_name() -> None:
     if not st.session_state.get("current_user"):
         goto("login")
         return
+    # 2026-09-02 실측 리포트 — "재료 등록에서 처음으로 가면 마이크가 잠긴다" 원인:
+    # 이 back-link가 reset_to_start()를 안 거치고 goto("start")만 불러서, 이전
+    # 화면에서 걸려있던 _tts_mute_until(voice_io._mic_muted() 문서 참고)이 그대로
+    # start까지 넘어가 마이크가 "듣고 있어요"로는 보이는데 프레임이 무음 처리되던
+    # 문제와 같은 원인 — dispatch.reset_to_start()로 바꿔 다른 버튼들과 통일한다.
     if render_back_link("처음 화면으로"):
-        goto("start")
+        reset_to_start()
     st.markdown('<p class="ce-hint">새 레시피 등록 · 1 / 3 · 요리명</p>', unsafe_allow_html=True)
     render_dots(3, 1)
     st.markdown("**어떤 요리인가요?**")
@@ -232,8 +237,9 @@ def screen_register_ingredients() -> None:
         goto("register_intro")
         return
 
+    # 2026-09-02 — screen_register_dish_name() 위 주석과 같은 이유(마이크 잠김 버그).
     if render_back_link("처음 화면으로"):
-        goto("start")
+        reset_to_start()
     st.markdown(f'<p class="ce-hint">{reg["dish_name"]} · 2 / 3 · 재료</p>', unsafe_allow_html=True)
     render_dots(3, 2)
     st.markdown("**재료를 알려주세요**")
@@ -275,8 +281,9 @@ def screen_register_steps() -> None:
         goto("register_intro")
         return
 
+    # 2026-09-02 — screen_register_dish_name() 위 주석과 같은 이유(마이크 잠김 버그).
     if render_back_link("처음 화면으로"):
-        goto("start")
+        reset_to_start()
     st.markdown(f'<p class="ce-hint">{reg["dish_name"]} · 3 / 3 · 조리 순서</p>', unsafe_allow_html=True)
     render_dots(3, 3)
     st.markdown("**조리 순서를 알려주세요**")

@@ -21,6 +21,7 @@ import streamlit as st
 from theme import ICON_BASKET_SM, ICON_INBOX, render_back_link, render_badge, render_spacer, truncate_display_name
 from orchestration.db import get_client
 from orchestration.registration import delete_recipe, update_recipe
+from ui.dispatch import reset_to_start
 from ui.session import goto, logout as session_logout
 
 

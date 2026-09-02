@@ -409,8 +409,13 @@ def screen_cooking_complete() -> None:
     합성/캐싱해두고, 여기서 _render_cached_speech()로 같은 캐시를 다시 찾아 들려준다.
     """
     dish_name = (st.session_state.recipe_view or {}).get("dish_name") or "레시피"
+    # 2026-09-02 실측 리포트 — 이 화면 아래쪽 "처음 화면으로" 버튼(432줄)은 이미
+    # reset_to_start()를 쓰는데 이 위쪽 back-link만 goto("start")를 직접 불러서
+    # _tts_mute_until 등이 안 지워진 채 start로 넘어가는 불일치가 있었다(마이크가
+    # "듣고 있어요"로는 보이는데 프레임이 무음 처리되는 버그, voice_io._mic_muted()/
+    # dispatch.reset_to_start() 문서 참고) — 통일한다.
     if render_back_link("처음으로"):
-        goto("start")
+        reset_to_start()
 
     render_spacer()
     st.markdown(f'<div class="ce-lead-icon positive">{ICON_CHECK_CIRCLE}</div>', unsafe_allow_html=True)
