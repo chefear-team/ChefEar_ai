@@ -429,7 +429,7 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 .ce-center { text-align:center; }
 /* 2026-08-28 — 22 -> 30px, margin 하단 8 -> 10px. 제목/본문 크기 차이가 작아 타이포
    위계가 약했음. .ce-center를 쓰는 큰 중앙 메시지 화면(start/complete/cooking_complete/
-   register_intro/unclassified)에만 적용됨(조리 단계 텍스트는 .ce-step-title로 별도). */
+   unclassified)에만 적용됨(조리 단계 텍스트는 .ce-step-title로 별도). */
 .ce-center h1 { font-size:30px; font-weight:800; margin:6px 0 10px; }
 .ce-center p { font-size:14.5px; color: var(--text-secondary); line-height:1.6; margin:0; }
 
@@ -1090,7 +1090,7 @@ def render_interactive_dots(total: int, current: int) -> int | None:
     눌러서 그 단계로 바로 이동할 수 있다(2026-08-21, 조리순서 화면 요청). 클릭된 단계
     번호(1..total)를 반환하고, 아무 것도 안 눌렸으면 None을 반환한다.
 
-    register_intro 등 다른 화면의 render_dots()(진행 단계 안내용, 클릭 불가)는 그대로
+    register_dish_name 등 다른 화면의 render_dots()(진행 단계 안내용, 클릭 불가)는 그대로
     둔다 - 이건 cooking_step처럼 "실제로 그 단계로 건너뛸 수 있어야" 의미 있는 화면
     전용이다.
     """
@@ -1541,7 +1541,7 @@ _AUDIO_FREE_SCREENS = (
     "register_ingredients",
     "register_steps",
     "register_dish_name",
-    "register_intro",
+    # 2026-09-02 — register_intro 화면 자체가 삭제됨(ui/screens/register.py 참고).
     # 2026-09-01 재도입 — login/signup(ui/screens/login.py)도 speak()/오디오 재생을
     # 전혀 안 쓰는 순수 폼 화면이라 register_ingredients/register_steps와 같은 부류.
     "login",
@@ -1633,25 +1633,19 @@ _NO_TEXT_FALLBACK_SCREENS = (
 # 447번 줄 주석 — 아이러니하게도 이 잔상 문제가 잦았던 게 삭제 이유 중 하나) 이 문구를
 # 만드는 코드 자체가 이제 없다 — 죽은 마커.
 _STALE_CONTENT_MARKERS = {
-    # 2026-08-25(같은 날 밤) 사용자 실사용 재현 보고 — register_intro(표준 레시피에
-    # 없는 요리라 새로 등록할지 묻는 화면)의 마이크바 캡션('"네" 또는 "등록할래요"라고
-    # 말해보세요', render_mic_bar() 호출부)과 그 아래 "네, 등록할래요"/"괜찮아요" 버튼
-    # 행, 심지어 그 뒤에 register_ingredients의 "추가" 버튼까지 통째로 start로 샌 사례
-    # 확인(등록 플로우를 실제로 몇 단계 진행한 뒤 "처음"으로 나온 경우). 이 캡션이
-    # register_intro 본문에서 맨 앞쪽 위젯이라, 이 마커 하나의 꼬리 제거로 뒤따르는
-    # 버튼 행+register_ingredients 잔여물까지 한 번에 같이 잡힌다.
-    '"네" 또는 "등록할래요"라고 말해보세요': ["register_intro"],
+    # 2026-09-02 재감사 — register_intro 화면 전용이던 마커('"네" 또는 "등록할래요"라고
+    # 말해보세요')를 지웠다. register_intro 화면 자체가 삭제돼서(ui/screens/register.py
+    # 참고, 취소 버튼이 이제 처음 화면으로 바로 감) 이 문구를 만드는 코드가 이제
+    # 없다 — 죽은 마커(위 no_match 재감사와 같은 이유).
+    #
     # 2026-09-01 재감사 — login 화면 전용이던 "아이디"/"비밀번호" 마커 2개를 지웠다.
     # my_recipes.py::screen_login()이 2026-08-27에 계정 시스템과 함께 통째로 삭제돼서
     # (ui/README.md 참고) 이 문구를 만드는 화면 자체가 이제 없다 — 죽은 마커.
-    # 2026-08-25(같은 날 밤, 위와 같은 리포트 — 등록 플로우를 register_ingredients까지
-    # 더 진행한 뒤 "처음") — register_intro 마커의 꼬리 제거로는 register_ingredients
-    # 자체의 잔상(재료 칩은 이미 구조적 규칙 7로 잡히지만, 그 아래 텍스트 입력칸+
-    # "추가"/"네, 맞아요" 버튼은 register_intro 마커의 꼬리 범위 밖 — 서로 다른 렌더링
-    # 시점/컨테이너 자식이라 안 잡힘)까지는 못 잡는다. register_ingredients/
-    # register_steps 각각 자기 화면 전용 텍스트 입력 라벨을 마커로 추가 — 두 화면 다
-    # 그 입력칸이 본문에서 맨 마지막 위젯 그룹 시작이라, 꼬리 제거로 뒤따르는 버튼들도
-    # 같이 잡힌다.
+    #
+    # register_ingredients/register_steps 각각 자기 화면 전용 텍스트 입력 라벨을
+    # 마커로 쓴다 — 두 화면 다 그 입력칸이 본문에서 맨 마지막 위젯 그룹 시작이라,
+    # 꼬리 제거로 뒤따르는 버튼들도 같이 잡힌다(2026-08-25 실사용 리포트로 확인된
+    # 화면 전환 잔상 대응, 위 no_match 사례와 같은 부류).
     "재료 추가(쉼표로 여러 개 가능)": ["register_ingredients"],
     "순서 추가": ["register_steps"],
     "짐작한 이름": ["register_dish_name"],
@@ -1782,7 +1776,8 @@ _CHIP_GRID_SCREENS = ("recipe_confirm", "cooking_step", "register_ingredients")
 # ruleChatAndChips()와 완전히 같은 keepLastOnly() 구조 규칙으로 승격한다 — start는
 # 원래 .ce-mic-bar를 안 쓰는 화면(큰 마이크 아이콘은 별도 컴포넌트)이라 여기 없으면
 # start에 남은 .ce-mic-bar는 전부 잔상으로 간주돼 지워진다.
-_MIC_BAR_SCREENS = ("recipe_confirm", "cooking_step", "unclassified", "register_intro", "register_dish_name")
+_MIC_BAR_SCREENS = ("recipe_confirm", "cooking_step", "unclassified", "register_dish_name")
+# 2026-09-02 — register_intro 화면 삭제로 이 목록에서 뺐다(ui/screens/register.py 참고).
 
 # 2026-08-27 — "취소"처럼 여러 화면이 같이 쓰는 흔한 버튼 문구는 텍스트 마커로 어느
 # 화면 소속인지 특정할 수 없다(_STALE_CONTENT_MARKERS에 "취소"를 못 넣는 이유,

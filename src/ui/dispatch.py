@@ -80,7 +80,7 @@ def _normalize_for_lookup(text: str) -> str:
 
 
 def is_home_word(text: str) -> bool:
-    """recipe_confirm/register_intro/register_dish_name처럼 classify_intent()를 안 거치고
+    """recipe_confirm/register_dish_name처럼 classify_intent()를 안 거치고
     자기 화면 안에서 직접 몇 단어만 확인하는 화면들도 이걸로 "처음" 발화를 똑같이 잡아낼
     수 있게 공개 함수로 둔다.
 
@@ -703,16 +703,30 @@ def process_utterance(text: str) -> None:
             return
 
         if intent == "등록":
-            print(f"[DISPATCH] 분기=등록(분류) -> register_intro", flush=True)
+            # 2026-09-02 — register_intro("표준 레시피에 없는 요리예요" 확인 화면)
+            # 삭제 요청으로 register_dish_name으로 바로 보낸다 — wants_register(LLM)/
+            # value_error 분기가 이미 쓰는 것과 같은 패턴("등록 의도가 확정됐으면
+            # 다시 확인 안 받는다").
+            #
+            # 참고 — 이 분기는 현재 코드 경로상 실제로는 도달하지 않는다: classify_intent()가
+            # "등록"을 돌려주면 handle_utterance()의 "등록" 처리는 registration_step이
+            # 필요한데, 이 파일의 submit_handle_utterance() 호출은 registration_step을
+            # 넘기지 않아서 handle_utterance()가 항상 ValueError를 던진다(orchestration/
+            # pipeline.py::handle_utterance() 참고) — 그 예외가 위 job["value_error"]
+            # 분기에서 먼저 잡혀 그쪽으로 빠진다(intent를 읽기도 전에 return됨). 그래도
+            # 이 분기 자체를 지우지는 않는다 — 방어적 라우팅이라 나중에 이 계약이
+            # 바뀌어도 register_intro 같은 존재하지 않는 화면을 참조하지 않도록.
+            print(f"[DISPATCH] 분기=등록(분류) -> register_dish_name", flush=True)
             st.session_state.chat_log.append(("user", _INTENT_DISPLAY_LABEL[intent]))
             prompt = result.get("prompt") or result.get("summary") or result.get("message")
+            st.session_state.pending_dish_name = result.get("dish_name")
             if prompt:
                 speak(prompt, _loading_overlay=overlay)
             else:
                 # 2026-09-01 — speak()를 안 부르는 경우라 여기서 직접 팝업을 닫는다(위
                 # overlay 문서 참고).
                 _close_loading_overlay(overlay)
-            goto("register_intro")
+            goto("register_dish_name")
             return
 
         # 알 수 없는 intent(방어적 처리) — 서비스가 죽는 대신 fallback으로.
