@@ -301,6 +301,42 @@ def _get_synthesis_lock(audio_path: Path) -> threading.Lock:
         return lock
 
 
+def _write_wav_atomic(audio_path: Path, waveform, sample_rate: int) -> None:
+    """sf.write(audio_path, ...)를 직접 부르는 대신 이 함수를 쓴다.
+
+    2026-09-02 — 위 _get_synthesis_lock() 락은 "쓰기 vs 쓰기"(prefetch와 실시간 합성이
+    같은 파일에 동시에 써서 서로 덮어쓰는 것)만 막는다 — "읽기 vs 쓰기"는 안 막는다.
+    render_audio_player()/_wav_bytes_with_lead_silence()(재생용 바이트를 만들려고
+    sf.read()로 이 파일을 읽음)나 _arm_tts_mute()(sf.info()로 길이만 읽음), 심지어
+    _compute_wave_bars()까지 — 이 파일을 읽는 모든 경로가 락 없이 그냥 읽는다.
+    sf.write()는 파일을 열어서 자르고 그 자리에 데이터를 순서대로 쓰는 방식이라
+    (원자적이지 않음), 쓰는 도중에(특히 아직 GPU 워커 프로세스 결과를 디스크에
+    옮겨적는 몇백 ms~1초 사이) 다른 스레드가 같은 파일을 읽으면 헤더의 선언된
+    길이보다 실제로는 덜 쓰인, 잘린 데이터를 읽을 수 있다 — 매번 재현 안 되고
+    ("가끔"만) 재현될 때마다 정확히 끝부분만 없는 리포트와 정확히 들어맞는다.
+    실측으로 최종 디스크 파일 자체는 무음으로 깨끗하게 끝나있는 걸 확인했다(레이스가
+    지나가면 마지막에 쓴 쪽이 온전한 파일을 남김) — 그러니 문제는 "언젠가 잘린 파일이
+    영구히 남는다"가 아니라 "쓰는 그 순간에 누군가 읽으면 그 찰나엔 잘린 걸 본다"는
+    쪽이다.
+
+    고전적인 "임시 파일에 다 쓴 뒤 최종 경로로 원자적 교체"로 고친다 — 같은
+    파일시스템 안에서 os.replace()(POSIX rename, 커널이 보장하는 원자적 교체)는
+    "전혀 다른 파일이 없던 상태"에서 "완전히 새 파일이 생긴 상태"로 순간적으로
+    바뀌는 것처럼 보인다 — 그 사이의 "쓰다 만" 중간 상태 자체가 그 최종 경로에서는
+    아예 관측될 수 없다. 그래서 읽는 쪽(render_audio_player() 등) 전부를 락으로
+    감쌀 필요 없이, 쓰는 쪽만 이렇게 고치면 모든 읽기 경로가 자동으로 안전해진다.
+    임시 파일명에 pid+스레드id를 섞어서 동시에 여러 쓰기가 진행 중이어도(위 락으로
+    보통은 직렬화되지만 최후의 안전장치로) 서로 다른 임시 파일을 쓴다.
+    """
+    tmp_path = audio_path.with_name(f".{audio_path.name}.tmp{os.getpid()}-{threading.get_ident()}")
+    try:
+        sf.write(tmp_path, waveform, sample_rate)
+        os.replace(tmp_path, audio_path)  # 같은 디렉터리 안이므로 원자적 교체
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)  # 실패 시 임시 파일 흔적을 안 남긴다
+        raise
+
+
 def _arm_tts_mute(audio_path: Path) -> None:
     """이 오디오가 재생되는 동안 상시 마이크가 자기 목소리를 다시 주워듣지 않게,
     "지금부터 대략 이 길이만큼은 마이크 입력을 무시하라"는 시각을 세션에 남긴다
@@ -607,7 +643,7 @@ def speak(
                             waveform, sample_rate = gpu_worker_pool.submit_tts(message, session_id=sid).result()
                             print(f"[PERF] TTS {time.monotonic() - _tts_t0:.2f}s (cache miss)", flush=True)
                             audio_path.parent.mkdir(parents=True, exist_ok=True)
-                            sf.write(audio_path, waveform, sample_rate)
+                            _write_wav_atomic(audio_path, waveform, sample_rate)
                 except Exception as exc:  # noqa: BLE001 — 아래에서 다시 던져서 기존 except가 처리
                     job["error"] = exc
                 finally:
@@ -669,7 +705,7 @@ def _synthesize_and_cache(text: str, audio_path: Path, session_id: str | None = 
                 return
             waveform, sample_rate = gpu_worker_pool.submit_tts(text, session_id=session_id).result()
             audio_path.parent.mkdir(parents=True, exist_ok=True)
-            sf.write(audio_path, waveform, sample_rate)
+            _write_wav_atomic(audio_path, waveform, sample_rate)
         except Exception:  # noqa: BLE001 — 프리페치 실패는 speak()가 다시 시도하므로 조용히 넘어감
             pass
 
