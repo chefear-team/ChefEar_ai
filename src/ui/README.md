@@ -21,7 +21,7 @@
 - `recipe_view.py` — `recipes`/`recipe_steps` 조회·세션 캐시(`refresh_recipe_view`), 재료 칩 변환
 - `dispatch.py` — 발화 처리 핵심 디스패처(`process_utterance`), 수동 이전/다시/다음 버튼(`fallback_buttons`), 관리자 페이지 진입 발화 트리거(`_is_admin_trigger`)
 - `screens/cooking.py` — start/recipe_confirm/cooking_step/cooking_complete (조리 진행 핵심 흐름). `handle_recipe_confirm()`도 여기서 export
-- `screens/register.py` — unclassified/register_*/complete (신규 등록 흐름, 로그인 불필요). `handle_register_intro()`/`handle_register_dish_name()`도 여기서 export
+- `screens/register.py` — unclassified/register_*/complete (신규 등록 흐름, 로그인 불필요). `handle_register_dish_name()`도 여기서 export
 - `screens/admin.py` — 관리자 페이지 본체(승인 대기 목록·승인·삭제)
 - `screens/admin_auth.py` — 관리자 2차 인증(랜덤 단어 챌린지 + STT + 화자검증)
 - `screens/admin_enroll.py` — 관리자 목소리 최초 등록 화면(`/enroll`)

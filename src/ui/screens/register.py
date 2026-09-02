@@ -1,19 +1,21 @@
-"""ChefEar 신규 등록 플로우 화면(register_intro -> ... -> complete) —
+"""ChefEar 신규 등록 플로우 화면(register_dish_name -> ... -> complete) —
 src/app.py에서 분리(2026-08-22, 화면 컴포넌트화).
 
 register_recipe()가 돌려주는 prompt/summary는 대화 중간(재료·순서 누적)에만 있고,
-화면 전환 시점의 고정 안내문(인트로/순서 질문 등)은 없다 — 그 화면 자신이 자신의
-안내문을 "무슨 말을 했는지" 알아야 voice_io._render_cached_speech()로 같은 캐시를
-다시 찾을 수 있어서, 전환 직전(호출부)과 도착 화면 양쪽이 똑같이 이 함수들을 불러 쓴다.
-(register_intro 자체는 2026-08-21부터 음성 안내를 뺐다 — 아래 screen_register_intro()
-참고.)
+화면 전환 시점의 고정 안내문(순서 질문 등)은 없다 — 그 화면 자신이 자신의 안내문을
+"무슨 말을 했는지" 알아야 voice_io._render_cached_speech()로 같은 캐시를 다시 찾을 수
+있어서, 전환 직전(호출부)과 도착 화면 양쪽이 똑같이 이 함수들을 불러 쓴다.
+
+2026-09-02 — "표준 레시피에 없는 요리예요"라고 한 번 더 확인받던 register_intro
+화면을 없앴다(사용자 요청 — 등록 의도가 이미 확정된 뒤에 다시 물어볼 필요가 없다는
+판단, dispatch.py의 "등록"/wants_register 분기들과 register_dish_name 취소 버튼이
+전부 이 화면 하나(register_dish_name)로 곧장 수렴한다).
 
 2026-08-25 — listen()/listen_background_only() 호출은 이 파일의 화면 함수들이 아니라
 app.py::main()이 화면별 key 컨테이너 *밖에서* 직접 부른다(cooking.py 상단 주석/app.py
 주석 참고 — 화면 key 컨테이너가 바뀔 때마다 그 안의 webrtc 컴포넌트가 재마운트돼 마이크가
 화면 전환마다 새로 연결되는 문제 대응). process_utterance()로 충분한 화면은 별도 핸들러가
-없고, 문자열을 직접 비교하는 화면(register_intro/register_dish_name)만 handle_*() 함수를
-따로 둔다.
+없고, 문자열을 직접 비교하는 화면(register_dish_name)만 handle_*() 함수를 따로 둔다.
 """
 from __future__ import annotations
 
@@ -23,7 +25,6 @@ from theme import (
     ICON_CHECK_CIRCLE,
     # ICON_CHECK_SMALL,  # 2026-09-02 — "심사 대기 중" 배지와 함께 주석 처리(screen_complete() 참고)
     ICON_QUESTION_CIRCLE,
-    ICON_SPARKLE,
     render_back_link,
     render_chips,
     render_dots,
@@ -65,78 +66,6 @@ def screen_unclassified() -> None:
     # 넘긴다 — 이 화면은 별도 핸들러가 없다(위 파일 docstring 참고).
 
 
-def screen_register_intro() -> None:
-    render_spacer()
-    st.markdown(f'<div class="ce-lead-icon neutral">{ICON_SPARKLE}</div>', unsafe_allow_html=True)
-    dish_hint = st.session_state.pending_dish_name or "그 요리"
-    st.markdown(
-        '<div class="ce-center"><h1>표준 레시피에 없는 요리예요</h1>'
-        f"<p>{dish_hint}는 표준 레시피 안에는 없지만, 직접 알려주시면 회원님 레시피로 등록해드릴게요.</p></div>",
-        unsafe_allow_html=True,
-    )
-    render_spacer()
-    _mic_ready = mic_is_playing()
-    render_mic_bar(
-        "듣는 중" if _mic_ready else "마이크 연결 중...",
-        '"네" 또는 "등록할래요"라고 말해보세요',
-        listening=_mic_ready,
-    )
-
-    # 발화 처리는 app.py가 listen()으로 잡은 텍스트를 아래 handle_register_intro()에
-    # 넘긴다(위 파일 docstring 참고). 텍스트로 "네, 등록할래요"/"괜찮아요"를 입력하는
-    # 대체 경로는 그대로 남아있다.
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("네, 등록할래요", type="primary", use_container_width=True):
-            goto("register_dish_name")
-    with c2:
-        if st.button("괜찮아요", use_container_width=True):
-            goto("start")
-
-
-def handle_register_intro(text: str) -> None:
-    """screen_register_intro()가 그려진 뒤 app.py가 잡아온 발화를 처리한다.
-
-    2026-08-27 수정 — "네"/"좋아"/"응"/"등록"이라고 말해도 등록 페이지로 안 넘어간다는
-    실측 리포트. 원인: `norm in (...)` 완전일치 조건이라, STT가 조사/어미를 붙여
-    돌려주면(실측 로그: "등록할래.", "등록한다고.", "둘록한다니까?" 등) 후보 목록
-    어느 것과도 정확히 안 맞아 전부 else(무시)로 빠졌다. dispatch.py의 `_REGISTER_WORD
-    in text`(등록은 단어 포함이면 무조건)와 같은 방식으로 포함 여부 검사로 완화한다.
-    부정(아니/괜찮아/취소/처음) 쪽을 먼저 검사해서, "아니 등록 안 할래"처럼 부정과
-    긍정 단어가 한 문장에 같이 들어간 경우 부정이 우선하게 한다 — 순서를 반대로 하면
-    "등록"이 먼저 걸려 거절 의사를 등록 확정으로 잘못 처리할 위험이 있다.
-
-    "좋"(어간, "좋아"의 활용형 전부 포함) 단독 포함 검사는 cooking.py::handle_recipe_confirm()이
-    이미 쓰는 것과 같은 트레이드오프다 — "좋다고?"처럼 STT가 변형해 돌려줘도 잡히게
-    하려는 목적인데, 이 화면 문맥과 무관한 발화("날씨 좋다" 등)에 우연히 "좋"이 들어
-    있어도 등록으로 오인식될 이론적 여지가 있다. 이 화면은 "등록할지" 확인 직후에만
-    잠깐 나타나는 좁은 화면이라 실사용상 위험은 낮다고 보고 기존 관례를 그대로 따른다.
-    """
-    norm = text.strip().rstrip("?!. ")
-    print(f"[REGISTER_INTRO] text={text!r} norm={norm!r}", flush=True)
-    if is_home_word(norm) or any(word in norm for word in ("아니", "괜찮아", "취소")):
-        # 2026-08-23 — "처음"류는 reset_to_start()(진행 중이던 값 전부 초기화)로,
-        # 기존 "아니/취소"는 원래 하던 대로 단순 이동만(이 화면은 아직 등록 자체를
-        # 시작 전이라 초기화할 진행 상태가 없음).
-        if is_home_word(norm):
-            print(f"[REGISTER_INTRO] 분기=처음/홈단어 -> reset_to_start()", flush=True)
-            reset_to_start()
-        else:
-            print(f"[REGISTER_INTRO] 분기=거절(아니/괜찮아/취소) -> start", flush=True)
-            goto("start")
-    elif any(word in norm for word in ("네", "응", "좋", "그래", "등록")):
-        print(f"[REGISTER_INTRO] 분기=확정 -> register_dish_name", flush=True)
-        goto("register_dish_name")
-    else:
-        # 2026-08-25 추가 — dispatch.py의 "미분류" 분기와 같은 이유(그쪽 주석 참고).
-        # 위 두 분기 다 goto()로 화면을 다시 그리며 listen()을 재호출해 마이크 드레인
-        # 루프를 이어가는데, 이 무시 케이스만 rerun 없이 끝나서 그 순간부터 프레임이
-        # 안 비워져 "Queue overflow"로 이어졌다.
-        print(f"[REGISTER_INTRO] 분기=무시 -> 화면 그대로, rerun만", flush=True)
-        st.rerun()
-
-
 def screen_register_dish_name() -> None:
     """FR-06 1단계: 요리명 질문. 다른 경로(LLM wants_register 등)에서 넘어온
     추측값(pending_dish_name)을 그대로 쓰지 않고 사용자가 직접 확인/수정하게 한다 —
@@ -145,9 +74,10 @@ def screen_register_dish_name() -> None:
 
     2026-09-02 — docs/specs/private_recipe_visibility.md: 등록이 로그인 필수로
     바뀌면서 이 화면이 그 게이트 역할을 한다. "등록" 빠른 단어/LLM 등록의도/
-    register_intro 버튼 등 모든 등록 진입 경로가 결국 이 화면(register_dish_name)으로
-    수렴하므로(dispatch.py/register_intro.py 참고), 각 진입 경로마다 따로 확인할 필요
-    없이 여기 한 곳만 지키면 된다 — ui/screens/my_recipes.py의 로그인 가드와 같은
+    classify_intent()의 "등록" 분류 등 모든 등록 진입 경로가 결국 이 화면
+    (register_dish_name)으로 수렴하므로(dispatch.py 참고 — register_intro 확인
+    화면은 삭제됨, 파일 docstring 참고), 각 진입 경로마다 따로 확인할 필요 없이
+    여기 한 곳만 지키면 된다 — ui/screens/my_recipes.py의 로그인 가드와 같은
     패턴(조용히 login으로 리다이렉트, 별도 안내 문구 없음)."""
     if not st.session_state.get("current_user"):
         goto("login")
@@ -179,8 +109,13 @@ def screen_register_dish_name() -> None:
     # 문서 참고, 오지우기 위험 때문에 원래부터 제외돼 있었음) 이 화면 전용 key로
     # 구조적으로 잡는다(recipe_confirm_other_recipe_btn과 같은 패턴).
     with st.container(key="register_dish_name_cancel_btn"):
+        # 2026-09-02 요청 — 등록 취소 시 register_intro("표준 레시피에 없는
+        # 요리예요" 확인 화면)로 갔었는데, 이 화면 자체를 없애고 처음 화면으로
+        # 바로 돌아가게 바꾼다(app.py::main()의 SCREENS/디버그 점프 목록,
+        # dispatch.py의 "등록" 분기도 같이 정리 — 그쪽 주석 참고).
+        # reset_to_start()로 진행 중이던 pending_dish_name 등도 같이 비운다.
         if st.button("취소", use_container_width=True):
-            goto("register_intro")
+            reset_to_start()
 
 
 def handle_register_dish_name(text: str) -> None:
@@ -195,8 +130,9 @@ def handle_register_dish_name(text: str) -> None:
         reset_to_start()
         return
     if norm in ("취소", "취소할래", "취소할래요", "취소해줘"):
-        print(f"[REGISTER_DISH_NAME] 분기=취소 -> register_intro", flush=True)
-        goto("register_intro")
+        # 2026-09-02 — register_intro 삭제(위 버튼 주석 참고)로 처음 화면으로 바로.
+        print(f"[REGISTER_DISH_NAME] 분기=취소 -> reset_to_start()", flush=True)
+        reset_to_start()
         return
     if norm in ("네", "응", "맞아", "맞아요", "그래", "그래요", "좋아", "좋아요"):
         # 짐작한 이름이 있으면 그걸 확정, 없으면 요리명을 안 말한 것이므로 다시 묻는다
@@ -234,7 +170,10 @@ def handle_register_dish_name(text: str) -> None:
 def screen_register_ingredients() -> None:
     reg = st.session_state.pipeline_session.get("registration")
     if not reg:
-        goto("register_intro")
+        # 2026-09-02 — register_intro 삭제(요리명 화면 취소 버튼 주석 참고). 이 방어
+        # 가드는 registration 데이터 없이(예: 새로고침) 이 화면에 바로 온 경우라
+        # 처음부터 다시 시작해야 하므로 start로 보낸다.
+        goto("start")
         return
 
     # 2026-09-02 — screen_register_dish_name() 위 주석과 같은 이유(마이크 잠김 버그).
@@ -278,7 +217,8 @@ def screen_register_ingredients() -> None:
 def screen_register_steps() -> None:
     reg = st.session_state.pipeline_session.get("registration")
     if not reg:
-        goto("register_intro")
+        # 2026-09-02 — 위 screen_register_ingredients()와 같은 이유.
+        goto("start")
         return
 
     # 2026-09-02 — screen_register_dish_name() 위 주석과 같은 이유(마이크 잠김 버그).

@@ -58,11 +58,9 @@ from ui.screens.login import (
 from ui.screens.my_recipes import screen_edit_recipe, screen_my_recipes
 from ui.screens.register import (
     handle_register_dish_name,
-    handle_register_intro,
     screen_complete,
     screen_register_dish_name,
     screen_register_ingredients,
-    screen_register_intro,
     screen_register_steps,
     screen_unclassified,
 )
@@ -77,7 +75,6 @@ SCREENS = {
     "cooking_step": screen_cooking_step,
     "cooking_complete": screen_cooking_complete,
     "unclassified": screen_unclassified,
-    "register_intro": screen_register_intro,
     "register_dish_name": screen_register_dish_name,
     "register_ingredients": screen_register_ingredients,
     "register_steps": screen_register_steps,
@@ -227,7 +224,7 @@ def _debug_fill_fake_state(screen: str) -> None:
     st.session_state.pipeline_session["current_recipe_id"] = _DEBUG_FAKE_RECIPE_ID
     st.session_state.pipeline_session["step_number"] = 1
     # register_ingredients/register_steps는 pipeline_session["registration"]이 없으면
-    # 곧장 register_intro로 튕겨나간다(screen_register_ingredients() 상단 가드).
+    # 곧장 start로 튕겨나간다(screen_register_ingredients() 상단 가드).
     if screen in ("register_ingredients", "register_steps"):
         st.session_state.pipeline_session["registration"] = {
             "dish_name": "디버그용 테스트 요리",
@@ -239,7 +236,6 @@ def _debug_fill_fake_state(screen: str) -> None:
 
 # 디버그 패널 "화면 점프" 버튼 목록 (라벨, 화면키).
 _DEBUG_JUMP_SCREENS = (
-    ("등록 안내", "register_intro"),
     ("등록 1·요리명", "register_dish_name"),
     ("등록 2·재료", "register_ingredients"),
     ("등록 3·순서", "register_steps"),
@@ -472,10 +468,6 @@ def main() -> None:
         text = _next_text("unclassified")
         if text:
             process_utterance(text)
-    elif screen == "register_intro":
-        text = _next_text("register_intro", show_mic=False)
-        if text:
-            handle_register_intro(text)
     elif screen == "register_dish_name":
         text = _next_text("register_dish_name", show_mic=False)
         if text:

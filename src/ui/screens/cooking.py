@@ -85,7 +85,7 @@ def screen_start() -> None:
     # 2026-08-21: 위쪽에만 render_spacer()가 있고 아래쪽엔 없어서, block-container의
     # flex:1 남는 공간이 전부 위에만 쌓여 콘텐츠가 화면 아래쪽으로 밀렸다 - 뷰포트가
     # 높을수록(세로로 긴 화면비) 남는 공간 자체가 커져서 그만큼 더 크게 벌어져 보였다.
-    # 다른 화면들(register_intro, complete, login 등)처럼 아래에도 render_spacer()를
+    # 다른 화면들(register_dish_name, complete, login 등)처럼 아래에도 render_spacer()를
     # 넣어 남는 공간을 위아래로 똑같이 나눠 화면 비율과 무관하게 수직 중앙 정렬되게 한다.
     render_spacer()
 
@@ -204,7 +204,7 @@ def handle_recipe_confirm(text: str) -> None:
     # 2026-08-28 추가 — 아래 확정어(응/네/좋/다음/그래/시작/진행/할래) "부분매칭"이
     # 내는 오탐을 먼저 걸러낸다(리뷰에서 지적된 케이스): "안 좋아"→"좋", "시작하기
     # 싫어"→"시작", "네가 알려준 거 말고"→"네", "등록할래"→"할래" 가 전부 조리 시작으로
-    # 새던 문제. handle_register_intro()가 이미 쓰는 것과 같은 "부정어를 확정어보다
+    # 새던 문제. handle_register_dish_name()이 이미 쓰는 것과 같은 "부정어를 확정어보다
     # 먼저 검사" 패턴이다.
     elif any(word in norm for word in ("아니", "싫", "말고", "별로", "취소", "안 좋", "안좋", "안 할", "안할", "안 해", "안해", "안 돼", "안돼")):
         print(f"[RECIPE_CONFIRM] 분기=부정어 -> reset_to_start()", flush=True)

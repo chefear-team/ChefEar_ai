@@ -268,6 +268,75 @@ def _common_audio_path(message: str) -> Path:
     return _AUDIO_DIR / "_common" / f"{digest}.wav"
 
 
+# 2026-09-02 실측 리포트 — "끝음절이 자꾸 잘린다"의 진짜 원인 확정. 같은 세션 안에서
+# prefetch_remaining_steps_audio()의 백그라운드 스레드와 speak()의 실시간 합성이
+# 같은 audio_path(예: <recipe_id>/02.wav)를 동시에 노릴 수 있다 — 사용자가 프리페치가
+# 그 단계까지 끝나기 전에 "다음"이라고 말하면, 둘 다 "파일 있어?"(audio_path.exists())를
+# 각자 확인해서 둘 다 False를 보고, 둘 다 GPU로 합성해서 둘 다 sf.write(audio_path, ...)를
+# 부른다 — 실측 로그로 확인(같은 문장의 [TTS_DEBUG]가 13초 간격으로 두 번, 뒤이어
+# "[PERF] TTS 18.09s"). sf.write()는 원자적이지 않아서(먼저 열어 자르고 데이터를 쓰는
+# 방식), 한쪽이 쓰는 도중 다른 쪽이 같은 파일을 다시 열어 써버리면 그 사이 재생을 시작한
+# 브라우저가 아직 다 안 쓰인/잘린 파일을 읽을 수 있다 — 매번 재현되지 않고("가끔"만
+# 잘림) 재현될 때마다 정확히 끝부분만 없는 것과 정확히 들어맞는다.
+#
+# audio_path별로 락을 하나씩 둬서 직렬화한다 — 먼저 온 쪽이 실제로 합성/저장하고, 나중에
+# 온 쪽은 락을 기다렸다가(먼저 온 쪽이 끝난 뒤) 다시 exists()를 확인해서 "이미 만들어져
+# 있네"로 조용히 넘어간다(중복 GPU 합성도 같이 없어짐 — 덤). 이 프로젝트는 세션 여럿이
+# 같은 Streamlit 서버 프로세스 안에서 스레드로 도므로(각 세션의 백그라운드 합성 스레드
+# 포함), 이 프로세스 전역 딕셔너리 하나로 세션 내부(프리페치 vs 실시간)뿐 아니라 여러
+# 사용자가 같은 표준 레시피의 같은 단계를 비슷한 시점에 처음 여는 경우까지 같이 막아준다.
+# audio_path마다 Lock 객체가 하나씩 쌓여 프로세스 수명 내내 안 지워지지만(정리 로직
+# 없음), Lock 객체 자체가 아주 가벼워서 실제 배포 규모(레시피 수 x 단계 수 + 1회성
+# 문구 수)에서는 무시할 만한 메모리다.
+_synthesis_locks: dict[Path, threading.Lock] = {}
+_synthesis_locks_guard = threading.Lock()
+
+
+def _get_synthesis_lock(audio_path: Path) -> threading.Lock:
+    with _synthesis_locks_guard:
+        lock = _synthesis_locks.get(audio_path)
+        if lock is None:
+            lock = threading.Lock()
+            _synthesis_locks[audio_path] = lock
+        return lock
+
+
+def _write_wav_atomic(audio_path: Path, waveform, sample_rate: int) -> None:
+    """sf.write(audio_path, ...)를 직접 부르는 대신 이 함수를 쓴다.
+
+    2026-09-02 — 위 _get_synthesis_lock() 락은 "쓰기 vs 쓰기"(prefetch와 실시간 합성이
+    같은 파일에 동시에 써서 서로 덮어쓰는 것)만 막는다 — "읽기 vs 쓰기"는 안 막는다.
+    render_audio_player()/_wav_bytes_with_lead_silence()(재생용 바이트를 만들려고
+    sf.read()로 이 파일을 읽음)나 _arm_tts_mute()(sf.info()로 길이만 읽음), 심지어
+    _compute_wave_bars()까지 — 이 파일을 읽는 모든 경로가 락 없이 그냥 읽는다.
+    sf.write()는 파일을 열어서 자르고 그 자리에 데이터를 순서대로 쓰는 방식이라
+    (원자적이지 않음), 쓰는 도중에(특히 아직 GPU 워커 프로세스 결과를 디스크에
+    옮겨적는 몇백 ms~1초 사이) 다른 스레드가 같은 파일을 읽으면 헤더의 선언된
+    길이보다 실제로는 덜 쓰인, 잘린 데이터를 읽을 수 있다 — 매번 재현 안 되고
+    ("가끔"만) 재현될 때마다 정확히 끝부분만 없는 리포트와 정확히 들어맞는다.
+    실측으로 최종 디스크 파일 자체는 무음으로 깨끗하게 끝나있는 걸 확인했다(레이스가
+    지나가면 마지막에 쓴 쪽이 온전한 파일을 남김) — 그러니 문제는 "언젠가 잘린 파일이
+    영구히 남는다"가 아니라 "쓰는 그 순간에 누군가 읽으면 그 찰나엔 잘린 걸 본다"는
+    쪽이다.
+
+    고전적인 "임시 파일에 다 쓴 뒤 최종 경로로 원자적 교체"로 고친다 — 같은
+    파일시스템 안에서 os.replace()(POSIX rename, 커널이 보장하는 원자적 교체)는
+    "전혀 다른 파일이 없던 상태"에서 "완전히 새 파일이 생긴 상태"로 순간적으로
+    바뀌는 것처럼 보인다 — 그 사이의 "쓰다 만" 중간 상태 자체가 그 최종 경로에서는
+    아예 관측될 수 없다. 그래서 읽는 쪽(render_audio_player() 등) 전부를 락으로
+    감쌀 필요 없이, 쓰는 쪽만 이렇게 고치면 모든 읽기 경로가 자동으로 안전해진다.
+    임시 파일명에 pid+스레드id를 섞어서 동시에 여러 쓰기가 진행 중이어도(위 락으로
+    보통은 직렬화되지만 최후의 안전장치로) 서로 다른 임시 파일을 쓴다.
+    """
+    tmp_path = audio_path.with_name(f".{audio_path.name}.tmp{os.getpid()}-{threading.get_ident()}")
+    try:
+        sf.write(tmp_path, waveform, sample_rate)
+        os.replace(tmp_path, audio_path)  # 같은 디렉터리 안이므로 원자적 교체
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)  # 실패 시 임시 파일 흔적을 안 남긴다
+        raise
+
+
 def _arm_tts_mute(audio_path: Path) -> None:
     """이 오디오가 재생되는 동안 상시 마이크가 자기 목소리를 다시 주워듣지 않게,
     "지금부터 대략 이 길이만큼은 마이크 입력을 무시하라"는 시각을 세션에 남긴다
@@ -556,17 +625,25 @@ def speak(
                 import time
 
                 try:
-                    if not audio_path.exists():
-                        # [PERF] 태그 설명은 _run_stt() 문서 참고. 캐시 히트면 이 분기
-                        # 자체를 안 타서(위 audio_path.exists() 검사) 로그가 안 찍히는데,
-                        # 그게 정상이다 — "찍혀야 하는데 안 찍힌다"면 캐시가 실제로 안
-                        # 먹고 있다는 신호이므로 이 로그의 유무 자체가 캐시 히트/미스
-                        # 판별에도 쓰인다.
-                        _tts_t0 = time.monotonic()
-                        waveform, sample_rate = gpu_worker_pool.submit_tts(message, session_id=sid).result()
-                        print(f"[PERF] TTS {time.monotonic() - _tts_t0:.2f}s (cache miss)", flush=True)
-                        audio_path.parent.mkdir(parents=True, exist_ok=True)
-                        sf.write(audio_path, waveform, sample_rate)
+                    # 2026-09-02 — _get_synthesis_lock() 문서 참고. 실측 확인된 원인:
+                    # 이 실시간 합성과 prefetch_remaining_steps_audio()의 백그라운드
+                    # 합성이(또는 같은 표준 레시피를 비슷한 시점에 연 다른 사용자의
+                    # 실시간 합성이) 같은 audio_path에 락 없이 동시에 쓰면서, sf.write()가
+                    # 원자적이지 않아 재생 시점에 아직 다 안 쓰인/잘린 파일을 읽는
+                    # 경우가 있었다("끝음절이 자꾸 잘린다" 리포트) — 락으로 직렬화하고,
+                    # 락을 기다리는 동안 다른 쪽이 이미 만들었으면 조용히 건너뛴다.
+                    with _get_synthesis_lock(audio_path):
+                        if not audio_path.exists():
+                            # [PERF] 태그 설명은 _run_stt() 문서 참고. 캐시 히트면 이 분기
+                            # 자체를 안 타서(위 audio_path.exists() 검사) 로그가 안 찍히는데,
+                            # 그게 정상이다 — "찍혀야 하는데 안 찍힌다"면 캐시가 실제로 안
+                            # 먹고 있다는 신호이므로 이 로그의 유무 자체가 캐시 히트/미스
+                            # 판별에도 쓰인다.
+                            _tts_t0 = time.monotonic()
+                            waveform, sample_rate = gpu_worker_pool.submit_tts(message, session_id=sid).result()
+                            print(f"[PERF] TTS {time.monotonic() - _tts_t0:.2f}s (cache miss)", flush=True)
+                            audio_path.parent.mkdir(parents=True, exist_ok=True)
+                            _write_wav_atomic(audio_path, waveform, sample_rate)
                 except Exception as exc:  # noqa: BLE001 — 아래에서 다시 던져서 기존 except가 처리
                     job["error"] = exc
                 finally:
@@ -620,14 +697,17 @@ def _synthesize_and_cache(text: str, audio_path: Path, session_id: str | None = 
     워커 프로세스 안의 [TTS_DEBUG] 로그에 찍히게 그대로 전달만 한다."""
     if audio_path.exists():
         return
-    try:
-        if audio_path.exists():
-            return
-        waveform, sample_rate = gpu_worker_pool.submit_tts(text, session_id=session_id).result()
-        audio_path.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(audio_path, waveform, sample_rate)
-    except Exception:  # noqa: BLE001 — 프리페치 실패는 speak()가 다시 시도하므로 조용히 넘어감
-        pass
+    # 2026-09-02 — _get_synthesis_lock() 문서 참고. speak()의 실시간 합성과 이 경로가
+    # 같은 audio_path를 동시에 쓰는 걸 막는다.
+    with _get_synthesis_lock(audio_path):
+        try:
+            if audio_path.exists():  # 락을 기다리는 동안 다른 쪽이 이미 만들었을 수 있음
+                return
+            waveform, sample_rate = gpu_worker_pool.submit_tts(text, session_id=session_id).result()
+            audio_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_wav_atomic(audio_path, waveform, sample_rate)
+        except Exception:  # noqa: BLE001 — 프리페치 실패는 speak()가 다시 시도하므로 조용히 넘어감
+            pass
 
 
 def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
