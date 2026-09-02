@@ -544,8 +544,15 @@ def speak(
             # (gpu_worker_pool.py 문서 참고 — prefetch_remaining_steps_audio()와의
             # 직렬화는 이제 프로세스 풀 자체의 워커 수만큼만 자연히 제한됨).
             job: dict = {"done": False, "error": None}
+            # 2026-09-02 — 세션 짧은 식별자(ui.session.init_state() 문서 참고)를 배경
+            # 스레드 시작 전에 메인 스레드에서 미리 읽어 클로저 기본값으로 넘긴다 —
+            # st.session_state를 배경 스레드에서 직접 읽는 건 이 파일 다른 곳(job/
+            # steps_cache 등)과 같은 이유로 위험한 패턴이라서다. gpu_worker_pool은
+            # 별도 프로세스라 session_state 자체에 접근 못 하므로, 이 값을 인자로
+            # 명시적으로 넘겨야 그 프로세스 안의 [TTS_DEBUG] 로그에도 찍힌다.
+            _sid = st.session_state.get("_sid")
 
-            def _run_synthesis(job=job) -> None:
+            def _run_synthesis(job=job, sid=_sid) -> None:
                 import time
 
                 try:
@@ -556,7 +563,7 @@ def speak(
                         # 먹고 있다는 신호이므로 이 로그의 유무 자체가 캐시 히트/미스
                         # 판별에도 쓰인다.
                         _tts_t0 = time.monotonic()
-                        waveform, sample_rate = gpu_worker_pool.submit_tts(message).result()
+                        waveform, sample_rate = gpu_worker_pool.submit_tts(message, session_id=sid).result()
                         print(f"[PERF] TTS {time.monotonic() - _tts_t0:.2f}s (cache miss)", flush=True)
                         audio_path.parent.mkdir(parents=True, exist_ok=True)
                         sf.write(audio_path, waveform, sample_rate)
@@ -600,18 +607,23 @@ def speak(
         st.warning(f"음성 재생에 실패했어요(텍스트는 위에 표시돼요): {exc}")
 
 
-def _synthesize_and_cache(text: str, audio_path: Path) -> None:
+def _synthesize_and_cache(text: str, audio_path: Path, session_id: str | None = None) -> None:
     """백그라운드 스레드에서 실행되는 합성 함수 — speak()와 캐싱 규칙은 같지만 st.* API를
     전혀 안 쓴다(Streamlit 위젯 호출은 ScriptRunContext가 있는 메인 스레드에서만 안전해서,
     백그라운드 스레드에서 st.spinner/st.warning 등을 쓰면 경고가 뜨거나 깨질 수 있음).
     실패해도 조용히 넘어간다 — 프리페치일 뿐이라 실패하면 나중에 speak()가 그 자리에서
-    다시 시도한다(EC-05는 speak() 쪽에서 이미 담당)."""
+    다시 시도한다(EC-05는 speak() 쪽에서 이미 담당).
+
+    session_id(2026-09-02) — 호출부(prefetch_remaining_steps_audio())가 메인 스레드에서
+    미리 읽어 넘긴 세션 짧은 식별자. 이 스레드 자신은 st.session_state에 접근 못 하므로
+    (ScriptRunContext 필요, 위 문서와 같은 이유) 직접 읽을 수 없다 — gpu_worker_pool
+    워커 프로세스 안의 [TTS_DEBUG] 로그에 찍히게 그대로 전달만 한다."""
     if audio_path.exists():
         return
     try:
         if audio_path.exists():
             return
-        waveform, sample_rate = gpu_worker_pool.submit_tts(text).result()
+        waveform, sample_rate = gpu_worker_pool.submit_tts(text, session_id=session_id).result()
         audio_path.parent.mkdir(parents=True, exist_ok=True)
         sf.write(audio_path, waveform, sample_rate)
     except Exception:  # noqa: BLE001 — 프리페치 실패는 speak()가 다시 시도하므로 조용히 넘어감
@@ -660,8 +672,10 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
         return
 
     active_recipe_box = st.session_state.setdefault("_active_recipe_box", {"recipe_id": recipe_id})
+    # 2026-09-02 — _synthesize_and_cache() 문서 참고. 스레드 시작 전 메인 스레드에서 미리 읽는다.
+    _sid = st.session_state.get("_sid")
 
-    def _run() -> None:
+    def _run(sid=_sid) -> None:
         import time
 
         for step in remaining:
@@ -675,7 +689,7 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
             # 보고 재합성을 건너뛰므로 여기서 원본 태그를 안 풀면 dispatch.py의
             # resolve_for_tts() 적용이 무의미해진다 — 나중에 어떤 경로로 speak()가
             # 불려도 항상 이 캐시가 먼저 이긴다. 반드시 여기서 미리 풀어서 캐싱한다.
-            _synthesize_and_cache(resolve_for_tts(step["text"]), audio_path)
+            _synthesize_and_cache(resolve_for_tts(step["text"]), audio_path, session_id=sid)
             # 2026-08-28 — 한 단계 합성이 끝나면 다음 단계로 바로 안 넘어가고 잠깐 쉰다.
             # 2026-09-01 — 이제 GPU 호출은 gpu_worker_pool의 프로세스 풀로 가지만, 워커
             # 개수는 유한하다(GPU_WORKER_COUNT). 이 프리페치가 쉬지 않고 계속 다음
@@ -1107,8 +1121,13 @@ def _run_mic_loop(*, drain_only: bool = False) -> str | None:
                 continue
 
             job: dict = {"done": False, "text": ""}
+            # 2026-09-02 — 세션 짧은 식별자를 스레드 시작 전(여기는 아직 메인 스레드,
+            # _run_mic_loop() 자체가 main() 호출 흐름 안에서 블로킹 도는 함수라서
+            # st.session_state 접근이 안전함) 미리 읽어 넘긴다 — _synthesize_and_cache()
+            # 문서와 같은 이유.
+            _sid = st.session_state.get("_sid")
 
-            def _run_stt(audio=utterance_audio, job=job) -> None:
+            def _run_stt(audio=utterance_audio, job=job, sid=_sid) -> None:
                 # 백그라운드 스레드 — voice_io._synthesize_and_cache()와 같은 이유로
                 # st.* API를 전혀 안 쓴다.
                 import time
@@ -1143,7 +1162,9 @@ def _run_mic_loop(*, drain_only: bool = False) -> str | None:
                     # 로그 스팸 우려가 적고, 지금 당장 진단이 필요한 값이라서다.
                     _stt_t0 = time.monotonic()
                     job["text"] = (
-                        gpu_worker_pool.submit_stt(audio, sample_rate=16000, vad_filter=True)
+                        gpu_worker_pool.submit_stt(
+                            audio, sample_rate=16000, vad_filter=True, session_id=sid
+                        )
                         .result()
                         .strip()
                     )

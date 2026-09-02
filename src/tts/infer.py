@@ -327,6 +327,7 @@ def tts_synthesize(
     instruct: str = "",
     max_new_tokens: int | None = None,
     seed: int = DEFAULT_SEED,
+    session_id: str | None = None,
 ) -> tuple[np.ndarray, int]:
     """조리 안내 문장 하나 -> (waveform, sample_rate).
 
@@ -338,6 +339,9 @@ def tts_synthesize(
     호출부(app.py/pipeline.py)가 반환값을 st.audio(waveform, sample_rate=sample_rate)에
     그대로 넘기면 재생된다. 파일로 저장해야 하면 soundfile.write(path, waveform, sample_rate)를
     호출부에서 직접 쓰면 된다(이 함수는 파일 I/O를 하지 않음).
+
+    session_id(2026-09-02 추가) — stt_transcribe()의 같은 이름 파라미터와 같은 이유
+    (그쪽 문서 참고) — 순수 로그 태그, 합성 로직과는 무관.
     """
 
     global _voice_clone_prompt
@@ -420,7 +424,7 @@ def tts_synthesize(
     # 문장이 나오면 추측 없이 바로 확정할 수 있다. 원인 확인되면 지울 것.
     duration_s = len(wavs[0]) / sample_rate
     print(
-        f"[TTS_DEBUG] text_len={len(text)} max_new_tokens={max_new_tokens} "
+        f"[TTS_DEBUG] sid={session_id} text_len={len(text)} max_new_tokens={max_new_tokens} "
         f"duration_s={duration_s:.2f} implied_tokens_per_s={max_new_tokens / duration_s:.1f} "
         f"text={text[-15:]!r}(끝부분)",
         flush=True,

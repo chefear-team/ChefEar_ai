@@ -100,11 +100,25 @@ def is_home_word(text: str) -> bool:
 
 def reset_to_start() -> None:
     """"처음 화면으로" 버튼들(cooking.py/register.py)과 동일한 초기화 — 진행 중이던
-    레시피/등록/대화 기록을 전부 비우고 start로 보낸다."""
+    레시피/등록/대화 기록을 전부 비우고 start로 보낸다.
+
+    2026-09-02 실측 리포트 — "재료 등록에서 처음으로 가면 마이크가 잠긴다" 원인
+    발견: voice_io._mic_muted()가 st.session_state["_tts_mute_until"](AI 음성 재생
+    중 자기 목소리를 다시 인식하지 않으려고 speak()/_arm_tts_mute()가 세워두는
+    "이 시각까지 프레임 버려라" 타임스탬프, voice_io.py 문서 참고)를 넘겨서 True면
+    _run_mic_loop()가 프레임을 VAD에 안 먹이고 그냥 버린다(마이크 표시는 "듣고
+    있어요"로 정상으로 보임 — 프레임 자체는 계속 받고 있어서다). 이 함수가 그동안
+    pipeline_session/chat_log/recipe_view/pending_dish_name만 비우고 이 타임스탬프는
+    안 지워서, 등록 화면 등 이전 화면에서 걸려있던 mute 시각이 start로 그대로
+    넘어가 그 시각이 지날 때까지 마이크가 "듣고 있어요"로 보이면서도 실제로는
+    응답하지 않는 상태가 됐다. "처음으로" 버튼은 사용자가 명시적으로 새로 시작하겠다는
+    선택이니, 남아있던 mute도 같이 지운다.
+    """
     st.session_state.pipeline_session = dict(_DEFAULT_PIPELINE_SESSION)
     st.session_state.chat_log = []
     st.session_state.recipe_view = None
     st.session_state.pending_dish_name = None
+    st.session_state["_tts_mute_until"] = 0.0
     goto("start")
 
 
@@ -148,7 +162,13 @@ def process_utterance(text: str) -> None:
     # 전체 분기에 빠짐없이 추가). 이 줄이 매 발화 처리의 진입점이라 [PERF]/
     # [STT_CONF_DEBUG]/[GOTO]와 시간순으로 나란히 놓고 보면 "어떤 발화가 어떤
     # 분기를 타서 어디로 갔는지"를 끝까지 추적할 수 있다.
-    print(f"[DISPATCH] process_utterance 진입: text={text!r} screen={st.session_state.get('screen')!r}", flush=True)
+    # 2026-09-02 — sid(ui.session.init_state() 문서 참고)를 같이 찍어서, 접속자 여럿이
+    # 섞인 로그 스트림에서도 이 발화가 누구 것인지 grep으로 구분할 수 있게 한다.
+    print(
+        f"[DISPATCH] process_utterance 진입: sid={st.session_state.get('_sid')} "
+        f"text={text!r} screen={st.session_state.get('screen')!r}",
+        flush=True,
+    )
     if is_home_word(text):
         print(f"[DISPATCH] 분기=is_home_word -> reset_to_start()", flush=True)
         reset_to_start()
