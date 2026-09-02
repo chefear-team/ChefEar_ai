@@ -330,7 +330,14 @@ def _write_wav_atomic(audio_path: Path, waveform, sample_rate: int) -> None:
     """
     tmp_path = audio_path.with_name(f".{audio_path.name}.tmp{os.getpid()}-{threading.get_ident()}")
     try:
-        sf.write(tmp_path, waveform, sample_rate)
+        # 2026-09-04 — 실사용 리포트: "No format specified and unable to get format
+        # from file extension: '.../<해시>.wav.tmp<pid>-<쓰레드id>'". sf.write()는
+        # format=을 안 넘기면 경로의 "확장자"로 포맷을 추측하는데, 이 tmp_path는
+        # 끝이 ".wav"가 아니라 ".tmp<pid>-<쓰레드id>"라 확장자 추측이 실패한다 —
+        # 최종 경로(audio_path)는 항상 .wav로 끝나서 이 문제가 없었는데, 임시
+        # 파일명에 접미사를 붙이면서 새로 생긴 회귀. format="WAV"를 명시해서
+        # 파일명이 뭐든(확장자와 무관하게) 항상 WAV로 쓰게 고정한다.
+        sf.write(tmp_path, waveform, sample_rate, format="WAV")
         os.replace(tmp_path, audio_path)  # 같은 디렉터리 안이므로 원자적 교체
     except BaseException:
         tmp_path.unlink(missing_ok=True)  # 실패 시 임시 파일 흔적을 안 남긴다
