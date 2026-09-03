@@ -23,11 +23,37 @@ PRONUNCIATION_FIXES: dict[str, str] = {
 
 _PATTERN = re.compile("|".join(re.escape(k) for k in PRONUNCIATION_FIXES))
 
+# 2026-09-03 — "문장 끝 음절(주로 '~요')이 작게/흐리게 발음돼 안 들린다"는 반복 리포트
+# 대응. 재생 쪽은 이미 브라우저 <audio> 이벤트(play/pause/ended)를 직접 찍어서 끝까지
+# 완주함을 확인했고(화면 잔상 청소 레이스도 배제, ui/theme.py의 tail_ms 패딩 관련
+# 문서 참고), 원본 wav 파일 진폭도 문장 끝 50~100ms 구간이 다른 음절보다 확연히 작았다
+# (재생 버그가 아니라 생성 쪽 발음 문제로 확인) — 즉 "재생이 잘려서"가 아니라 "모델이
+# 원래 작게/짧게 발음해서" 안 들리는 것. DB의 조리 단계 텍스트는 대부분 마침표 없이
+# 끝난다(예: "...써는 방법이에요") — 종결 부호가 없으면 모델이 "문장이 아직 안
+# 끝났다"고 보고 마지막 음절을 확정 짓지 않는 것으로 추정된다(1.5 원칙 — 확정 인과
+# 관계는 미검증, 청취 보고 기반의 시도). 이미 마침표/물음표/느낌표로 끝나는 문장은
+# 그대로 두고, 없는 경우에만 마침표를 붙여 문장 종결을 명시적으로 준다. 재발하면(또는
+# 효과 없으면) 이 로직부터 되돌아볼 것.
+#
+# 같은 날 추가 — 마침표 뒤에 공백 1개를 무조건 더 붙인다(팀 요청). "이 토크나이저가
+# 끝에 붙는 공백을 어떻게 처리하는지"는 이 저장소에서 검증 못 했다(위 파일 docstring과
+# 같은 이유 — 실제 생성 경로의 내부 토크나이저를 확인할 GPU 환경이 로컬에 없음). 마침표
+# 만으로 부족하면 공백이 "문장이 진짜 끝났다"는 신호를 하나 더 얹어줄 수 있다는 추정에
+# 따른 추가 시도 — 이것도 효과 검증 전이니, 재발하면 이 줄부터 되돌아볼 것.
+_SENTENCE_END_CHARS = (".", "!", "?", "…")
+
 
 def apply_pronunciation_fixes(text: str) -> str:
     """TTS에 넘기기 직전에만 적용 — 화면 표시·로그·DB에 쓰이는 원문은 건드리지 않는다."""
 
-    if not PRONUNCIATION_FIXES:
+    if PRONUNCIATION_FIXES:
+        text = _PATTERN.sub(lambda m: PRONUNCIATION_FIXES[m.group(0)], text)
+
+    stripped = text.rstrip()
+    if not stripped:
         return text
 
-    return _PATTERN.sub(lambda m: PRONUNCIATION_FIXES[m.group(0)], text)
+    if not stripped.endswith(_SENTENCE_END_CHARS):
+        stripped += "."
+
+    return stripped + " "
