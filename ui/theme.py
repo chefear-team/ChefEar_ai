@@ -1212,7 +1212,7 @@ def _compute_wave_bars(audio_path: str | Path, num_bars: int = 60, min_h: int = 
     return [round(min_h + (v / peak) * (max_h - min_h)) for v in rms_values]
 
 
-def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450, tail_ms: int = 500) -> bytes:
+def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450, tail_ms: int = 1500) -> bytes:
     """TTS 재생 시작/끝 부분이 브라우저에서 살짝 씹혀 들리는 문제 완화용.
 
     **시작(pad_ms, 2026-08-23)** — "된장찌개"가 "장찌개"로 들림, 크롬에서 특히
@@ -1235,6 +1235,18 @@ def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450, tail
     발동 로그가 안 남아 배제됨). 근본 원인을 계속 찾는 것과 별개로, 위 pad_ms와
     완전히 같은 원리의 안전망을 끝에도 건다 — 재생 데이터 끝에 무음을 붙여두면
     재생 쪽에서 뭔가 꼬리를 깎아먹어도 실제 말소리 대신 이 무음이 깎이므로 안전하다.
+
+    2026-09-03 재조정(500ms -> 1500ms) — 500ms를 붙이고도 재발해서, 원본 캐시
+    파일을 직접 열어 끝부분 진폭을 실측했다(RunPod 웹 터미널, soundfile로 마지막
+    500ms를 50ms 단위 RMS/피크로 확인). 결과: 파일이 끝나기 100ms 전까지도 또렷한
+    말소리(peak 0.1~0.35)가 있고 마지막 50ms만 무음 — 즉 **원본 파일 자체는 안
+    잘렸다**(생성 쪽 문제가 아님이 이번엔 파일 레벨로 재확인됨). 그런데도 500ms
+    패딩으로 안 막혔다는 건, 재생 쪽이 잘라먹는 길이가 500ms보다 크거나 다른
+    변수(예: 문장 길이/재생 시간에 비례)에 달려있다는 뜻 — 아직 정확한 길이를
+    모르니, 실제 말소리 끝(-100ms 지점)까지 잘라먹어도 넉넉히 남도록 1500ms로
+    올린다. 그래도 또 재발하면 다음엔 이 값을 더 올리는 대신 브라우저 콘솔의
+    AUDIO_SWEEP 로그(render_screen_cleanup() 쪽, 위 문단 참고)를 실제 재현
+    시점에 직접 확인해서 "재생 쪽이 정확히 몇 ms를 언제 잘라먹는지"부터 잴 것.
 
     원본 캐시 파일(디스크)은 그대로 둔다 — _arm_tts_mute()가 그 파일의 실제 길이로
     마이크 무음 구간을 계산하므로 원본을 건드리면 안 된다(이 패딩만큼 늘어난
