@@ -363,7 +363,11 @@ def _arm_tts_mute(audio_path: Path) -> None:
         duration = sf.info(audio_path).duration
     except Exception:
         duration = 3.0  # 길이를 못 읽으면 최소한의 안전 여유만 둔다
-    mute_until = time.monotonic() + duration + 0.6  # 0.6초: 재생 시작 지연 등 여유
+    # 1.1초 = 재생 시작 지연 등 기존 여유(0.6초) + ui/theme.py::_wav_bytes_with_lead_silence()의
+    # 끝 무음 패딩(tail_ms=500ms, 2026-09-03 추가 — "끝음절 잘림" 안전망, 그쪽 문서 참고).
+    # 이 함수가 재는 duration은 디스크 원본 파일 기준(패딩 전)이라, 실제 재생은 시작+끝
+    # 패딩만큼 더 길어진다 — 마이크가 그 패딩이 아직 재생 중인데 먼저 풀리지 않게 맞춘다.
+    mute_until = time.monotonic() + duration + 1.1
     st.session_state["_tts_mute_until"] = max(st.session_state.get("_tts_mute_until", 0.0), mute_until)
 
 
