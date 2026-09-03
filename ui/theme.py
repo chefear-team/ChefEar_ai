@@ -1212,33 +1212,45 @@ def _compute_wave_bars(audio_path: str | Path, num_bars: int = 60, min_h: int = 
     return [round(min_h + (v / peak) * (max_h - min_h)) for v in rms_values]
 
 
-def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450) -> bytes:
-    """TTS 재생 시작 부분이 브라우저(특히 크롬)에서 살짝 씹혀 들리는 문제 완화용
-    (2026-08-23 리포트 — "된장찌개"가 "장찌개"로 들림, 크롬에서 특히 뚜렷함).
+def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450, tail_ms: int = 500) -> bytes:
+    """TTS 재생 시작/끝 부분이 브라우저에서 살짝 씹혀 들리는 문제 완화용.
 
-    2026-08-24 — 250ms로도 여전히 앞부분이 들린다는 재확인 리포트로 450ms로 올림.
-    _arm_tts_mute()의 0.6초 여유 안에는 여전히 들어오므로(0.45 < 0.6) 그쪽 계산은
-    안 건드려도 된다. 그래도 여전히 잘려 들리면 다음 단계는 이 값을 더 올리기보다,
-    브라우저 쪽 실제 페이드인 길이를 직접 재서(예: 개발자도구로 파형 캡처) 정확한
-    원인부터 좁히는 게 낫다 — 무작정 올리면 문장 시작이 그만큼 늦게 들리기 시작해서
-    "밀린다"는 인상을 오히려 키울 수 있다.
+    **시작(pad_ms, 2026-08-23)** — "된장찌개"가 "장찌개"로 들림, 크롬에서 특히
+    뚜렷함. 2026-08-24 — 250ms로도 여전히 앞부분이 들린다는 재확인 리포트로 450ms로
+    올림. 정확한 브라우저 내부 메커니즘은 확정 못 했다(크롬이 autoplay로 막 시작한
+    오디오에 pop 방지용으로 아주 짧은 페이드인을 거는 것으로 추정 — 그렇다면 그
+    페이드인이 실제 말소리의 첫 파열음(ㄷ 등)을 깎아먹는 것과 증상이 정확히 일치함,
+    Chrome 한정이라는 리포트와도 들어맞음). 원인을 정확히 몰라도, **재생용 데이터
+    맨 앞에 짧은 무음을 붙여두면** 그 페이드인/시작 손실이 무음을 깎아먹지 실제
+    말소리를 깎아먹지 않으므로 안전하게 완화된다.
 
-    정확한 브라우저 내부 메커니즘은 확정 못 했다(크롬이 autoplay로 막 시작한 오디오에
-    pop 방지용으로 아주 짧은 페이드인을 거는 것으로 추정 — 그렇다면 그 페이드인이
-    실제 말소리의 첫 파열음(ㄷ 등)을 깎아먹는 것과 증상이 정확히 일치함, Chrome
-    한정이라는 리포트와도 들어맞음). 원인을 정확히 몰라도, **재생용 데이터 맨 앞에
-    짧은 무음을 붙여두면** 그 페이드인/시작 손실이 무음을 깎아먹지 실제 말소리를
-    깎아먹지 않으므로 안전하게 완화된다.
+    **끝(tail_ms, 2026-09-03 추가)** — "끝음절 1~2글자가 잘려 들린다"는 리포트가
+    max_new_tokens(생성 예산)를 170->...->400/배수 10->20까지 여러 번 조정해도,
+    9/2 파일 쓰기 레이스(원자적 교체) 수정 이후에도 계속 재발했다. 실측 로그
+    (TTS_DEBUG)로 재발 시점의 implied_tokens_per_s가 이론 상한(25/s, 예산을 다 써서
+    잘렸을 때의 신호)보다 한참 낮다는 게 확인됐다 — 즉 생성 자체는 이미 자연스럽게
+    끝났고(예산 부족이 원인이 아님), 잘리는 지점은 "생성"이 아니라 "재생" 어딘가
+    (정확한 메커니즘은 아직 미확정, 화면 전환 시 오디오를 정지시키는
+    render_screen_cleanup()의 stale-audio 레이스도 같은 세션에서 확인해봤지만
+    발동 로그가 안 남아 배제됨). 근본 원인을 계속 찾는 것과 별개로, 위 pad_ms와
+    완전히 같은 원리의 안전망을 끝에도 건다 — 재생 데이터 끝에 무음을 붙여두면
+    재생 쪽에서 뭔가 꼬리를 깎아먹어도 실제 말소리 대신 이 무음이 깎이므로 안전하다.
 
     원본 캐시 파일(디스크)은 그대로 둔다 — _arm_tts_mute()가 그 파일의 실제 길이로
-    마이크 무음 구간을 계산하므로 원본을 건드리면 안 된다(이 패딩만큼 재생 시간이
-    늘어나는 건 그 함수의 0.6초 여유 안에서 대체로 흡수됨). 화면에 실제로 내보내는
-    재생용 바이트만 이 함수를 거쳐서 만든다.
+    마이크 무음 구간을 계산하므로 원본을 건드리면 안 된다(이 패딩만큼 늘어난
+    재생 시간은 voice_io.py::_arm_tts_mute()의 여유값을 tail_ms만큼 같이 늘려서
+    맞췄다 — 그쪽 주석 참고). 화면에 실제로 내보내는 재생용 바이트만 이 함수를
+    거쳐서 만든다.
     """
     audio, sr = sf.read(str(audio_path), dtype="float32")
-    pad_samples = int(sr * pad_ms / 1000)
-    silence_shape = (pad_samples,) if audio.ndim == 1 else (pad_samples, audio.shape[1])
-    padded = np.concatenate([np.zeros(silence_shape, dtype=np.float32), audio], axis=0)
+    lead_samples = int(sr * pad_ms / 1000)
+    tail_samples = int(sr * tail_ms / 1000)
+    lead_shape = (lead_samples,) if audio.ndim == 1 else (lead_samples, audio.shape[1])
+    tail_shape = (tail_samples,) if audio.ndim == 1 else (tail_samples, audio.shape[1])
+    padded = np.concatenate(
+        [np.zeros(lead_shape, dtype=np.float32), audio, np.zeros(tail_shape, dtype=np.float32)],
+        axis=0,
+    )
     buf = io.BytesIO()
     sf.write(buf, padded, sr, format="WAV")
     return buf.getvalue()
