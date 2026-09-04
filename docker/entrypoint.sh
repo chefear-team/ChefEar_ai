@@ -64,5 +64,31 @@ else
         "StreamlitAuthError가 납니다(로컬 아이디/비밀번호 로그인은 정상 동작)." >&2
 fi
 
+# ---- 셀프 워밍업 트리거 (2026-09-04) ----
+# STT/TTS/LLM 워밍업(src/app.py::_start_model_warmup())은 Streamlit이 세션을
+# 시작해야만(=브라우저가 실제로 접속해야만) 도는 코드다 — Pod만 Start하고 아무도
+# 접속 안 하면 컨테이너가 아무리 오래 떠있어도 모델을 안 받는다는 걸 실측 확인함
+# (부팅 후 20초+ 지나도 [gpu_worker_pool] 로그 0건). "누군가 접속해야 시작"이라는
+# 전제 자체는 어쩔 수 없지만(Streamlit 구조), 그 "누군가"를 사람 대신 컨테이너
+# 자신으로 만들어본다 — Streamlit 준비되는 대로 접근 게이트 토큰을 붙여 자기
+# 자신에게 한 번 접속한다(_access_gate_ok()가 이 토큰을 요구함, app.py 참고).
+#
+# 미검증 부분(1.5 원칙) — curl은 순수 HTTP GET이고, Streamlit의 실제 스크립트
+# 실행은 이후 브라우저 JS가 여는 WebSocket 세션에서 일어나는 것으로 알려져 있어
+# (내부 프로토콜, 공식 문서화된 부분 아님), 이 curl 한 번만으로 main()이 실제로
+# 끝까지 실행돼 워밍업까지 도달하는지는 배포 후 로그로 확인해야 안다. 안 되면
+# (gpu_worker_pool 로그가 여전히 안 뜨면) 이 블록은 효과 없는 것으로 보고 지우거나,
+# 진짜 브라우저 세션을 흉내내는 다른 방법으로 바꿀 것.
+(
+    for _i in $(seq 1 60); do
+        if curl -sf "http://localhost:8501/_stcore/health" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    curl -s "http://localhost:8501/?key=${ACCESS_GATE_TOKEN:-}" -o /dev/null 2>&1 || true
+    echo "[entrypoint] 셀프 워밍업 요청 보냄 (실제로 모델 로딩까지 트리거됐는지는 로그로 확인 필요)" >&2
+) &
+
 # ---- Streamlit (포그라운드 - 이 프로세스가 컨테이너의 생명주기가 된다) ----
 exec python -m streamlit run src/app.py
