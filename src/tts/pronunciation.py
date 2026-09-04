@@ -51,6 +51,18 @@ _EMPHASIS_SUFFIX = ".!"  # 종결 신호를 더 강하게 — 항상 덧붙인�
 # 물음표로 끝나는 문장이어도 마찬가지 — 화면/로그/DB에는 안 보이는 TTS 전용 사본이라
 # 부자연스러워 보여도 상관없음, 실제 발음에 도움되는지가 유일한 기준).
 
+# 2026-09-04 — 이 증상이 Qwen3-TTS 자체의 알려진 미해결 이슈라는 걸 확인했다
+# (github.com/QwenLM/Qwen3-TTS/discussions/161 — "Last syllable being cut in
+# isolated words"). 그 스레드의 리포터도 temperature 조정/마침표/말줄임표를 다
+# 시도했지만 안 됐다고 직접 밝혔고(우리와 같은 패턴), 유일하게 나온 커뮤니티 우회법이
+# "마침표 뒤에 진짜 안 읽히는 더미 기호를 붙이는 것"이다(원문 예시: 러시아어 문장
+# 끝에 " ^." 추가 — 그 기호 자체는 안 읽히고 그 앞 단어가 제대로 발음됐다는 후기,
+# 메인테이너 확인은 아님). 같은 방향으로 위 _EMPHASIS_SUFFIX 뒤에 스페이스+캐럿을
+# 덧붙여본다 — "^"는 조리 텍스트에 등장할 일이 없는 기호라 실수로 다른 단어와
+# 헷갈릴 걱정도 없다. 이것도 공식 확인된 해법이 아니라 커뮤니티 추측 기반 시도다
+# (1.5 원칙) — 효과 없으면 이 줄부터 되돌아볼 것.
+_DUMMY_TAIL_SUFFIX = " ^"
+
 _SENTENCE_END_CHARS = (".", "!", "?", "…")
 
 
@@ -68,5 +80,6 @@ def apply_pronunciation_fixes(text: str) -> str:
         stripped += "."
 
     stripped += _EMPHASIS_SUFFIX
+    stripped += _DUMMY_TAIL_SUFFIX
 
     return stripped + " "
