@@ -23,6 +23,31 @@ PRONUNCIATION_FIXES: dict[str, str] = {
 
 _PATTERN = re.compile("|".join(re.escape(k) for k in PRONUNCIATION_FIXES))
 
+# 2026-09-04 — "2. 스팸을 깍둑썰기 해주세요..."에서 맨 앞의 "2."가 숫자 "둘/이"로
+# 안 읽히고 "두"/"뚜"처럼 뭉개져 들린다는 리포트. 조리 단계 텍스트는 등록 시 전부
+# f"{i}. {text}" 형식으로 저장돼서(registration.py 등) "N. "이 항상 맨 앞에 붙는다
+# — 숫자+마침표 조합을 모델이 애매하게 처리하는 것으로 보인다(끝음절 문제와 마찬가지로
+# Qwen3-TTS의 숫자/약어 처리 한계로 추정, 1.5 원칙 — 확정 인과관계는 미검증). 숫자를
+# 남겨두고 어떻게든 잘 읽히길 바라는 대신, 아예 한글 단계 표현("이단계, ")으로 완전히
+# 바꿔서 넘긴다 — 숫자 자체가 사라지므로 이 모호함이 원천적으로 없어진다. 조리 단계가
+# 20개를 넘는 레시피는 실측상 없었음(500개 표준 레시피 기준) — 그보다 크면 안전하게
+# 원문 숫자를 그대로 둔다(1.5 원칙, 지어내지 않음).
+_STEP_NUMBER_WORDS: dict[int, str] = {
+    1: "일", 2: "이", 3: "삼", 4: "사", 5: "오",
+    6: "육", 7: "칠", 8: "팔", 9: "구", 10: "십",
+    11: "십일", 12: "십이", 13: "십삼", 14: "십사", 15: "십오",
+    16: "십육", 17: "십칠", 18: "십팔", 19: "십구", 20: "이십",
+}
+_STEP_PREFIX_PATTERN = re.compile(r"^\s*(\d{1,2})\.\s*")
+
+
+def _replace_step_prefix(match: re.Match[str]) -> str:
+    word = _STEP_NUMBER_WORDS.get(int(match.group(1)))
+    if word is None:
+        return match.group(0)  # 매핑 밖 숫자(21+) — 안전하게 원문 그대로 둔다
+    return f"{word}단계, "
+
+
 # 2026-09-03 — "문장 끝 음절(주로 '~요')이 작게/흐리게 발음돼 안 들린다"는 반복 리포트
 # 대응. 재생 쪽은 이미 브라우저 <audio> 이벤트(play/pause/ended)를 직접 찍어서 끝까지
 # 완주함을 확인했고(화면 잔상 청소 레이스도 배제, ui/theme.py의 tail_ms 패딩 관련
@@ -68,6 +93,8 @@ _SENTENCE_END_CHARS = (".", "!", "?", "…")
 
 def apply_pronunciation_fixes(text: str) -> str:
     """TTS에 넘기기 직전에만 적용 — 화면 표시·로그·DB에 쓰이는 원문은 건드리지 않는다."""
+
+    text = _STEP_PREFIX_PATTERN.sub(_replace_step_prefix, text, count=1)
 
     if PRONUNCIATION_FIXES:
         text = _PATTERN.sub(lambda m: PRONUNCIATION_FIXES[m.group(0)], text)
