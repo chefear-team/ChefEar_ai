@@ -723,21 +723,34 @@ def _synthesize_and_cache(text: str, audio_path: Path, session_id: str | None = 
             pass
 
 
+# 2026-09-04 — 프리페치가 원래 1개씩 순차로 돌던 걸(아래 _run() 옛 문서 참고)
+# 2개까지 동시에 돌게 늘렸다. GPU_WORKER_COUNT(3) 중 이만큼만 프리페치가 쓰고,
+# 나머지 1개는 항상 실시간 요청(마이크 STT/실시간 speak() 등)용으로 비워둔다 —
+# ProcessPoolExecutor는 이미 도는 작업을 중간에 끊고 급한 일에 자리를 내주는
+# 구조가 아니라서(선점 불가), 프리페치가 워커를 아예 안 쓰던 옛 설계보다는
+# 동시 접속자 여유분이 준다(팀 확인·합의된 트레이드오프 — 워커 3개 중 최소 1개는
+# 항상 실시간용으로 보장, 그 이상은 체감 속도를 위해 프리페치에 내준다). 여러 명이
+# 동시에 몰리는 상황이 잦아지면 이 숫자부터 다시 낮출 것.
+_PREFETCH_CONCURRENCY = 2
+
+
 def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
     """지금 보고 있는 조리 단계 화면에서, 다음 단계부터 마지막 단계까지 전부 백그라운드에서
-    순서대로 미리 합성해 캐싱해둔다(2026-08-22 요청 — "1페이지를 보고 있는 동안 2/3/4
-    페이지 오디오가 눈에 안 보이지만 계속 만들어지게"). TTS 합성 자체는 GPU에서도 문장
-    길이에 따라 3~9초 걸리는 게 실측됐고(docs/decisions.md #2), 더 줄이려던 torch.compile
-    시도는 재컴파일 스톨 위험으로 보류했다(2026-08-22) — 그래서 합성 속도 자체 대신,
-    사용자가 화면을 보고 있는 시간 동안 쉬지 않고 뒷단계들을 계속 만들어둬서, 뒤로 갈수록
-    "다음"이라고 말했을 때 기다리는 시간이 거의 사라지게 한다.
+    최대 _PREFETCH_CONCURRENCY개씩 동시에 미리 합성해 캐싱해둔다(2026-08-22 요청 —
+    "1페이지를 보고 있는 동안 2/3/4페이지 오디오가 눈에 안 보이지만 계속 만들어지게").
+    TTS 합성 자체는 GPU에서도 문장 길이에 따라 3~9초 걸리는 게 실측됐고(docs/decisions.md
+    #2), 더 줄이려던 torch.compile 시도는 재컴파일 스톨 위험으로 보류했다(2026-08-22) —
+    그래서 합성 속도 자체 대신, 사용자가 화면을 보고 있는 시간 동안 쉬지 않고 뒷단계들을
+    계속 만들어둬서, 뒤로 갈수록 "다음"이라고 말했을 때 기다리는 시간이 거의 사라지게 한다.
 
-    한 번에 여러 스레드를 띄우는 대신 스레드 하나가 남은 단계를 순서대로 도는 구조다.
-    2026-09-01 — GPU 호출 자체는 이제 gpu_worker_pool의 프로세스 풀로 가지만, 이
-    프리페치는 여전히 "지금 당장 필요 없는 낮은 우선순위 작업"이라 일부러 순차로
-    돈다 — 한꺼번에 여러 단계를 동시에 던지면 워커를 다 차지해버려서, 그 사이
-    들어오는 실시간 사용자 요청(speak()의 실시간 합성, STT 등)이 워커 풀에서
-    대기해야 하는 역효과가 생긴다.
+    2026-08-22~2026-09-01 — 원래는 스레드 하나가 남은 단계를 순차로(한 번에 1개씩,
+    사이에 0.6초 쉼) 돌았다 — 프리페치가 워커를 전부 차지해서 실시간 요청이 밀리는
+    걸 막기 위함. 2026-09-04 — 그래도 "다음 단계로 못 따라잡을 만큼 느리다"는 실사용
+    피드백으로, ThreadPoolExecutor(max_workers=_PREFETCH_CONCURRENCY)로 최대 2개까지
+    동시 진행하게 늘렸다(아래 _PREFETCH_CONCURRENCY 문서 참고 — 트레이드오프 논의 포함).
+    순차 진행 사이에 넣던 time.sleep(0.6)도 같이 뺐다 — 이제 "워커를 안 건드리는 유휴
+    구간"을 인위적으로 만드는 대신, 동시 실행 개수 자체를 워커 총량(3)보다 작게 캡핑해서
+    실시간용 여유를 구조적으로 보장한다.
 
     레시피 하나당(recipe_id 기준) 세션에서 딱 한 번만 이 백그라운드 작업을 시작한다
     (st.session_state의 "_full_prefetch_started" 집합으로 추적) — screen_cooking_step()이
@@ -768,29 +781,29 @@ def prefetch_remaining_steps_audio(view: dict, step_number: int) -> None:
     # 2026-09-02 — _synthesize_and_cache() 문서 참고. 스레드 시작 전 메인 스레드에서 미리 읽는다.
     _sid = st.session_state.get("_sid")
 
-    def _run(sid=_sid) -> None:
-        import time
+    def _synth_step(step: dict, sid: str | None) -> None:
+        if active_recipe_box.get("recipe_id") != recipe_id:
+            return  # 사용자가 이 레시피를 떠났음 — 이 단계는 만들지 않고 조용히 건너뜀
+        step_num = step.get("step_number")
+        audio_path = _AUDIO_DIR / str(recipe_id) / f"{step_num:02d}.wav"
+        # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py
+        # 참고). 이 프리페치가 speak()보다 먼저 이 경로에 캐시 파일을 써버리면(사용자가
+        # 이 화면에 들어오자마자 백그라운드로 바로 시작), speak()는 audio_path.exists()만
+        # 보고 재합성을 건너뛰므로 여기서 원본 태그를 안 풀면 dispatch.py의
+        # resolve_for_tts() 적용이 무의미해진다 — 나중에 어떤 경로로 speak()가
+        # 불려도 항상 이 캐시가 먼저 이긴다. 반드시 여기서 미리 풀어서 캐싱한다.
+        _synthesize_and_cache(resolve_for_tts(step["text"]), audio_path, session_id=sid)
 
-        for step in remaining:
-            if active_recipe_box.get("recipe_id") != recipe_id:
-                return  # 사용자가 이 레시피를 떠났음 — 남은 단계는 만들지 않고 중단
-            step_num = step.get("step_number")
-            audio_path = _AUDIO_DIR / str(recipe_id) / f"{step_num:02d}.wav"
-            # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py
-            # 참고). 이 프리페치가 speak()보다 먼저 이 경로에 캐시 파일을 써버리면(사용자가
-            # 이 화면에 들어오자마자 백그라운드로 바로 시작), speak()는 audio_path.exists()만
-            # 보고 재합성을 건너뛰므로 여기서 원본 태그를 안 풀면 dispatch.py의
-            # resolve_for_tts() 적용이 무의미해진다 — 나중에 어떤 경로로 speak()가
-            # 불려도 항상 이 캐시가 먼저 이긴다. 반드시 여기서 미리 풀어서 캐싱한다.
-            _synthesize_and_cache(resolve_for_tts(step["text"]), audio_path, session_id=sid)
-            # 2026-08-28 — 한 단계 합성이 끝나면 다음 단계로 바로 안 넘어가고 잠깐 쉰다.
-            # 2026-09-01 — 이제 GPU 호출은 gpu_worker_pool의 프로세스 풀로 가지만, 워커
-            # 개수는 유한하다(GPU_WORKER_COUNT). 이 프리페치가 쉬지 않고 계속 다음
-            # submit_tts()를 던지면 워커를 계속 붙잡아서, 그 사이 도착한 사용자 발화의
-            # STT/실시간 speak()가 빈 워커를 못 찾고 대기열에서 밀릴 수 있다("다음"이라고
-            # 했는데 전사부터 몇 초 걸리는 리뷰 지적). 이 유휴 구간 동안엔 프리페치가
-            # 워커를 안 건드리므로 대기 중인 실시간 작업이 확실히 먼저 잡는다.
-            time.sleep(0.6)
+    def _run(sid=_sid) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        # max_workers=_PREFETCH_CONCURRENCY(2)로 캡핑 — GPU_WORKER_COUNT(3)보다 작게
+        # 잡아서 실시간 요청용 워커가 항상 최소 1개는 남게 한다(위 _PREFETCH_CONCURRENCY
+        # 문서 참고). 각 _synth_step() 호출은 gpu_worker_pool.submit_tts().result()로
+        # 블로킹되므로, 이 풀의 스레드 수 자체가 "동시에 실제로 GPU에 요청 중인 프리페치
+        # 개수"의 상한이 된다.
+        with ThreadPoolExecutor(max_workers=_PREFETCH_CONCURRENCY) as pool:
+            list(pool.map(lambda step: _synth_step(step, sid), remaining))
 
     threading.Thread(target=_run, daemon=True).start()
 
