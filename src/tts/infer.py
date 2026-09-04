@@ -321,7 +321,99 @@ DEFAULT_SEED = 42
 
 
 # ============================================================
-# 끝음절 볼륨 보정 (2026-09-04)
+# 끝음절 무음 판정 + 재시도 (2026-09-04, 실측 기반)
+# ============================================================
+# 아래 게인 부스트(2026-09-04 1차 시도)를 배포하고 실제 청취했더니 여전히 "요"가
+# 안 들리는 케이스가 있었다("1. 느타리버섯을 편썰기 해주세요. 편썰기란 얇고 넓적하게
+# 써는 방법이에요." — 운영 seed=42). 원인을 추측하지 않고 실측했다: 같은 문장을
+# seed 0~7로 8번 다시 생성해서 끝부분 RMS를 직접 비교(2026-09-04, RunPod 웹터미널에서
+# 실제 GPU로 실행) — **8번 중 5번(62%)이 끝 150ms RMS가 0.0001~0.0007로 사실상 무음,
+# 나머지 3번은 0.01~0.03으로 정상**이었다. 좋은/나쁜 값 사이에 14배 이상 간극이 있어
+# 애매한 경우가 없었다. 운영 seed=42도 하필 나쁜 쪽이었다.
+#
+# 즉 "이 문장이 항상 안 된다"가 아니라 "do_sample=True인데 시드를 고정해놔서, 하필
+# 나쁜 결과가 나오는 시드에 걸리면 그 문장은 영원히 그 나쁜 결과만 나온다"는 것 —
+# 아래 게인 부스트는 "소리는 있는데 작다"만 고칠 수 있는데, 이 경우는 애초에 신호
+# 자체가 거의 없어서(무음에 가까움) 볼륨을 올려봐야 노이즈만 커지고 안 들리는 건
+# 그대로다. 그래서 볼륨을 만지기 전에, 끝이 무음으로 판정되면 **다른 시드로 다시
+# 생성**해서 정상적으로 나온 결과를 쓴다. 실측 확률(62% 나쁨) 기준 최대 3번 시도하면
+# 적어도 1번은 성공할 확률이 ~95%(1 - 0.625^3)다.
+#
+# 판정 구간을 아래 게인 부스트의 400ms보다 짧은 150ms로 잡은 것도 실측 근거가 있다 —
+# 400ms 평균은 "요" 시작 부분(소리 있음)과 끝(무음)이 섞여 희석돼서, 운영 seed=42의
+# 실제 무음 케이스도 못 잡아냈다(400ms 기준 비율 0.47으로 트리거 안 됨, 그래서 게인
+# 부스트가 발동을 안 했었다 — tail_boost_gain=None으로 로그에 남음). 150ms는 위
+# 실측에서 좋은/나쁜 케이스를 깨끗하게 갈랐다.
+#
+# 이 실측은 문장 1개(8회) 기준이다(1.5 원칙 — 다른 문장도 같은 비율이라고 단정하지
+# 않는다). 다른 문장에서 무음 비율이 크게 다르거나(예: 재시도가 잦아져 응답이
+# 느려짐) 3번을 다 써도 안 고쳐지는 사례가 나오면 아래 상수부터 재조정할 것.
+_TAIL_SILENCE_WINDOW_MS = 150  # 무음 판정 구간(끝에서부터) — 위 실측으로 정함
+_TAIL_SILENCE_TRIGGER_RATIO = 0.15  # 이 구간 RMS가 앞부분 RMS의 이 비율보다 작으면 "무음"(실측 간극 2.5%~35% 사이 중간값)
+_TAIL_SILENCE_MAX_ATTEMPTS = 3  # 최초 1회 + 재시도 최대 2회(시드만 바꿔서 재생성)
+
+
+def _tail_silence_ratio(waveform: np.ndarray, sample_rate: int) -> float | None:
+    """끝 _TAIL_SILENCE_WINDOW_MS 구간 RMS / 그 앞부분 RMS.
+
+    문장이 너무 짧아 앞/뒤로 못 나누면(또는 앞부분이 완전 무음이면) None — 판정
+    불가로 보고 호출부가 재시도 없이 그대로 쓴다.
+    """
+    n = waveform.shape[0]
+    window = int(sample_rate * _TAIL_SILENCE_WINDOW_MS / 1000)
+    if window <= 0 or window >= n:
+        return None
+    tail_rms = float(np.sqrt(np.mean(np.square(waveform[-window:]))))
+    reference_rms = float(np.sqrt(np.mean(np.square(waveform[:-window]))))
+    if reference_rms <= 0:
+        return None
+    return tail_rms / reference_rms
+
+
+def _generate_once(
+    model,
+    model_type: str | None,
+    tts_text: str,
+    language: str,
+    instruct: str,
+    max_new_tokens: int,
+):
+    """실제 모델 호출 1회 — 재시도 루프(tts_synthesize)가 시드를 바꿔가며 여러 번
+    부를 수 있어서 별도 함수로 뺐다. model_type 분기 자체는 기존 로직 그대로."""
+    global _voice_clone_prompt
+
+    if model_type == "base":
+        # custom_voice 화자 임베딩이 없는 체크포인트 — 레퍼런스 음성으로 목소리를 복제해서 생성.
+        if _voice_clone_prompt is None:
+            _voice_clone_prompt = model.create_voice_clone_prompt(
+                ref_audio=VOICE_CLONE_REF_AUDIO,
+                ref_text=VOICE_CLONE_REF_TEXT,
+            )
+        return model.generate_voice_clone(
+            text=tts_text,
+            language=language,
+            voice_clone_prompt=_voice_clone_prompt,
+            max_new_tokens=max_new_tokens,
+        )
+
+    if model_type == "custom_voice":
+        return model.generate_custom_voice(
+            text=tts_text,
+            language=language,
+            speaker=SPEAKER,
+            instruct=instruct,
+            max_new_tokens=max_new_tokens,
+        )
+
+    raise ValueError(
+        f"tts_synthesize()가 아직 지원하지 않는 tts_model_type={model_type!r} "
+        f"({MODEL_ID})"
+    )
+
+
+# ============================================================
+# 끝음절 볼륨 보정 (2026-09-04, 1차 시도 — 위 재시도로 대부분의 무음 케이스는
+# 걸러지고 남는, "소리는 있는데 작다" 정도의 케이스에만 이제 의미가 있음)
 # ============================================================
 # "문장 끝 음절(주로 '~요')이 작게/흐리게 발음돼 안 들린다"는 반복 리포트 대응 —
 # 앞서 시도한 텍스트 힌트(tts/pronunciation.py::apply_pronunciation_fixes()의 마침표+
@@ -404,18 +496,16 @@ def tts_synthesize(
 
     session_id(2026-09-02 추가) — stt_transcribe()의 같은 이름 파라미터와 같은 이유
     (그쪽 문서 참고) — 순수 로그 태그, 합성 로직과는 무관.
-    """
 
-    global _voice_clone_prompt
+    끝음절 무음 재시도(2026-09-04, 위 문서 참고) — 내부적으로 최대
+    _TAIL_SILENCE_MAX_ATTEMPTS번까지 다른 시드로 다시 생성할 수 있다. seed 인자는
+    "1번째 시도의 시드"일 뿐이고, 그게 무음으로 판정되면 이후 시도는 seed에서 파생된
+    다른 시드를 쓴다 — 같은 (text, seed) 입력이면 재시도 결과까지 포함해 항상 같은
+    결과가 나온다(결정적, 재현 가능).
+    """
 
     if max_new_tokens is None:
         max_new_tokens = _dynamic_max_new_tokens(text)
-
-    torch.manual_seed(seed)
-
-    if torch.cuda.is_available():
-
-        torch.cuda.manual_seed_all(seed)
 
     model = load_tts_model()
 
@@ -424,48 +514,35 @@ def tts_synthesize(
     # 화면 표시/로그/DB용 원문(text)은 그대로 두고, TTS에 넘길 사본에만 발음 보정을 적용.
     tts_text = apply_pronunciation_fixes(text)
 
-    if model_type == "base":
+    best_wavs = None
+    best_sample_rate = None
+    best_ratio = -1.0
+    best_seed = seed
+    attempts_used = 0
 
-        # custom_voice 화자 임베딩이 없는 체크포인트 — 레퍼런스 음성으로 목소리를 복제해서 생성.
-        if _voice_clone_prompt is None:
+    for attempt in range(_TAIL_SILENCE_MAX_ATTEMPTS):
+        attempt_seed = seed if attempt == 0 else seed + attempt * 1000
 
-            _voice_clone_prompt = model.create_voice_clone_prompt(
-                ref_audio=VOICE_CLONE_REF_AUDIO,
-                ref_text=VOICE_CLONE_REF_TEXT,
-            )
+        torch.manual_seed(attempt_seed)
 
-        wavs, sample_rate = model.generate_voice_clone(
+        if torch.cuda.is_available():
 
-            text=tts_text,
+            torch.cuda.manual_seed_all(attempt_seed)
 
-            language=language,
+        wavs, sample_rate = _generate_once(model, model_type, tts_text, language, instruct, max_new_tokens)
+        attempts_used = attempt + 1
 
-            voice_clone_prompt=_voice_clone_prompt,
+        ratio = _tail_silence_ratio(wavs[0], sample_rate)
+        # ratio가 None이면(문장이 너무 짧아 판정 불가) 무조건 이번 결과를 채택 —
+        # best_ratio를 1.0으로 취급해서 아래 break도 같이 타게 한다.
+        effective_ratio = 1.0 if ratio is None else ratio
+        if effective_ratio > best_ratio:
+            best_wavs, best_sample_rate, best_ratio, best_seed = wavs, sample_rate, effective_ratio, attempt_seed
 
-            max_new_tokens=max_new_tokens,
-        )
+        if effective_ratio >= _TAIL_SILENCE_TRIGGER_RATIO:
+            break  # 무음 아님(또는 판정 불가) — 이 결과로 확정, 재시도 안 함
 
-    elif model_type == "custom_voice":
-
-        wavs, sample_rate = model.generate_custom_voice(
-
-            text=tts_text,
-
-            language=language,
-
-            speaker=SPEAKER,
-
-            instruct=instruct,
-
-            max_new_tokens=max_new_tokens,
-        )
-
-    else:
-
-        raise ValueError(
-            f"tts_synthesize()가 아직 지원하지 않는 tts_model_type={model_type!r} "
-            f"({MODEL_ID})"
-        )
+    wavs, sample_rate = best_wavs, best_sample_rate
 
     # 2026-09-01 — 이 자리에 있던 매 호출마다의 torch.cuda.empty_cache() 제거.
     # orchestration/intent_classifier.py::classify_intent()의 같은 날짜 주석에 이유를
@@ -491,6 +568,7 @@ def tts_synthesize(
         f"[TTS_DEBUG] sid={session_id} text_len={len(text)} max_new_tokens={max_new_tokens} "
         f"duration_s={duration_s:.2f} implied_tokens_per_s={max_new_tokens / duration_s:.1f} "
         f"tail_boost_gain={tail_boost_gain} "
+        f"tail_attempts={attempts_used} tail_ratio={best_ratio:.3f} seed_used={best_seed} "
         f"text={text[-15:]!r}(끝부분)",
         flush=True,
     )
