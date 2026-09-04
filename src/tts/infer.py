@@ -320,6 +320,68 @@ def _dynamic_max_new_tokens(text: str) -> int:
 DEFAULT_SEED = 42
 
 
+# ============================================================
+# 끝음절 볼륨 보정 (2026-09-04)
+# ============================================================
+# "문장 끝 음절(주로 '~요')이 작게/흐리게 발음돼 안 들린다"는 반복 리포트 대응 —
+# 앞서 시도한 텍스트 힌트(tts/pronunciation.py::apply_pronunciation_fixes()의 마침표+
+# 공백 추가)는 실제 청취 검증 결과 "어느 정도 효과는 있지만 완전히 고쳐지진 않음"으로
+# 확인됐다(2026-09-04). 텍스트로 모델을 설득하는 방식만으로는 생성 자체의 음량/운율을
+# 다 바꾸지 못하는 것으로 보여, 이번엔 생성된 파형을 직접 검사해서 고친다 — 문장 끝
+# 구간의 RMS 음량이 그 앞부분보다 확연히 작으면 그 구간만 게인을 올린다.
+#
+# 텍스트가 아니라 실제 오디오 데이터를 바꾸는 방식이라(캐시 파일에 그대로 반영됨)
+# 텍스트 힌트보다 더 직접적이지만, 이것도 아직 실제 청취 검증 전이다(1.5 원칙 — 효과를
+# 지어내지 않는다). 부작용(끝만 부자연스럽게 커지거나 노이즈가 도드라짐)이 있거나
+# 효과가 없으면 아래 상수부터 조정하거나 이 함수 자체를 되돌아볼 것.
+_TAIL_BOOST_WINDOW_MS = 400  # 분석/부스트 대상 구간 — 끝에서부터 이만큼
+_TAIL_BOOST_RAMP_MS = 60  # 경계에서 게인이 갑자기 바뀌면 클릭음이 나서, 이 구간 동안만 서서히 올린다
+_TAIL_BOOST_TRIGGER_RATIO = 0.35  # 끝 구간 RMS가 앞부분 RMS의 이 비율보다 작아야 "너무 작다"고 판단
+_TAIL_BOOST_TARGET_RATIO = 0.7  # 부스트 목표 = 앞부분 RMS의 이 비율까지만(완전히 맞추면 과할 수 있어 여유를 둠)
+_TAIL_BOOST_MAX_GAIN = 4.0  # 무음에 가까운 구간을 노이즈까지 증폭하지 않도록 게인 상한
+_TAIL_BOOST_MIN_RMS = 1e-4  # 끝 구간이 이보다도 작으면 "진짜 무음"(발화가 아님)으로 보고 손대지 않는다
+
+
+def _boost_quiet_tail(
+    waveform: np.ndarray, sample_rate: int
+) -> tuple[np.ndarray, float | None]:
+    """문장 끝 구간이 그 앞보다 확연히 작게 생성됐으면 그 구간만 게인을 올린다.
+
+    반환값은 (보정된 파형, 적용된 게인 — 안 건드렸으면 None). 게인을 로그로 남길 수
+    있게 함께 돌려준다(호출부의 [TTS_DEBUG] 참고).
+    """
+    n = waveform.shape[0]
+    tail_samples = int(sample_rate * _TAIL_BOOST_WINDOW_MS / 1000)
+    if tail_samples <= 0 or tail_samples >= n:
+        return waveform, None  # 문장이 너무 짧아 앞/뒤로 나눌 수 없으면 건드리지 않는다
+
+    tail = waveform[-tail_samples:]
+    reference = waveform[:-tail_samples]
+
+    tail_rms = float(np.sqrt(np.mean(np.square(tail))))
+    reference_rms = float(np.sqrt(np.mean(np.square(reference))))
+
+    if tail_rms < _TAIL_BOOST_MIN_RMS or reference_rms <= 0:
+        return waveform, None  # 진짜 무음 — 노이즈 증폭 방지
+
+    if tail_rms >= reference_rms * _TAIL_BOOST_TRIGGER_RATIO:
+        return waveform, None  # 이미 충분히 크게 생성됨
+
+    gain = min(_TAIL_BOOST_MAX_GAIN, (reference_rms * _TAIL_BOOST_TARGET_RATIO) / tail_rms)
+
+    ramp_samples = min(int(sample_rate * _TAIL_BOOST_RAMP_MS / 1000), tail_samples)
+    gain_curve = np.full(tail_samples, gain, dtype=np.float32)
+    if ramp_samples > 0:
+        gain_curve[:ramp_samples] = np.linspace(1.0, gain, ramp_samples, dtype=np.float32)
+    if waveform.ndim > 1:
+        gain_curve = gain_curve[:, None]
+
+    boosted = waveform.copy()
+    boosted[-tail_samples:] = tail * gain_curve
+    np.clip(boosted, -1.0, 1.0, out=boosted)
+    return boosted, gain
+
+
 def tts_synthesize(
     text: str,
     *,
@@ -422,12 +484,15 @@ def tts_synthesize(
     # 계산되는 이론적 상한(qwen_tts의 25hz 코덱 기준 max_new_tokens/25초)에 바짝
     # 붙어있으면 진짜로 토큰 예산을 다 써서 잘린 것 — 이 로그로 다음에 잘리는
     # 문장이 나오면 추측 없이 바로 확정할 수 있다. 원인 확인되면 지울 것.
-    duration_s = len(wavs[0]) / sample_rate
+    waveform, tail_boost_gain = _boost_quiet_tail(wavs[0], sample_rate)
+
+    duration_s = len(waveform) / sample_rate
     print(
         f"[TTS_DEBUG] sid={session_id} text_len={len(text)} max_new_tokens={max_new_tokens} "
         f"duration_s={duration_s:.2f} implied_tokens_per_s={max_new_tokens / duration_s:.1f} "
+        f"tail_boost_gain={tail_boost_gain} "
         f"text={text[-15:]!r}(끝부분)",
         flush=True,
     )
 
-    return wavs[0], sample_rate
+    return waveform, sample_rate
