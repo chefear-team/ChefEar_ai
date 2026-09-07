@@ -435,13 +435,25 @@ _TRAILING_ARTIFACT_SCAN_MS = 1500  # 끝에서부터 이 구간 안에서만 패
 _TRAILING_ARTIFACT_GAP_MS = 150  # 이 이상 연속으로 무음이어야 "확실한 끝 무음 구간"으로 본다
 _TRAILING_ARTIFACT_ENVELOPE_MS = 30  # RMS 포락선 해상도(스캔 창을 이 단위로 잘게 나눠서 훑는다)
 _TRAILING_ARTIFACT_PAD_MS = 80  # 잘라낸 자리에 남겨둘 자연스러운 무음 여유
+# 2026-09-07 추가 — dispatch.py 등에서 "{요리명}, 조회수 1위 표준 레시피예요.
+# 이걸로 시작할까요?"처럼 **두 문장을 한 번에 TTS로 넘기는 호출**이 실제로 있다는
+# 걸 뒤늦게 확인했다. 이런 경우 문장과 문장 사이의 자연스러운 쉼(보통 150ms는
+# 가볍게 넘음)이 위 "무음 -> 다시 소리" 조건에 그대로 걸려서, 두 번째 문장
+# ("이걸로 시작할까요?") 전체가 버스트로 오인되어 잘려나가는 회귀가 재현됐다
+# (실사용 리포트로 발견). 무음 뒤에 오는 소리가 "진짜 다음 문장"인지 "^ 자리의
+# 튀는 소리"인지는 성격이 다르다 — 실측된 버스트는 본문 평균보다 훨씬 컸다(피크
+# 기준 4배 이상). 그래서 무음 뒤 소리 구간 전체의 RMS를 본문 기준과 비교해서,
+# 본문보다 눈에 띄게 더 큰 경우에만 "튀는 소리"로 확정한다 — 정상적으로 이어지는
+# 다음 문장은 보통 본문과 비슷하거나 더 작은 크기이므로 이 기준을 안 넘는다.
+_TRAILING_ARTIFACT_LOUDNESS_RATIO = 1.3  # 무음 뒤 소리 RMS가 본문 RMS의 이 배수를 넘어야 "튀는 소리"로 확정
 
 
 def _trim_trailing_artifact(
     waveform: np.ndarray, sample_rate: int
 ) -> tuple[np.ndarray, bool]:
-    """끝 쪽에서 "확실한 무음 -> 다시 소리"가 나오면, 그 무음이 시작되는 지점부터
-    잘라낸다(뒤에 남은 게 뭐든 버림). 그런 패턴이 없으면(정상 종료) 그대로 돌려준다.
+    """끝 쪽에서 "확실한 무음 -> 본문보다 훨씬 큰 소리"가 나오면, 그 무음이
+    시작되는 지점부터 잘라낸다. 무음 뒤에 나온 소리가 본문과 비슷하거나 더
+    작으면(= 정상적으로 이어지는 다음 문장일 가능성) 손대지 않는다.
 
     반환값은 (트리밍된 파형, 잘랐는지 여부) — 잘랐는지는 [TTS_DEBUG] 로그에 남긴다.
     """
@@ -457,6 +469,7 @@ def _trim_trailing_artifact(
         return waveform, False
 
     silence_floor = reference_rms * _TAIL_SILENCE_TRIGGER_RATIO
+    loudness_ceiling = reference_rms * _TRAILING_ARTIFACT_LOUDNESS_RATIO
     win = max(1, int(sample_rate * _TRAILING_ARTIFACT_ENVELOPE_MS / 1000))
     gap_needed = int(sample_rate * _TRAILING_ARTIFACT_GAP_MS / 1000)
 
@@ -474,14 +487,22 @@ def _trim_trailing_artifact(
             silence_run_len = idx + len(seg) - silence_run_start
         else:
             if silence_run_start is not None and silence_run_len >= gap_needed:
-                cut_at = silence_run_start  # 확실한 무음 구간 뒤에 다시 소리 -> 여기부터 버림
-                break
+                # 무음 뒤에 다시 소리가 남 — 그 소리가 본문보다 확연히 큰
+                # "튀는 소리"인지, 본문과 비슷한 "정상적으로 이어지는 다음
+                # 문장"인지 RMS로 구분한다.
+                followup = waveform[idx:]
+                followup_rms = float(np.sqrt(np.mean(np.square(followup)))) if len(followup) else 0.0
+                if followup_rms > loudness_ceiling:
+                    cut_at = silence_run_start
+                    break
+                # 본문 수준 이하 — 정상적인 다음 문장일 수 있으니 자르지 않고
+                # 계속 훑는다(이 뒤에 또 다른 무음->튀는소리 패턴이 있을 수 있음).
             silence_run_start = None
             silence_run_len = 0
         idx += win
 
     if cut_at is None:
-        return waveform, False  # 무음 뒤 재발음 패턴 없음 — 정상 종료로 보고 그대로 둔다
+        return waveform, False  # 무음 뒤 재발음 패턴 없음(또는 정상 크기의 다음 문장) — 그대로 둔다
 
     pad = min(int(sample_rate * _TRAILING_ARTIFACT_PAD_MS / 1000), n - cut_at)
     return waveform[: cut_at + pad], True
