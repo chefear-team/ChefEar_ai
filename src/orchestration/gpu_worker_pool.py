@@ -43,6 +43,7 @@ import os
 import sys
 import threading
 from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -170,6 +171,15 @@ def _worker_handle_utterance(session: dict, utterance: str, *, dish_name, steps,
 # 워커 개수. A40(48GB) 실측 후 정할 값 — 모델 세트 하나(STT+TTS+LLM+임베딩)당 VRAM
 # 사용량을 nvidia-smi로 직접 재보고 GPU_WORKER_COUNT 환경변수로 조정할 것(재빌드 없이
 # RunPod Pod 환경변수만 바꾸면 됨). 실측 전까지는 보수적으로 3으로 시작.
+#
+# 2026-09-07 실측(RunPod 웹터미널, STT/TTS/LLM/임베딩 순차 로드) — 워커 1개(4모델
+# 전부)당 유휴 상태 VRAM 사용량은 10.4GB. 3워커 기준 약 31GB로 45GB 안에 여유
+# 있게 들어가고, 실제로 워커 3개 동시 기동(warm_pool())도 재현 테스트에서 정상
+# 성공함. 그런데도 운영 중 워커가 죽는 BrokenProcessPool이 실제로 재현됐다 —
+# 이 유휴 수치만으로는 설명 안 되는 간헐적 문제로 보임(추론 중 activation
+# 메모리 스파이크나 호스트 쪽 순간 이슈 등으로 추정, 1.5 원칙 — 확정 인과관계
+# 미검증). 원인을 못 박기 전까지는 워커가 죽어도 서비스 전체가 멈추지 않도록
+# 아래 _reset_pool()/_submit_with_recovery()로 자동 복구만 우선 넣는다.
 GPU_WORKER_COUNT = int(os.environ.get("GPU_WORKER_COUNT", "3"))
 
 _pool: ProcessPoolExecutor | None = None
@@ -202,6 +212,47 @@ def get_pool() -> ProcessPoolExecutor:
         return _pool
 
 
+def _reset_pool() -> None:
+    """풀을 강제로 버린다 — 다음 get_pool() 호출이 새 풀을 만들게 한다.
+
+    2026-09-07 추가 배경: 워커 하나가 죽으면(원인 불문 — VRAM 스파이크든 드라이버
+    순간 이슈든, RunPod 운영 중 실제로 재현됨) ProcessPoolExecutor 전체가
+    "broken" 상태가 되는데, 그때까지는 이 풀을 버리고 새로 만드는 코드가 아예
+    없었다. 그래서 워커 하나만 죽어도 이후 모든 STT/TTS/LLM 요청이
+    BrokenProcessPool로 영원히 실패했고, 유일한 복구 수단이 "컨테이너 통째로
+    재시작"뿐이었다. 이미 broken인 풀의 shutdown()이 실패해도(워커가 죽은
+    상태라 정상 종료 신호를 못 받을 수 있음) 그냥 무시하고 넘어간다 — 새 풀을
+    만드는 게 우선이지 옛 풀을 깨끗하게 정리하는 게 목적이 아니다.
+    """
+    global _pool
+    with _pool_lock:
+        old_pool, _pool = _pool, None
+    if old_pool is not None:
+        try:
+            old_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # noqa: BLE001 — 이미 broken인 풀 정리 실패는 무시
+            pass
+
+
+def _submit_with_recovery(fn, /, *args, **kwargs) -> Future:
+    """get_pool().submit()이 BrokenProcessPool로 실패하면 풀을 한 번 새로 만들어서
+    재시도한다 — submit_stt/submit_tts 등 공개 함수가 전부 이걸 거친다.
+
+    재시도로 만들어진 새 풀은 워커가 모델을 처음부터 다시 로드해야 해서(수십 초~
+    1분대) 복구 직후 첫 요청은 느릴 수 있다 — 그래도 컨테이너 재시작(수 분,
+    Cloudflare 터널 재연결까지 포함) 없이 서비스가 알아서 회복된다는 게 핵심.
+    두 번째 시도까지 실패하면(풀 생성 자체가 안 되는 등 더 심각한 문제) 그대로
+    예외를 올려서 호출부(voice_io.py 등)의 기존 try/except가 처리하게 둔다 —
+    무한 재시도는 하지 않는다.
+    """
+    try:
+        return get_pool().submit(fn, *args, **kwargs)
+    except BrokenProcessPool:
+        print("[gpu_worker_pool] 풀이 broken 상태로 확인됨 — 새 풀로 재생성 후 재시도", flush=True)
+        _reset_pool()
+        return get_pool().submit(fn, *args, **kwargs)
+
+
 def warm_pool() -> None:
     """풀을 만들고, 모든 워커가 최소 한 번씩 초기화를 마칠 때까지 기다린다.
 
@@ -232,7 +283,7 @@ def _noop() -> None:
 def submit_stt(
     audio, *, sample_rate, ingredient_context=None, vad_filter=True, session_id=None
 ) -> Future:
-    return get_pool().submit(
+    return _submit_with_recovery(
         _worker_stt_transcribe,
         audio,
         sample_rate=sample_rate,
@@ -243,14 +294,14 @@ def submit_stt(
 
 
 def submit_tts(text: str, session_id: str | None = None) -> Future:
-    return get_pool().submit(_worker_tts_synthesize, text, session_id=session_id)
+    return _submit_with_recovery(_worker_tts_synthesize, text, session_id=session_id)
 
 
 def submit_llm_extract(utterance: str) -> Future:
-    return get_pool().submit(_worker_extract_intent_llm, utterance)
+    return _submit_with_recovery(_worker_extract_intent_llm, utterance)
 
 
 def submit_handle_utterance(session: dict, utterance: str, *, dish_name, steps, owner_id=None) -> Future:
-    return get_pool().submit(
+    return _submit_with_recovery(
         _worker_handle_utterance, session, utterance, dish_name=dish_name, steps=steps, owner_id=owner_id
     )
