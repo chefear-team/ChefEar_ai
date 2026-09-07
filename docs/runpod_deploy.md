@@ -107,13 +107,24 @@ credentials 파일을 그대로 재사용한다:
 
    | 변수 | 값 |
    |---|---|
-   | `CLOUDFLARED_CONFIG` | 2단계에서 옮긴 `config.yml`의 RunPod 상 경로 |
+   | `CLOUDFLARED_CONFIG` | 2단계에서 옮긴 `config.yml`의 RunPod 상 경로 (안 채우면 기본값 `/workspace/cloudflared/config.yml` 사용됨 — Network Volume을 `/workspace`에 그대로 다시 붙이면 이 값 자체를 안 넣어도 동작함) |
    | `SUPABASE_URL` / `SUPABASE_KEY` | 기존 값 |
    | `HF_TOKEN` | 기존 값 |
    | `HF_STT_CT2_REPO` | `kimseunguk/chefear-stt-ct2-int8` (기존 값) |
    | `ACCESS_GATE_TOKEN` | 기존 값 (랜딩페이지 링크와 동일해야 함) |
    | `ADMIN_ACCESS_TOKEN` / `ADMIN_VOICE_THRESHOLD` | 관리자 페이지 쓸 경우 |
    | (선택) `HF_HOME` | Network Volume 마운트 경로 아래(예: `/workspace/hf_cache`)로 지정하면 모델이 볼륨에 캐시됨 |
+   | (선택) `GPU_WORKER_COUNT` | 안 채우면 3. 2026-09-07 실측: 워커 1개(STT+TTS+LLM+임베딩 전부)가 idle 상태에서 VRAM 10.4GB 사용 — A40(45GB 가용) 기준 3워커면 약 31GB, 여유 있음 |
+   | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | 구글 로그인용(2026-09 추가, docs/specs/user_accounts_google_login.md) — 없으면 로컬 아이디/비밀번호 로그인은 되지만 구글 로그인 버튼 누르면 StreamlitAuthError 남 |
+   | `GOOGLE_OAUTH_COOKIE_SECRET` | `python -c "import secrets; print(secrets.token_urlsafe(32))"`로 생성 — 비어있으면 entrypoint.sh가 컨테이너 시작 자체를 실패시킴(`:?` 필수 처리) |
+   | (선택) `GOOGLE_OAUTH_REDIRECT_URI` | 안 채우면 기본값 `https://chefear.store/oauth2callback` |
+
+   위 표에서 `CLOUDFLARED_CONFIG`/`GOOGLE_OAUTH_*` 4개는 `.env.example`에는 없다 —
+   `.env` 파일이 아니라 `docker/entrypoint.sh`가 직접 읽는 RunPod Pod 환경변수라서
+   그렇다(구글 OAuth 쪽은 `.streamlit/secrets.toml`을 컨테이너 시작 시 이 값들로
+   대신 생성해줌). **Pod를 새로 만들기 전에 이 값들이 로컬 `.env`에도 없다는 걸
+   기억해둘 것** — RunPod Pod를 지우면 값 자체가 어디에도 안 남으므로, HF_TOKEN 등
+   `.env`에 있는 것들과 달리 Google Cloud Console에서 다시 찾아와야 할 수 있다.
 
 8. Deploy → 빌드 로그 확인 (Python 3.13 빌드 단계가 제일 오래 걸림, 수 분~수십 분)
 
@@ -141,3 +152,32 @@ credentials 파일을 그대로 재사용한다:
   때문에 첫 요청은 좀 걸림 — 면접 5분 전에 본인이 한 번 접속해서 워밍업 권장)
 - 랜딩페이지·도메인·접근게이트는 그대로라 이 이후로는 위 Start/Stop 외에 아무것도 안
   건드려도 된다
+
+## 6. Pod 자체를 지웠다가 나중에 다시 만들기 (Terminate, Stop이 아님)
+
+Stop과 달리 Terminate는 Container Disk뿐 아니라 **Pod 자체가 사라진다**(GPU 배정
+포함) — 이 문서 1~5단계를 사실상 처음부터 다시 밟아야 한다. 단, git 레포/GHCR
+이미지/Cloudflare 터널/도메인은 Pod 생명주기와 완전히 분리돼 있어서 아무것도 안
+건드려도 된다:
+
+- **git 쪽은 그대로 둔다.** `chefear-team/ChefEar_ai` 레포·`.github/workflows/
+  docker-build.yml`·`Dockerfile` 전부 Pod와 무관하게 존재하고, 이미지는 이미
+  `ghcr.io/chefear-team/chefear_ai:latest`에 빌드돼 있다 — 새 Pod 만들 때 이
+  주소만 다시 입력하면 된다(재빌드도 재커밋도 불필요, 이미 완료된 상태).
+- **Network Volume을 Pod와 같이 지우지만 않았다면** cloudflared 터널
+  credentials(`/workspace/cloudflared/`)가 그대로 남아있다 — 새 Pod 생성 시
+  **같은 Network Volume을 다시 `/workspace`에 연결**하기만 하면 `CLOUDFLARED_CONFIG`
+  값도 새로 안 넣어도 된다(entrypoint.sh 기본값이 그 경로를 그대로 봄). RunPod에서
+  Pod Terminate 화면에 "연결된 Network Volume도 삭제"류 체크박스가 따로 있는지
+  반드시 확인하고, 있으면 체크 해제할 것 — Volume까지 같이 지우면 2단계(터널 credentials
+  재이전)부터 다시 해야 한다.
+- **RunPod Pod 환경변수 값 자체는 Pod를 지우면 사라진다**(Container Disk와 달리
+  이건 애초에 저장 위치가 Pod 설정이라 백업 개념이 없음). 새로 만들기 전에:
+  - `SUPABASE_*`/`HF_*`/`ADMIN_*`/`ACCESS_GATE_TOKEN` 등은 로컬 `.env` 파일에
+    이미 있으면 그대로 복사해 넣으면 됨(파일 자체가 사라진 게 아니라면).
+  - 위 표의 `GOOGLE_OAUTH_*` 4개는 `.env`에 없을 가능성이 높다 — Google Cloud
+    Console(OAuth 클라이언트) 쪽에서 `client_id`/`client_secret`은 다시 확인
+    가능하지만 `cookie_secret`은 그때 직접 생성한 랜덤값이라 새로 만들면 된다
+    (기존 로그인 세션 쿠키만 무효화될 뿐 기능엔 영향 없음).
+- 나머지는 1~5단계 그대로: GPU(A40 등 VRAM 40GB+)·이미지 주소·Container
+  Disk 30GB+·Network Volume 재연결·위 환경변수 표 채우기·Deploy → 로그 확인.
