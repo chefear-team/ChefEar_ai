@@ -412,6 +412,80 @@ def _generate_once(
 
 
 # ============================================================
+# 끝에 튀는 소리(artifact) 트리밍 (2026-09-07)
+# ============================================================
+# tts/pronunciation.py에 붙였던 더미 기호("^", 끝음절 흐림 대응 커뮤니티 우회법)가
+# 이 모델/한국어 조합에서는 "안 읽힌다"는 보장이 없었다 — RunPod 운영 캐시 파일을
+# 직접 파형 분석한 결과, 정상 발화가 끝난 뒤(예: 약 6.66s) 0.3초 안팎의 명확한 무음
+# 구간을 지나 "^" 자리에서 **실제 대사 피크보다 4배 이상 큰 소리가 0.15~0.2초간
+# 터졌다가 뚝 끊기는** 패턴이 재현됐다(같은 레시피 다른 스텝에서도 재현, 다만
+# seed에 따라 매번 나오진 않음 — 위 무음 재시도와 같은 확률적 문제). pronunciation.py
+# 에서 "^" 부착 자체는 그만뒀지만(그쪽 2026-09-07 코멘트 참고), 원인 모를 다른
+# 트레일링 노이즈에도 대비해 파형 레벨에서 한 번 더 방어한다.
+#
+# 이 버스트는 `_tail_silence_ratio()`(끝 150ms만 봄)를 오히려 통과시킨다는 게
+# 문제다 — 버스트의 큰 피크가 그 150ms 창에 걸리면 "안 무음"으로 판정되어 재시도가
+# 아예 발동하지 않는다. 그래서 "끝만 보기"가 아니라 "끝 쪽에서 확실한 무음 구간이
+# 있었는데 그 뒤에 다시 소리가 나면, 그 무음 구간부터 잘라버린다"는 별도 규칙을
+# 추가한다 — 판정 임계값(무음 비율)은 기존 _TAIL_SILENCE_TRIGGER_RATIO를 그대로
+# 재사용해 기준을 하나로 유지한다.
+_TRAILING_ARTIFACT_SCAN_MS = 1500  # 끝에서부터 이 구간 안에서만 패턴을 찾는다(문장 중간의 쉼표 등 오탐 방지)
+_TRAILING_ARTIFACT_GAP_MS = 150  # 이 이상 연속으로 무음이어야 "확실한 끝 무음 구간"으로 본다
+_TRAILING_ARTIFACT_ENVELOPE_MS = 30  # RMS 포락선 해상도(스캔 창을 이 단위로 잘게 나눠서 훑는다)
+_TRAILING_ARTIFACT_PAD_MS = 80  # 잘라낸 자리에 남겨둘 자연스러운 무음 여유
+
+
+def _trim_trailing_artifact(
+    waveform: np.ndarray, sample_rate: int
+) -> tuple[np.ndarray, bool]:
+    """끝 쪽에서 "확실한 무음 -> 다시 소리"가 나오면, 그 무음이 시작되는 지점부터
+    잘라낸다(뒤에 남은 게 뭐든 버림). 그런 패턴이 없으면(정상 종료) 그대로 돌려준다.
+
+    반환값은 (트리밍된 파형, 잘랐는지 여부) — 잘랐는지는 [TTS_DEBUG] 로그에 남긴다.
+    """
+    n = waveform.shape[0]
+    scan_samples = int(sample_rate * _TRAILING_ARTIFACT_SCAN_MS / 1000)
+    if scan_samples <= 0 or scan_samples >= n:
+        return waveform, False  # 문장이 너무 짧아 본문/스캔 구간을 못 나누면 손대지 않는다
+
+    region_start = n - scan_samples
+    reference = waveform[:region_start]
+    reference_rms = float(np.sqrt(np.mean(np.square(reference))))
+    if reference_rms <= 0:
+        return waveform, False
+
+    silence_floor = reference_rms * _TAIL_SILENCE_TRIGGER_RATIO
+    win = max(1, int(sample_rate * _TRAILING_ARTIFACT_ENVELOPE_MS / 1000))
+    gap_needed = int(sample_rate * _TRAILING_ARTIFACT_GAP_MS / 1000)
+
+    silence_run_start: int | None = None
+    silence_run_len = 0
+    cut_at: int | None = None
+
+    idx = region_start
+    while idx < n:
+        seg = waveform[idx : idx + win]
+        seg_rms = float(np.sqrt(np.mean(np.square(seg)))) if len(seg) else 0.0
+        if seg_rms < silence_floor:
+            if silence_run_start is None:
+                silence_run_start = idx
+            silence_run_len = idx + len(seg) - silence_run_start
+        else:
+            if silence_run_start is not None and silence_run_len >= gap_needed:
+                cut_at = silence_run_start  # 확실한 무음 구간 뒤에 다시 소리 -> 여기부터 버림
+                break
+            silence_run_start = None
+            silence_run_len = 0
+        idx += win
+
+    if cut_at is None:
+        return waveform, False  # 무음 뒤 재발음 패턴 없음 — 정상 종료로 보고 그대로 둔다
+
+    pad = min(int(sample_rate * _TRAILING_ARTIFACT_PAD_MS / 1000), n - cut_at)
+    return waveform[: cut_at + pad], True
+
+
+# ============================================================
 # 끝음절 볼륨 보정 (2026-09-04, 1차 시도 — 위 재시도로 대부분의 무음 케이스는
 # 걸러지고 남는, "소리는 있는데 작다" 정도의 케이스에만 이제 의미가 있음)
 # ============================================================
@@ -561,12 +635,18 @@ def tts_synthesize(
     # 계산되는 이론적 상한(qwen_tts의 25hz 코덱 기준 max_new_tokens/25초)에 바짝
     # 붙어있으면 진짜로 토큰 예산을 다 써서 잘린 것 — 이 로그로 다음에 잘리는
     # 문장이 나오면 추측 없이 바로 확정할 수 있다. 원인 확인되면 지울 것.
-    waveform, tail_boost_gain = _boost_quiet_tail(wavs[0], sample_rate)
+    #
+    # 트리밍(2026-09-07)을 게인 부스트보다 먼저 적용한다 — 끝에 튀는 소리가 있으면
+    # 먼저 잘라내고, 그렇게 정리된 "진짜 끝"을 기준으로 게인 부스트가 판단해야
+    # 순서가 맞는다(반대로 하면 버스트가 섞인 채로 boost 판단이 왜곡될 수 있음).
+    trimmed_wav, trailing_trimmed = _trim_trailing_artifact(wavs[0], sample_rate)
+    waveform, tail_boost_gain = _boost_quiet_tail(trimmed_wav, sample_rate)
 
     duration_s = len(waveform) / sample_rate
     print(
         f"[TTS_DEBUG] sid={session_id} text_len={len(text)} max_new_tokens={max_new_tokens} "
         f"duration_s={duration_s:.2f} implied_tokens_per_s={max_new_tokens / duration_s:.1f} "
+        f"trailing_trimmed={trailing_trimmed} "
         f"tail_boost_gain={tail_boost_gain} "
         f"tail_attempts={attempts_used} tail_ratio={best_ratio:.3f} seed_used={best_seed} "
         f"text={text[-15:]!r}(끝부분)",
