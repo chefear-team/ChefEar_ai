@@ -90,6 +90,19 @@ RUN python -m pip install --upgrade pip \
         --index-url https://download.pytorch.org/whl/cu124 \
     && python -m pip install -r requirements.txt -r requirements-main.txt
 
+# ---- flash-attn (2026-09-07, TTS 추론 속도 개선 시도) ----
+# 공식(Dao-AILab) 배포엔 Python 3.13(cp313) + torch2.6 + cu124 조합 wheel이 없다
+# (소스 빌드만 가능한데 컴파일이 무거워서 빌드 시간이 크게 늘고 실패 위험도 있음).
+# 대신 커뮤니티 프로젝트 mjun0812/flash-attention-prebuild-wheels가 정확히 이
+# 조합을 미리 빌드해서 배포하고 있어 그걸 그대로 설치한다(소스 빌드 없음, 빌드
+# 시간 영향 거의 없음 — 다운로드만). tts/infer.py의 load_tts_model()이 이미
+# `import flash_attn` try/except로 있으면 자동으로 attn_implementation=
+# "flash_attention_2"를, 없으면 "sdpa"로 폴백하게 짜여 있어서 이 설치 외에 코드
+# 변경은 필요 없다. 공식 배포가 아닌 개인 빌드 wheel이라는 점은 감안할 것 — 문제
+# 생기면 이 줄만 지우면 기존 sdpa 경로로 그대로 돌아간다.
+RUN python -m pip install \
+    https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.6.3%2Bcu124torch2.6-cp313-cp313-linux_x86_64.whl
+
 # ---- 앱 코드 ----
 COPY . .
 
