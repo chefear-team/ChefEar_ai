@@ -152,16 +152,35 @@ def _worker_extract_intent_llm(utterance: str) -> dict:
     return extract_intent_llm(utterance)
 
 
-def _worker_handle_utterance(session: dict, utterance: str, *, dish_name, steps, owner_id=None) -> dict:
+def _worker_handle_utterance(
+    session: dict,
+    utterance: str,
+    *,
+    dish_name,
+    steps,
+    owner_id=None,
+    registration_step=None,
+    registration_value=None,
+) -> dict:
     # client를 안 넘긴다 — orchestration.pipeline.handle_utterance()는 client=None이면
     # 내부에서 `client = client or get_client()`로 알아서 채운다(pipeline.py 확인됨).
     # get_client()는 db.py에서 @lru_cache 프로세스 싱글턴이라, 이 워커 프로세스
     # 안에서는 항상 이 워커 자신의 Supabase 클라이언트를 재사용한다 — 메인 프로세스의
     # client 객체를 프로세스 경계 너머로 pickle해서 넘기지 않는다(그럴 필요도 없고,
     # supabase 클라이언트는 애초에 pickle 가능하다는 보장도 없음).
+    # registration_step/value를 안 받으면 워커 경로의 등록 턴은 항상 ValueError로
+    # 실패한다 — dispatch가 등록 의도를 워커로 보낼 때 owner_id와 함께 전달한다.
     from orchestration.pipeline import handle_utterance
 
-    return handle_utterance(session, utterance, dish_name=dish_name, steps=steps, owner_id=owner_id)
+    return handle_utterance(
+        session,
+        utterance,
+        dish_name=dish_name,
+        registration_step=registration_step,
+        registration_value=registration_value,
+        steps=steps,
+        owner_id=owner_id,
+    )
 
 
 # ============================================================
@@ -301,7 +320,23 @@ def submit_llm_extract(utterance: str) -> Future:
     return _submit_with_recovery(_worker_extract_intent_llm, utterance)
 
 
-def submit_handle_utterance(session: dict, utterance: str, *, dish_name, steps, owner_id=None) -> Future:
+def submit_handle_utterance(
+    session: dict,
+    utterance: str,
+    *,
+    dish_name,
+    steps,
+    owner_id=None,
+    registration_step=None,
+    registration_value=None,
+) -> Future:
     return _submit_with_recovery(
-        _worker_handle_utterance, session, utterance, dish_name=dish_name, steps=steps, owner_id=owner_id
+        _worker_handle_utterance,
+        session,
+        utterance,
+        dish_name=dish_name,
+        steps=steps,
+        owner_id=owner_id,
+        registration_step=registration_step,
+        registration_value=registration_value,
     )

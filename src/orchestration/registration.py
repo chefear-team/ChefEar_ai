@@ -103,6 +103,11 @@ def register_recipe(session: dict, step: str, value=None, client=None, owner_id:
         # AC-06: 재료 확인 체크포인트 + 최종 확인 체크포인트 둘 다 사용자가
         # "응"이라고 답한 뒤에야 파이프라인이 이 step으로 호출한다.
         # 여기서 처음이자 마지막으로 실제 DB 저장(save_recipe)이 일어난다.
+        # 2026-09-02 private_recipe_visibility: 신규 등록은 로그인 필수 — UI 게이트
+        # (register.py)만 믿으면 ?debug_screen 점프·직접 호출로 우회되므로 여기서도
+        # owner_id를 강제한다. save_recipe()가 최종 방어선으로 한 번 더 검사한다.
+        if owner_id is None:
+            raise ValueError("등록에는 로그인이 필요합니다")
         result = save_recipe(
             dish_name=reg["dish_name"],
             ingredients=reg["ingredients"],
@@ -140,14 +145,20 @@ def save_recipe(
     호출부(ui/screens/register.py)가 ui.session.get_owner_id()의 값을 넘기고,
     비로그인이면 여전히 None이라 기존과 동작이 같다.
 
-    2026-09-02 — docs/specs/private_recipe_visibility.md: 관리자 승인 대기
-    (`approved='N'`) 대신 즉시 `approved='Y'`로 저장한다. 대신 조회(select_
-    standard_recipe())가 owner_id로 "등록한 본인만" 걸러서 보여준다 — 검수는
-    관리자가 아니라 "본인 소유 여부"가 대신한다. 등록 화면(register.py) 자체를
-    로그인 필수로 바꿔서 owner_id 없는(비로그인) user_custom이 새로 생기지
-    않게 막는다. api_standard는 load_data.py가 적재 시점에 이미 approved='Y'로
-    넣는다(이 값도 변화 없음).
-    """
+     2026-09-02 — docs/specs/private_recipe_visibility.md: 관리자 승인 대기
+     (`approved='N'`) 대신 즉시 `approved='Y'`로 저장한다. 대신 조회(select_
+     standard_recipe())가 owner_id로 "등록한 본인만" 걸러서 보여준다 — 검수는
+     관리자가 아니라 "본인 소유 여부"가 대신한다. 등록 화면(register.py) 자체를
+     로그인 필수로 바꿔서 owner_id 없는(비로그인) user_custom이 새로 생기지
+     않게 막는다. api_standard는 load_data.py가 적재 시점에 이미 approved='Y'로
+     넣는다(이 값도 변화 없음).
+
+     user_custom은 owner_id 필수 — 비로그인 저장을 여기서 차단한다(UI 게이트
+     우회·파이프라인 직접 호출 대비 최종 방어선). api_standard 적재에는 적용하지
+     않는다.
+     """
+    if source == "user_custom" and not owner_id:
+        raise ValueError("등록에는 로그인이 필요합니다")
     client = client or get_client()
     # .insert({...}) 는 딕셔너리 하나(행 하나)를 즉시 넣고, .execute().data는
     # "방금 insert된 행들"의 리스트를 돌려준다. 우리는 한 행만 넣었으니 [0]으로
@@ -189,6 +200,16 @@ def save_recipe(
     if step_payload:  # 혹시 순서가 하나도 없으면 빈 insert를 보내지 않는다
         client.table("recipe_steps").insert(step_payload).execute()
 
+    # 새로 등록된 요리명이 _all_dish_names() lru_cache에 즉시 반영되게 비운다 —
+    # 안 비우면 같은 프로세스·같은 client에서 신규 등록 직후 조회가 불가하다.
+    try:
+        from orchestration.recipe_search import _all_dish_names, _decomposed_name_map
+
+        _all_dish_names.cache_clear()
+        _decomposed_name_map.cache_clear()
+    except Exception:  # noqa: BLE001 — 캐시 무효화 실패가 저장을 막으면 안 됨
+        pass
+
     return {"recipe_id": recipe_id, "saved": True}
 
 
@@ -198,6 +219,7 @@ def update_recipe(
     ingredients: list[str],
     instructions: list[str],
     client=None,
+    owner_id: str | None = None,
 ) -> dict:
     """이미 저장된 user_custom 레시피 한 건을 제자리에서 고친다(마이레시피 화면의 "수정",
     docs/specs/my_recipes.md).
@@ -209,10 +231,17 @@ def update_recipe(
     delete-then-insert가 훨씬 단순하고, on delete cascade와 달리 recipes 행 자체는
     안 건드리므로 recipe_id/created_at/owner_id/approved 등은 그대로 유지된다.
 
-    소유권 확인(호출자가 recipe.owner_id == 현재 로그인 사용자인지)은 여기서 하지 않는다 —
-    ui/screens/my_recipes.py::screen_edit_recipe()가 진입 시점에 이미 확인한다(EC-04).
+    소유권 확인은 owner_id를 넘기면 여기서도 한다 — ui/screens/my_recipes.py::
+    screen_edit_recipe()가 진입 시점에 이미 확인하지만(EC-04), 직접 호출 우회에
+    대비한 최종 방어선이다. owner_id를 안 넘기면(테스트 등) 기존처럼 확인 없이 고친다.
     """
     client = client or get_client()
+    if owner_id is not None:
+        rows = client.table("recipes").select("id,owner_id").eq("id", recipe_id).execute().data or []
+        if not rows:
+            raise ValueError("레시피를 찾을 수 없습니다")
+        if rows[0].get("owner_id") != owner_id:
+            raise PermissionError("본인이 등록한 레시피만 수정할 수 있습니다")
     # 2026-09-02 — save_recipe()와 같은 이유로 "|" 구분자(ingredients)와 "N. " 순번
     # 접두어(step_text)를 여기도 맞춘다. ui/screens/my_recipes.py::screen_edit_recipe()가
     # 프리필/재저장 시 이 형식과 어긋나지 않게 변환해준다(그쪽 문서 참고).
@@ -231,14 +260,25 @@ def update_recipe(
     return {"recipe_id": recipe_id, "updated": True}
 
 
-def delete_recipe(recipe_id: str, client=None) -> dict:
-    """레시피 한 건을 완전히 지운다(관리자 페이지의 "삭제" — admin_recipe_approval.md).
+def delete_recipe(recipe_id: str, client=None, owner_id: str | None = None) -> dict:
+    """레시피 한 건을 완전히 지운다(관리자 페이지의 "삭제" — admin_recipe_approval.md,
+    마이레시피의 "삭제" — my_recipes.md).
 
     recipe_steps부터 먼저 지운다 — schema.sql의 on delete cascade가 recipes 삭제 시
     딸린 recipe_steps도 자동으로 지워주긴 하지만, 여기서 명시적으로 먼저 지워서 그
     설정 여부에 기대지 않고 항상 같은 순서로 정리되게 한다.
+
+    owner_id를 넘기면(마이레시피 경로) 소유권을 확인하고, 남의 레시피면 지우지 않고
+    PermissionError를 올린다 — IDOR 방지. owner_id를 안 넘기면(관리자 경로) 기존처럼
+    소유권 확인 없이 지운다.
     """
     client = client or get_client()
+    if owner_id is not None:
+        rows = client.table("recipes").select("id,owner_id").eq("id", recipe_id).execute().data or []
+        if not rows:
+            raise ValueError("레시피를 찾을 수 없습니다")
+        if rows[0].get("owner_id") != owner_id:
+            raise PermissionError("본인이 등록한 레시피만 삭제할 수 있습니다")
     client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
     client.table("recipes").delete().eq("id", recipe_id).execute()
     return {"recipe_id": recipe_id, "deleted": True}

@@ -196,7 +196,12 @@ def login_local(username: str, password: str, client=None) -> User | None:
 
 
 def login_or_create_google(sub: str, email: str, client=None) -> User:
-    """AC-03: 이미 있으면 그대로 조회만(insert 없음), 없으면 이번 한 번만 insert."""
+    """AC-03: 이미 있으면 그대로 조회만(insert 없음), 없으면 이번 한 번만 insert.
+
+    조회-후-insert 사이 동시 요청 경합에 대비해 insert 실패(PK unique 충돌) 시
+    다시 조회해 기존 행을 돌려준다 — 중복행 생성 대신 멱등하게 기존 계정으로 수렴.
+    (users.user_id_hash가 PK라 DB가 중복을 막아준다.)
+    """
     client = client or get_client()
     uid = account_id_from_google_sub(sub)
     row = _find_by_id(uid, client)
@@ -204,20 +209,25 @@ def login_or_create_google(sub: str, email: str, client=None) -> User:
         _touch_last_login(uid, client)
         return _row_to_user(row)
 
-    row = (
-        client.table("users")
-        .insert(
-            {
-                "user_id_hash": uid,
-                "user_id": email,
-                "email": email,
-                "auth_provider": "google",
-                "google_sub": sub,
-                "password_hash": None,
-            }
+    try:
+        row = (
+            client.table("users")
+            .insert(
+                {
+                    "user_id_hash": uid,
+                    "user_id": email,
+                    "email": email,
+                    "auth_provider": "google",
+                    "google_sub": sub,
+                    "password_hash": None,
+                }
+            )
+            .execute()
+            .data[0]
         )
-        .execute()
-        .data[0]
-    )
+    except Exception:  # noqa: BLE001 — 동시 insert 경합 시 unique/PK 충돌 → 기존 행으로 폴백
+        row = _find_by_id(uid, client)
+        if row is None:
+            raise
     _touch_last_login(uid, client)
     return _row_to_user(row)

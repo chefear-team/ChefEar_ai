@@ -12,7 +12,7 @@ def test_ac06_full_flow_confirms_and_saves_as_user_custom():
     register_recipe(session, "dish_name", "문어초무침", client=client)
     register_recipe(session, "ingredients", ["문어", "오이", "초고추장"], client=client)
     register_recipe(session, "instructions", ["문어를 데친다", "재료를 무친다"], client=client)
-    result = register_recipe(session, "confirm", client=client)
+    result = register_recipe(session, "confirm", client=client, owner_id="sha256-user-id")
 
     assert result["saved"] is True
     assert session["registration"] is None
@@ -52,22 +52,39 @@ def test_ec16_abort_discards_session_without_saving():
 
 def test_ec17_duplicate_dish_name_saved_as_separate_row_not_overwritten():
     client = FakeSupabaseClient()
-    first = save_recipe("된장찌개", ["두부"], ["끓인다"], client=client)
-    second = save_recipe("된장찌개", ["감자"], ["끓인다"], client=client)
+    first = save_recipe("된장찌개", ["두부"], ["끓인다"], client=client, owner_id="A")
+    second = save_recipe("된장찌개", ["감자"], ["끓인다"], client=client, owner_id="A")
 
     assert first["recipe_id"] != second["recipe_id"]
     assert len(client.table("recipes").rows) == 2
 
 
 def test_ac04_owner_id_reflected_when_logged_in_and_null_when_not():
-    """docs/specs/user_accounts_google_login.md AC-04."""
+    """docs/specs/user_accounts_google_login.md AC-04 + private_recipe_visibility:
+    로그인 저장은 owner_id 기록, 비로그인 user_custom 신규 저장은 거부."""
+    import pytest
+
     client = FakeSupabaseClient()
 
     logged_in = save_recipe("김치찌개", ["김치"], ["끓인다"], client=client, owner_id="sha256-user-id")
-    anonymous = save_recipe("김치찌개", ["김치"], ["끓인다"], client=client, owner_id=None)
+
+    with pytest.raises(ValueError):
+        save_recipe("김치찌개", ["김치"], ["끓인다"], client=client, owner_id=None)
 
     assert client.table("recipes").rows[logged_in["recipe_id"]]["owner_id"] == "sha256-user-id"
-    assert client.table("recipes").rows[anonymous["recipe_id"]]["owner_id"] is None
+
+
+def test_register_confirm_without_login_rejected():
+    """private_recipe_visibility: confirm 단계에서도 비로그인이면 저장 전에 거부."""
+    import pytest
+
+    client = FakeSupabaseClient()
+    session: dict = {}
+    register_recipe(session, "dish_name", "김치찌개", client=client)
+    register_recipe(session, "ingredients", ["김치"], client=client)
+    register_recipe(session, "instructions", ["끓인다"], client=client)
+    with pytest.raises(ValueError):
+        register_recipe(session, "confirm", client=client, owner_id=None)
 
 
 def test_ac02_update_recipe_replaces_steps_and_keeps_recipe_id():
@@ -75,7 +92,7 @@ def test_ac02_update_recipe_replaces_steps_and_keeps_recipe_id():
     (새 recipe_id로 insert되지 않음), recipe_steps는 옛 3단계가 전부 사라지고 새
     2단계만 남는다."""
     client = FakeSupabaseClient()
-    saved = save_recipe("김치찌개", ["김치", "돼지고기"], ["1단계", "2단계", "3단계"], client=client)
+    saved = save_recipe("김치찌개", ["김치", "돼지고기"], ["1단계", "2단계", "3단계"], client=client, owner_id="A")
     recipe_id = saved["recipe_id"]
 
     result = update_recipe(
@@ -134,6 +151,7 @@ def test_save_recipe_auto_tags_variant_phrases_for_tts():
         ["무", "대파"],
         ["무를 나박하게 썰어주세요", "양파는 어슷하게 썰어주세요", "그릇에 담아주세요"],
         client=client,
+        owner_id="A",
     )
 
     steps = {

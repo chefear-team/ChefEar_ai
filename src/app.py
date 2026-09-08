@@ -585,6 +585,12 @@ def _run_admin_page() -> None:
     if not st.session_state.get("_admin_verified"):
         render_voice_challenge()
         return
+    # 음성 트리거(_admin_via_voice)만으로는 챌린지 화면까지만 도달하고, 실제 승인/
+    # 삭제 목록은 ?admin_key= 토큰까지 있어야 보인다 — 토큰(1차)+화자검증(2차) 둘 다
+    # 통과해야 진입(admin_voice_2fa.md 확정 사항). 토큰 없으면 여기서 fail-closed.
+    if not _admin_gate_ok():
+        st.warning("관리자 토큰이 확인되지 않았습니다.")
+        return
     st.caption(f"관리자: {st.session_state['_admin_verified']}")
     render_admin()
 
