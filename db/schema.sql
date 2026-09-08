@@ -170,3 +170,25 @@ alter table users add column if not exists last_login_at timestamptz;
 -- 살아남아서 이 컬럼을 안 쓴다.
 alter table users add column if not exists session_token_hash text;
 alter table users add column if not exists session_token_expires_at timestamptz;
+
+-- ── RLS(2026-09-08): 앱은 SUPABASE_KEY(anon 또는 service_role 단일 키)로 접속하고
+-- 소유자 격리는 앱 코드 recipes.owner_id 필터로 한다(private_recipe_visibility.md).
+-- service_role 키는 RLS를 우회하므로, 키 유출 시 전행 접근이 가능하다 — .env.example의
+-- SUPABASE_KEY 설명 참고. 아래는 anon 키로 직접 접속하는 경우에도 앱이 동작하도록
+-- 최소 읽기/쓰기를 허용하는 fail-open 정책이다. service_role 운용 시에는 이 정책과
+-- 무관하게 RLS가 우회되므로, 키는 서버 환경(.env, 커밋 금지)에만 둔다.
+alter table recipes enable row level security;
+alter table recipe_steps enable row level security;
+alter table users enable row level security;
+do $$
+begin
+    if not exists (select 1 from pg_policies where policyname = 'chefear_recipes_all') then
+        create policy chefear_recipes_all on recipes for all using (true) with check (true);
+    end if;
+    if not exists (select 1 from pg_policies where policyname = 'chefear_recipe_steps_all') then
+        create policy chefear_recipe_steps_all on recipe_steps for all using (true) with check (true);
+    end if;
+    if not exists (select 1 from pg_policies where policyname = 'chefear_users_all') then
+        create policy chefear_users_all on users for all using (true) with check (true);
+    end if;
+end $$;

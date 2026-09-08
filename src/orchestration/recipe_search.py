@@ -418,7 +418,20 @@ def select_standard_recipe(dish_name: str, client=None, owner_id: str | None = N
     # 2026-09-02 — 승인된 행 중에서도 api_standard이거나 조회자 본인 소유인 것만
     # 후보로 남긴다(private_recipe_visibility.md). 남의 user_custom은 여기서 조용히
     # 제외되고, 아래에서 후보가 하나도 안 남으면 "아예 없음"과 동일하게 None을 돌려준다.
-    candidates = [r for r in approved_rows if r.get("source") == "api_standard" or r.get("owner_id") == owner_id]
+    # 주의: owner_id가 None인 레거시 user_custom 행은 `r.get("owner_id") == owner_id`
+    # 비교만 쓰면 비로그인(None == None → True)에게 그대로 노출된다 — 그래서
+    # user_custom은 양쪽이 모두 None이 아닌 실값일 때만 일치로 본다. 레거시 무주인
+    # 행은 누구에게도(본인 포함) 조회로 노출하지 않고 관리자 페이지에서만 처리한다.
+    candidates = [
+        r
+        for r in approved_rows
+        if r.get("source") == "api_standard"
+        or (
+            owner_id is not None
+            and r.get("owner_id") is not None
+            and r.get("owner_id") == owner_id
+        )
+    ]
     if not candidates:
         return None  # 존재는 하지만 전부 남의 user_custom — 이 조회자에겐 "없음"과 동일
 

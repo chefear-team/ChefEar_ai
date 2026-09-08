@@ -28,12 +28,11 @@ from ui.session import goto, login as session_login, persist_local_session
 
 
 def screen_login() -> None:
-    # 2026-09-01 요청 — 로그인 화면에서 "처음 화면으로" 뒤로가기 링크 주석 처리
-    # (로그인을 첫 화면으로 삼은 이상 이 화면에서 굳이 비로그인 우회로를 보여줄
-    # 필요가 없다는 판단). app.py 쪽 로그인 아이콘 버튼도 이 화면에서만 같이 뺐다
-    # (app.py::main()의 render_brand() 호출부 참고).
-    # if render_back_link("처음 화면으로"):
-    #     goto("start")
+    # api_standard는 비로그인에게도 전체 공개가 원칙이므로, 로그인 화면에서
+    # 비로그인 진입로를 막지 않는다(session.init_state() 주석 참고 — 첫 화면만
+    # login일 뿐 비로그인 이용 자체를 막는 게 아니다).
+    if render_back_link("비로그인으로 둘러보기"):
+        goto("start")
     render_spacer()
     st.markdown("**로그인**")
 

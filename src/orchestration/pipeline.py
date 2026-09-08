@@ -289,7 +289,9 @@ def handle_utterance(
     if intent == "등록":
         if registration_step is None:
             raise ValueError("등록 의도는 registration_step이 필요함")
-        reg_result = register_recipe(session, registration_step, registration_value, client=client)
+        reg_result = register_recipe(
+            session, registration_step, registration_value, client=client, owner_id=owner_id
+        )
         return {"intent": intent, **reg_result}
 
     raise ValueError(f"알 수 없는 intent: {intent}")

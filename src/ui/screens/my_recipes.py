@@ -62,9 +62,15 @@ def _authorized_recipe(recipe_id: str, user_id: str, client) -> dict | None:
     정상 UI 경로로는 screen_my_recipes()가 이미 본인 소유 레시피만 목록에 올리므로
     남의 recipe_id가 여기 들어올 일이 없지만, editing_recipe_id는 세션 상태값이라
     실제로 고치기 전에 소유권을 한 번 더 확인한다(EC-04, 방어적 처리).
+
+    .single()을 쓰지 않는다 — 실DB(PostgREST)는 0행에서 PGRST116 예외를 올려
+    `if not recipe` 방어에 닿기 전에 500이 되므로, 일반 조회 후 비어있으면 None이다.
     """
-    recipe = client.table("recipes").select("*").eq("id", recipe_id).single().execute().data
-    if not recipe or recipe.get("owner_id") != user_id:
+    rows = client.table("recipes").select("*").eq("id", recipe_id).execute().data or []
+    if not rows:
+        return None
+    recipe = rows[0]
+    if recipe.get("owner_id") != user_id:
         return None
     return recipe
 
@@ -152,7 +158,7 @@ def screen_my_recipes() -> None:
                             type="primary",
                             use_container_width=True,
                         ):
-                            delete_recipe(recipe_id, client=client)
+                            delete_recipe(recipe_id, client=client, owner_id=user.id)
                             st.session_state.confirm_delete_id = None
                             st.rerun()
                     with cc2:
@@ -217,7 +223,7 @@ def screen_edit_recipe() -> None:
         if st.button("저장", key="edit_recipe_save", type="primary", use_container_width=True):
             ingredients = [x.strip() for x in ingredients_text.split(",") if x.strip()]
             instructions = [x.strip() for x in instructions_text.split("\n") if x.strip()]
-            update_recipe(recipe_id, dish_name.strip(), ingredients, instructions, client=client)
+            update_recipe(recipe_id, dish_name.strip(), ingredients, instructions, client=client, owner_id=user.id)
             st.session_state.editing_recipe_id = None
             goto("my_recipes")
     with c2:

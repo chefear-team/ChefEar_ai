@@ -208,8 +208,8 @@ def process_utterance(text: str) -> None:
         # 단어 하나로 확정되는 명령이라 바로 처리한다. wants_register 분기(아래)와
         # 같은 이유로 register_intro(확인 화면)는 건너뛰고 register_dish_name으로
         # 바로 간다 — 사용자가 "등록"이라고 직접 말한 건 시스템의 짐작이 아니다.
-        # 2026-08-27 — 로그인 개념 자체가 없어져서(계정/쿠키 시스템 제거) 게이트도
-        # 같이 없앴다 — 로그인 여부와 무관하게 항상 등록 화면으로 바로 간다.
+        # 2026-09-02 — 등록 화면(register_dish_name) 자체가 로그인 게이트이므로
+        # 여기서는 바로 보낸다 — 비로그인이면 그 화면이 login으로 되돌린다.
         st.session_state.pending_dish_name = None
         goto("register_dish_name")
         return
@@ -435,7 +435,7 @@ def process_utterance(text: str) -> None:
             # 거친다(2026-08-22 요청) — "등록"이라고 직접 말한 건 시스템의 짐작이 아니라
             # 사용자의 확정된 요청이라 다시 확인받을 필요가 없으므로, register_dish_name
             # (새 레시피 등록 1/3 요리명)으로 바로 보낸다.
-            # 2026-08-27 — 로그인 개념 자체가 없어져서 게이트도 같이 없앴다.
+            # 2026-09-02 — 로그인 게이트는 register_dish_name 화면이 담당한다.
             st.session_state.pending_dish_name = dish_name_guess
             # 2026-09-01 — speak() 없이 끝나는 분기라 여기서 직접 팝업을 닫는다(위
             # overlay 문서 참고).

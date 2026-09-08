@@ -11,10 +11,10 @@ Supabase에 수동으로 실행할 DDL(`schema.sql`) 하나만 담는다. `supab
 `schema.sql` 완성됨 — 테이블 3개(`recipes`/`recipe_steps`/`users`, 아래 참고). Supabase 프로젝트 생성 완료, `schema.sql` 실행 완료(RLS 켠 상태), `.env`에 자격증명 연결 확인 완료.
 
 - `recipes`: 레시피 1건당 1행. `source` 컬럼은 `api_standard`/`user_custom`만 허용(check 제약). `origin_id`는 자기참조(user_custom이 어떤 표준 레시피 기반인지). `external_id`(원본 CSV RCP_SNO), `servings`(인분수) 컬럼 포함.
-  - **`owner_id`**: 원래 익명 쿠키 UUID(작업3)/로그인 계정 id를 저장하던 컬럼이었으나, 2026-08-27 계정·쿠키 개인화 기능이 전면 제거되면서 **지금은 신규 행에 항상 null**이 들어간다. 컬럼 자체는 나중에 다른 식별자로 재사용할 수 있게 남겨뒀다.
-  - **`approved`('Y'/'N', 2026-08-27 추가)**: 'Y'면 `select_standard_recipe()` 조회에 노출, 'N'이면 관리자가 승인하기 전까지 아무도(등록한 사람 포함) 조회할 수 없다. `api_standard`는 적재 시점에 항상 'Y', 신규 `user_custom`은 저장 시 항상 'N'.
+  - **`owner_id`**: 2026-09-01 로그인 재도입으로 다시 사용 중 — 신규 `user_custom`은 등록자 id 필수(`save_recipe()`가 `None`이면 저장 거부). 비로그인 신규 행은 생기지 않는다. 이 스펙 이전 레거시 `NULL` 행은 누구에게도 조회 노출하지 않고 관리자 페이지에서만 처리한다.
+  - **`approved`('Y'/'N')**: 2026-09-02부터 신규 `user_custom`은 즉시 'Y'로 저장되고, 공개 범위는 `owner_id`(본인만 조회)로 가른다. 'N'은 이 스펙 이전 레거시 승인 대기 행을 걸러내는 역할로만 남는다. `api_standard`는 적재 시점에 항상 'Y'.
 - `recipe_steps`: 레시피 1건당 여러 행(단계별). `(recipe_id, step_number)` 복합 기본키, `on delete cascade`로 레시피 삭제 시 단계도 같이 삭제됨
-- `users`(2026-08-22 추가): 로그인 계정용으로 만들었던 테이블. **2026-08-27 계정 로그인 기능 자체가 코드에서 삭제되면서 지금은 스키마만 남아있고 아무 코드도 이 테이블을 안 쓴다.** DROP은 되돌리기 어려운 조작이라 지금 안 쓴다고 굳이 지우지 않았다 — 나중에 다른 인증 방식을 붙이면 재사용할 수도 있다.
+- `users`(2026-08-22 추가, 2026-09-01 재도입): 로컬/구글 로그인 계정. `user_id_hash`(PK, sha256) / `user_id`(표시 id) / `auth_provider` / `google_sub` / `session_token_hash` 등. RLS는 켜져 있으나(`schema.sql` 하단), 소유자 격리는 앱 코드 필터로 하며 service_role 키는 RLS를 우회하므로 키 관리 주의.
 
 인덱스 3개(`dish_name`, `source`, `owner_id`) + `uq_recipes_dish_name_standard`(표준 레시피 요리명 유니크) 포함. `owner_id` 인덱스는 지금은 항상 null인 컬럼을 대상으로 하므로 사실상 안 쓰인다.
 
