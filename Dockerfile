@@ -60,8 +60,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ffmpeg/libsndfile1: librosa·soundfile·av(aiortc 의존) 오디오 처리에 필요.
 # -dev 계열: python-builder가 --enable-shared로 빌드한 Python이 런타임에 동적링크하는
 # libssl/libsqlite3/libncurses 등을 위해 필요(주석 상단 참고 - 소스 빌드 대비용).
+# build-essential(gcc 등)은 2026-08-31엔 "실행 땐 필요 없다"고 판단해서 뺐었는데,
+# 2026-09-07 flash-attn 설치 이후 실측으로 틀렸다는 게 확인됨 — flash-attn이 물고
+# 들어온 triton이 CudaUtils() 초기화 시 driver.c를 **런타임에 직접 컴파일**한다
+# (triton/backends/nvidia/driver.py -> compile_module_from_src). 이 컴파일이
+# LLM(EXAONE) 워커 초기화 안에서 일어나는데 gcc가 없어서 매번
+# "RuntimeError: Failed to find C compiler"로 실패 -> 그 워커가 죽어서 GPU 풀
+# 전체가 broken 상태가 되고, 이후 모든 STT/TTS/LLM 요청이 BrokenProcessPool로
+# 실패하는 것까지 실사용 중 재현됨(자동복구가 재시도해도 매번 같은 이유로 또
+# 실패). 그래서 gcc를 다시 넣는다 — 용량은 늘지만(수십MB) "빌드 툴체인은
+# 런타임에 필요 없다"는 전제 자체가 flash-attn 도입으로 깨졌으니 정확성이
+# 우선이다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates git pkg-config \
+    curl ca-certificates git pkg-config gcc \
     zlib1g-dev libssl-dev libffi-dev libbz2-dev libreadline-dev \
     libsqlite3-dev libncurses5-dev libgdbm-dev liblzma-dev tk-dev uuid-dev \
     ffmpeg libsndfile1 \
