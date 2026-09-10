@@ -1,30 +1,4 @@
-"""ChefEar 로컬 LLM - 발화에서 요리명을 뽑기 위한 EXAONE 추론.
-
-[모델]
-LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct — LG AI Research, 온디바이스/경량 배포용으로 설계된
-한국어 네이티브 모델. 동급 경량 모델 중 한국어 벤치마크가 가장 높아서 채택했다
-(`docs/specs/llm_dish_name_extract.md` 참고).
-
-[배포 방식]
-GPU 데스크탑(RTX 5070)에서 `transformers.AutoModelForCausalLM`으로 이 프로세스 안에
-직접 로드한다 — 별도 서버(Ollama/FastAPI 등)를 두지 않는다. AGENTS.md의 "외부 LLM API
-호출 금지"(1.5 원칙)는 OpenAI/Anthropic/Gemini/Groq/OpenRouter처럼 인터넷 건너 남의
-서버로 텍스트를 보내는 걸 막는 규칙이다 — 오픈라우터도 API 키로 호출하는 이상 실제
-추론이 오픈라우터 서버에서 일어나므로 이 원칙에 걸린다(그래서 배제함). 여기서는 팀
-GPU 데스크탑에 가중치를 직접 올려서 돌리므로 완전한 로컬이라 원칙에 걸리지 않는다.
-
-이 저장소에 이미 고정된 `transformers==4.57.3`(requirements-main.txt/requirements-stt.txt,
-Whisper 학습용으로 확정된 버전)을 그대로 재사용한다 — 새 의존성 추가 없음.
-
-`trust_remote_code=True`가 필요하다(EXAONE 공식 모델카드 기준 — LG가 배포한 커스텀
-모델링 코드를 그대로 실행한다는 뜻). 다른 소스의 체크포인트로 바꿀 땐 이 코드를
-신뢰할 수 있는지 다시 확인할 것.
-
-[호출 예시]
-from llm.infer import generate_json
-result = generate_json('아래 발화에서 요리명만 JSON으로 답해: "된장찌개 어떻게 만들어?"')
-# {"dish_name": "된장찌개"} 또는 None(실패/형식 오류)
-"""
+"""ChefEar 로컬 LLM - 발화에서 요리명을 뽑기 위한 EXAONE 추론."""
 from __future__ import annotations
 
 import json
@@ -41,38 +15,15 @@ load_env()
 
 MODEL_ID = os.environ.get("LLM_MODEL_REPO") or "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct"
 
-# 2026-08-20 실측: 이 리포의 최신 커밋(ccce25bd39, "Update ... for Transformers v5")이
-# configuration_exaone.py에서 transformers.modeling_rope_utils.RopeParameters를 import하는데,
-# 이 프로젝트에 고정된 transformers==4.57.3(STT/TTS와 공유하는 버전, requirements-main.txt)엔
-# 그 심볼이 없어서 ImportError로 로드 자체가 실패했다(`AutoModelForCausalLM.from_pretrained`).
-# v5 마이그레이션 이전 커밋(2024-12-11, transformers v4.x 시절 코드)으로 고정하면 로드된다 —
-# transformers==4.57.3을 올리는 대신(공유 pin이라 STT/TTS 회귀 위험, docs/decisions.md 4번과
-# 같은 유형의 문제) 이 리포 쪽을 과거 커밋에 고정하는 쪽을 선택했다.
 MODEL_REVISION = os.environ.get("LLM_MODEL_REVISION") or "e949c91dec92095908d34e6b560af77dd0c993f8"
 
-# 2026-08-22 실측: EXAONE 가중치는 이미 ~/.cache/huggingface/hub(로컬 디스크)에 캐시돼 있어서
-# STT(모델 파일이 네트워크 드라이브 안에 있던 경우, 87초)와 같은 문제는 없고 모델 로드에
-# 6초 정도만 걸린다. 그래도 STT_LOCAL_CACHE_DIR/TTS_LOCAL_CACHE_DIR과 같은 팀 규칙으로,
-# revision 고정값으로 매번 HF Hub에 메타데이터 확인하러 나가는 것도 없애기 위해
-# LLM_LOCAL_CACHE_DIR이 설정되어 있으면 그 로컬 폴더(HF 캐시 스냅샷을 그대로 복사한 사본)를
-# repo id 대신 곧장 읽는다 — 이 경우 revision은 이미 폴더 자체에 고정돼 있으므로 넘기지 않는다.
 LLM_LOCAL_CACHE_DIR = os.environ.get("LLM_LOCAL_CACHE_DIR")
 
-# 요리명 JSON 한 줄({"dish_name": "...", "wants_register": ...})만 생성하면 되므로 짧게
-# 잡는다 — tts_synthesize()의 예산(문장 전체 음성 합성용)보다 훨씬 짧아도 충분한 태스크다.
-# 2026-08-28 — 64 -> 128. JSON 본문은 64로도 충분하지만, 모델이 지시를 어기고 JSON 앞에
-# 한두 문장을 붙이는 경우(few-shot로 억눌러도 드물게 발생) 64에서 잘려 파싱 실패 -> 유효한
-# 조회가 조용히 "요리명 없음"이 되던 여지를 없앤다(리뷰 지적). 그리디 디코딩이라 지연 영향 미미.
 DEFAULT_MAX_NEW_TOKENS = 128
 
 _model = None
 _tokenizer = None
 
-# 2026-08-22 — tts/infer.py의 _LOAD_LOCK과 같은 이유("Cannot copy out of meta tensor;
-# no data!" 실사용 보고, 유력한 원인은 _warm_up_models()가 화면(세션)이 뜰 때마다
-# 호출되는데 로딩 자체엔 동시 진입 방지가 없어서 두 스레드가 거의 동시에 로딩을
-# 시작하면 같은 GPU에 같은 모델을 두 번 올리려다 꼬이는 경합). 로딩 시작 자체를
-# 한 번에 하나만 하도록 막는다.
 _LOAD_LOCK = threading.Lock()
 
 
@@ -94,8 +45,6 @@ def load_llm():
 
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        # 2026-08-19 팀 결정(docs/decisions.md #2, TTS 배포 결정을 서비스 전체에 동일 적용): 배포를
-        # GPU 데스크탑 상시 노출로 확정해서 CPU 폴백을 없애고 GPU를 필수로 요구한다.
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
@@ -113,8 +62,6 @@ def load_llm():
 
         _tokenizer = AutoTokenizer.from_pretrained(model_source, revision=revision, trust_remote_code=True)
 
-        # tts/infer.py의 load_tts_model()과 같은 이유(2026-08-22/23) — device_map= 로딩이
-        # 일시적으로 실패하면("Cannot copy out of meta tensor" 등) 최대 2번 재시도한다.
         last_exc: Exception | None = None
         for attempt in range(1, 4):
             try:
@@ -161,14 +108,6 @@ def generate_response(prompt: str, *, max_new_tokens: int = DEFAULT_MAX_NEW_TOKE
     generated = output_ids[0][input_ids.shape[-1]:]
     result = tokenizer.decode(generated, skip_special_tokens=True).strip()
 
-    # 2026-09-01 — 이 자리에 있던 매 호출마다의 torch.cuda.empty_cache() 제거.
-    # orchestration/intent_classifier.py::classify_intent()의 같은 날짜 주석에 이유를
-    # 자세히 적어뒀다(요약: "12GB GPU 공유, 여유 500MB 미만"이던 전제가 A40 48GB +
-    # gpu_worker_pool 멀티프로세스 구조로 더 이상 유효하지 않음 — 실측: 워커당 여유
-    # 약 3~4GB). empty_cache()는 CUDA 동기화를 강제하는 안티패턴이라 매 발화마다 이
-    # 비용을 지불할 이유가 없다. 되돌리는 법: OOM/Queue overflow 증상 재현 시 이
-    # 커밋을 되돌리거나 아래 두 줄을 복원할 것 — if torch.cuda.is_available():
-    # torch.cuda.empty_cache()
 
     return result
 
@@ -178,8 +117,8 @@ _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 
 def _strip_code_fence(text: str) -> str:
     """EXAONE이 JSON을 마크다운 코드펜스(```json ... ```)로 감싸서 답하는 경우가 실측으로
-    확인됐다(2026-08-20, 프롬프트에 "다른 말은 절대 덧붙이지 않는다"고 명시해도 발생) —
-    json.loads() 전에 펜스를 벗겨낸다. 코드펜스가 없는 순수 JSON 응답도 그대로 통과시킨다.
+    확인됐다 —
+    json.loads 전에 펜스를 벗겨낸다. 코드펜스가 없는 순수 JSON 응답도 그대로 통과시킨다.
     """
     text = text.strip()
     match = _CODE_FENCE_RE.match(text)
@@ -200,10 +139,6 @@ def generate_json(prompt: str, *, max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS) 
     except json.JSONDecodeError:
         print(f"[LLM] 모델 응답이 JSON 형식이 아님: {raw_text!r}")
         return None
-    # 2026-08-28 — 모델이 JSON 리스트/문자열/숫자를 뱉으면 json.loads는 성공하지만 dict가
-    # 아니다. 그대로 돌려주면 호출부(entity_extract_llm.py)의 .get()에서 AttributeError가
-    # 난다(지금은 dispatch.py::_compute()의 broad except가 우연히 잡아 폴백). 계약(dict|None)
-    # 대로 dict가 아니면 None으로 정규화한다.
     if not isinstance(parsed, dict):
         print(f"[LLM] 모델 응답이 JSON 객체가 아님(dict 아님): {parsed!r}")
         return None

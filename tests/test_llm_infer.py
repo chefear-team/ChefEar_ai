@@ -14,8 +14,9 @@ def test_generate_json_success(monkeypatch):
 
 
 def test_generate_json_strips_markdown_code_fence(monkeypatch):
-    """실측(2026-08-20, GPU 데스크탑 실제 EXAONE 추론)에서 확인된 실제 응답 형태 —
-    프롬프트가 "다른 말은 덧붙이지 않는다"고 명시해도 ```json ... ``` 로 감싸서 답함."""
+    """실측에서 확인된 실제 응답 형태 —
+    프롬프트가 "다른 말은 덧붙이지 않는다"고 명시해도 ```json ... ``` 로 감싸서 답함.
+    """
     fenced = '```json\n{"dish_name": "된장찌지게"}\n```'
     monkeypatch.setattr(infer, "generate_response", lambda prompt, **kw: fenced)
 

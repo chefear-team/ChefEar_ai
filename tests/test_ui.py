@@ -1,18 +1,4 @@
-"""STT -> LLM(요리명 추출) -> Supabase 조회 파이프라인을 눈으로 확인하기 위한 수동 테스트 화면.
-
-pytest의 `test_*.py` 수집 규칙과 파일명이 겹치지만 이건 자동화 테스트가 아니다 — 아래 UI
-빌드 코드는 `if __name__ == "__main__":` 가드 안에 있어서(`src/app.py`와 같은 패턴) pytest가
-이 파일을 모듈로 import해도 아무 것도 실행하지 않고 그냥 지나간다(수집되는 test_ 함수 없음).
-
-실행: streamlit run tests/test_ui.py
-
-지금은 마이크가 아니라 "파일 업로드"로만 확인한다(요청대로 사람 목소리 마이크 테스트는
-다음 단계). STT(업로드된 WAV) -> LLM(요리명 추출) -> DB 조회(dish_name 매칭 + 조리순서)
--> TTS(1단계 안내 음성 출력)까지 전체 사이클을 5단계로 나눠 화면에 그대로 보여줘서
-어디서 끊기는지 바로 보이게 하는 게 목적이라, `src/app.py`처럼 화면을 다듬지 않고 각
-단계를 순서대로 노출한다. Supabase 자격증명이 `.env`에 없으면 `db.get_client()`가
-자동으로 mock 클라이언트로 동작한다(3단계부터는 mock 데이터 기준으로 확인하게 됨).
-"""
+"""STT -> LLM(요리명 추출) -> Supabase 조회 파이프라인을 눈으로 확인하기 위한 수동 테스트 화면."""
 from __future__ import annotations
 
 import sys
@@ -31,22 +17,6 @@ def main() -> None:
     st.title("STT → LLM(요리명 추출) → Supabase 조회 테스트")
     st.caption("음성 파일을 업로드하면 각 단계 결과를 그대로 보여줍니다. 마이크 테스트는 다음 단계.")
 
-    # STT/LLM 워밍업 — 둘 다 첫 로딩 비용이 있어서(원인은 서로 다름, 아래 참고) 파일
-    # 업로드를 기다렸다가 그때 로딩을 시작하면 사용자가 업로드 직후 그 비용을 그대로
-    # 보게 된다. 그래서 페이지가 뜨는 시점(스크립트 최초 실행)에 미리 로딩해둔다.
-    # load_ct2_model()/load_llm() 둘 다 전역 캐시라서(stt/infer.py의 _ct2_model,
-    # llm/infer.py의 _model) 이미 로드됐으면 즉시 반환 — 매 rerun(사용자 조작)마다
-    # 이 줄을 다시 실행해도 안전하고 빠르다.
-    #
-    # STT: 처음엔 "CUDA 초기화가 느리다"고 짐작했으나(2026-08-20), 실측해보니 GPU/CPU
-    # 사용률이 로딩 내내 0%였다 — 프로젝트 폴더가 네트워크 공유 드라이브(CIFS, ~9MB/s)에
-    # 있어서 model.bin(778MB) 읽기 자체가 87초 걸렸던 것. .env의 STT_LOCAL_CACHE_DIR로
-    # 로컬 디스크 사본을 우선 읽게 고쳐서 1.2초로 줄었다(`src/stt/infer.py` 참고).
-    # LLM: EXAONE 가중치는 원래 ~/.cache/huggingface(로컬 디스크)에 캐시되므로 이 문제가
-    # 없다 — 최초 1회 인터넷에서 받는 것만 느리고(수 분), 그다음부턴 13초 정도로 빠르다.
-    # TTS: LLM과 마찬가지로 ~/.cache/huggingface에서 읽어서 네트워크 드라이브 문제는
-    # 없다 — 7.9GB 모델이라 로딩 자체에 17초 정도 걸리는 게 정상(실측), 미리 안 해두면
-    # 5단계(TTS 출력)에서 사용자가 그 17초를 그대로 기다리게 된다.
     from stt.infer import load_ct2_model
     from llm.infer import load_llm
     from tts.infer import load_tts_model
@@ -124,9 +94,6 @@ def main() -> None:
     if not steps_result.get("available"):
         st.warning(steps_result.get("message", "조리순서가 없어요."))
         return
-    # 2026-09-01 — step["text"]는 [TERM:용어] 태그가 남은 원본이다(term_dict.py 참고).
-    # 화면 표시는 resolve_for_display()로 태그만 걷어내서 보여준다 — src/ui/screens/
-    # cooking.py의 render_step_card() 호출부와 같은 처리(theme.py 자체는 안 건드림).
     from orchestration.term_dict import resolve_for_display, resolve_for_tts
 
     for step in steps_result["steps"]:
@@ -136,12 +103,6 @@ def main() -> None:
     # 5단계: TTS (1단계 안내를 음성으로) — src/app.py의 speak()와 동일한 호출 방식
     # ============================================================
     st.header("5. TTS 음성 출력")
-    # 2026-09-01 수정 — 여기서 원래 raw step["text"]를 그대로 tts_synthesize()에 넘기고
-    # 있었는데, 그러면 "[TERM:편썰기]" 태그 문자열 자체가 글자 그대로 TTS에 들어가서
-    # 실제 서비스(cooking.py)가 하는 resolve_for_tts() 설명 확장과 다르게 동작한다 —
-    # 이 파일이 "src/app.py의 speak()와 동일한 호출 방식"이라고 스스로 명시한 목적과도
-    # 어긋남(직접 로컬 실행으로 실측 확인됨: TTS_DEBUG 로그에 "[TERM:편썰기]"가 문자
-    # 그대로 찍혔었음). resolve_for_tts()를 거쳐 실제 서비스와 같은 입력을 넣는다.
     first_step_text = resolve_for_tts(steps_result["steps"][0]["text"])
     from tts.infer import tts_synthesize
 

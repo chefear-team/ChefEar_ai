@@ -1,19 +1,4 @@
-"""Qwen3-TTS 1.7B CPU 추론 속도 실측 (HF Spaces CPU Basic, 2 vCPU 흉내).
-
-읽기 전용 벤치마크. 학습 스크립트/체크포인트를 건드리지 않는다.
-
-사용 체크포인트 우선순위(2026-08-19 수정 — 이슈: 기존 코드는 models/tts_finetuned/가
-비어있으면 곧장 사전학습 베이스로 폴백해서, 실제로는 한 번도 우리 파인튜닝 모델을 재지
-않고 있었다):
-  1) models/tts_finetuned/ 아래 가장 최근 체크포인트(로컬에 내려받아둔 경우)
-  2) 없으면 실제 배포 모델(kimseunguk/qwen3-tts-kss-finetuned, HF Hub private repo,
-     src/tts/infer.py의 MODEL_ID와 동일) — HF_TOKEN 필요
-  3) 그것도 안 되면(HF_TOKEN 없음 등) 마지막 수단으로 사전학습 베이스
-     Qwen/Qwen3-TTS-12Hz-1.7B-Base + 공개 데모 참조 오디오(이 경우 실제 배포 모델 속도가
-     아니라는 걸 콘솔에 명시적으로 경고한다)
-
-결과: results/tts/cpu_inference_test.csv (text, run, inference_seconds)
-"""
+"""Qwen3-TTS 1.7B 추론 속도 실측 — CPU(2 vCPU 흉내) 또는 GPU, 문장별 5초 목표 PASS/FAIL 판정."""
 
 import csv
 import os
@@ -60,8 +45,6 @@ DEMO_REF_TEXT = (
 DEPLOYED_REF_AUDIO = str(PROJECT_ROOT / "src" / "tts" / "assets" / "kss_reference.wav")
 DEPLOYED_REF_TEXT = "나는 살아오면서 감기를 앓은 적이 한 번도 없다."
 
-# custom_voice 타입 체크포인트로 되돌아갈 경우를 대비한 화자명 — src/tts/infer.py와 동일
-# ("kss_speaker_a100"이 아니라 "kss_speaker", 2026-08-18 실측 확인).
 SPEAKER = "kss_speaker"
 
 SENTENCES = [

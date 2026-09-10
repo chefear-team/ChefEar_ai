@@ -401,8 +401,8 @@ st.markdown(
   <div class="section-title">다양한 요리를 만나보세요</div>
   <div class="section-sub">익숙한 집밥부터 다양한 메뉴까지 원하는 요리를 찾아볼 수 있어요.</div>
   <div class="stat-grid">
-    <div class="stat"><div class="num">60,282</div><div class="label">다양한 요리명</div></div>
-    <div class="stat"><div class="num">234,538</div><div class="label">레시피 정보</div></div>
+    <div class="stat"><div class="num">500</div><div class="label">큐레이션 표준 레시피</div></div>
+    <div class="stat"><div class="num">2,950</div><div class="label">조리 단계 안내문</div></div>
   </div>
 </div>
 """,

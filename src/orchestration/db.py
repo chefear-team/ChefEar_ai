@@ -1,19 +1,4 @@
-"""Supabase 클라이언트를 만드는 공용 헬퍼.
-
-이 프로젝트는 SQL 함수(RPC)를 쓰지 않고 supabase-py가 제공하는 필터 API
-(.eq(), .ilike() 등)만 사용하기로 했다(문서 8.1, OI-08 — 팀에 SQL 미숙련자가
-있어서 "복잡한 SQL 대신 Python에서 조건을 조립하자"는 방향). 그래서 recipe_search.py,
-pipeline.py 같은 다른 orchestration 모듈들이 전부 이 파일의 get_client()를 불러서
-쓰고, DB 연결 관련 코드는 여기 한 곳에만 모아둔다(중복 방지).
-
-## 강사 체크리스트 4번: 백엔드 골격 + 가짜(mock) 응답
-
-Supabase 프로젝트 자격증명(.env의 SUPABASE_URL/SUPABASE_KEY)이 아직 없어도
-오케스트레이션 함수들이 그냥 죽어버리지 않게, get_client()가 자동으로
-mock_client.py의 가짜 클라이언트로 대체해준다(아래 get_client() 참고).
-자격증명이 준비되는 순간(.env에 값이 채워지는 순간) 코드 수정 없이 자동으로
-진짜 Supabase로 전환된다.
-"""
+"""Supabase 클라이언트를 만드는 공용 헬퍼."""
 from __future__ import annotations
 
 import os
@@ -68,29 +53,12 @@ def _mock_client_singleton():
 @lru_cache(maxsize=1)
 def _real_client_singleton(url: str, key: str):
     """진짜 Supabase 클라이언트를 (url, key) 조합당 딱 한 번만 만들어서 재사용한다
-    (2026-08-26 수정 — _mock_client_singleton()과 똑같은 이유, 아래 get_client()의
+    ( _mock_client_singleton과 똑같은 이유, 아래 get_client의
     예전 동작과 비교 참고).
-
-    예전엔 get_client()가 매번 create_client(url, key)를 새로 호출해서, 호출할 때마다
-    완전히 다른 client 객체를 돌려주고 있었다. 그런데 recipe_search.py::_all_dish_names()/
-    _decomposed_name_map()이 "같은 client 객체로 다시 부르면 캐시 히트"라는 전제로
-    @lru_cache(client를 캐시 키로 씀)를 걸어둔 상태라(그 문서의 "12~18초 걸려서" 설명
-    참고), client 객체가 매번 바뀌면 그 캐시가 매번 무조건 미스나서 사실상 아무 효과가
-    없었다 — 실측 리포트("DB에도 없는 메뉴를 말하면 로딩바가 엄청 오래 돈다", extract_dish_name()
-    이 dish_name 추출 실패 시 타는 편집거리 폴백 경로에서 매번 6만여 건 전체 페이지네이션
-    조회를 처음부터 다시 하고 있었던 것)로 확정됐다. 이 함수로 client 자체를 프로세스당
-    하나만 만들어 재사용하면, _all_dish_names()의 캐시가 실제로 히트하게 된다 — 최초
-    1회(여전히 12~18초)만 느리고 그 뒤로는 즉시 반환된다.
     """
     from supabase import create_client
     from supabase.lib.client_options import SyncClientOptions
 
-    # 2026-08-28 — 타임아웃을 명시한다. 기본값으로는 Supabase가 느리거나 응답이 안 올 때
-    # 조회 호출이 무한정 매달려서(예외도 안 나므로 dispatch.py::_compute()의 network_error
-    # 폴백도 안 걸린다) "처리 중" 로딩이 영영 안 끝나는 상태가 된다. 8초를 넘기면 예외를
-    # 던지게 해서, 그 예외를 _compute()가 잡아 "일시적인 오류" 안내로 폴백하게 한다.
-    # (create_client는 SyncClientOptions를 요구한다 — base ClientOptions는 .storage 속성이
-    # 없어 AttributeError.)
     return create_client(
         url,
         key,
@@ -99,21 +67,7 @@ def _real_client_singleton(url: str, key: str):
 
 
 def get_client(allow_mock: bool = True):
-    """.env에서 SUPABASE_URL/SUPABASE_KEY를 읽어 실제 Supabase 클라이언트를 만든다.
-
-    자격증명이 없을 때:
-      - allow_mock=True(기본값): mock_client.py의 가짜 클라이언트를 대신 돌려준다
-        (강사 체크리스트 4번 "백엔드 골격 — 가짜 응답 먼저"). recipe_search.py 등
-        일반 조회/등록 로직은 이 기본값을 그대로 쓴다.
-      - allow_mock=False: 예외를 던진다. load_data.py처럼 "진짜로 대량의 실데이터를
-        저장하는" 작업은 가짜 메모리에 조용히 적재해봐야 아무 의미가 없고 오히려
-        "적재 성공했다"는 착각만 주므로, 반드시 진짜 DB가 있어야만 실행되게 막는다.
-
-    supabase import를 함수 안에서 하는 이유: 이 함수를 호출하지 않는 코드
-    (예: classify_intent()만 쓰는 테스트)에서는 supabase 패키지가 없어도 되게
-    하기 위해서다(모듈 최상단에서 import하면 그 모듈을 쓰는 모든 곳이 supabase
-    패키지를 강제로 요구하게 된다).
-    """
+    """.env에서 SUPABASE_URL/SUPABASE_KEY를 읽어 실제 Supabase 클라이언트를 만든다."""
     load_env()
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")

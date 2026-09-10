@@ -18,14 +18,7 @@ from orchestration.registration import delete_recipe
 
 
 def _pending_recipes(client) -> list[dict]:
-    """approved == 'N'인 레시피 전체를 최신 등록순으로 가져온다.
-
-    2026-08-27 수정 — 조회(select_standard_recipe)가 source 구분 없이 approved
-    값만 보고 공개 여부를 가르는 것과 똑같이, 관리자 승인 대기 목록도 source와
-    무관하게 approved == 'N'인 행은 전부 보여준다(원래는 source == 'user_custom'도
-    같이 걸어서, api_standard 행의 approved를 수동으로 'N'으로 바꾼 경우 목록에
-    안 잡히는 문제가 있었음 — 실측 확인).
-    """
+    """approved == 'N'인 레시피 전체를 최신 등록순으로 가져온다."""
     res = client.table("recipes").select("*").eq("approved", "N").execute()
     rows = res.data or []
     return sorted(rows, key=lambda r: r.get("created_at", ""), reverse=True)
@@ -49,8 +42,6 @@ def render_admin() -> None:
 
     for row in pending:
         recipe_id = row["id"]
-        # 2026-08-27 요청 — 목록이 길어지는 문제로 카드 전체를 접이식(expander)으로
-        # 바꿨다. 기본은 닫힌 상태(요리명 한 줄씩)로, 클릭하면 재료/조리순서/버튼이 열린다.
         with st.expander(row.get("dish_name", "(이름 없음)")):
             st.write(f"**재료**: {row.get('ingredients', '')}")
 

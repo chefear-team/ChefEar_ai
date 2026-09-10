@@ -20,8 +20,6 @@ def test_ac06_full_flow_confirms_and_saves_as_user_custom():
     saved = client.table("recipes").rows[result["recipe_id"]]
     assert saved["dish_name"] == "문어초무침"
     assert saved["source"] == "user_custom"
-    # 2026-09-02 — docs/specs/private_recipe_visibility.md: 관리자 승인 대기 대신
-    # 즉시 approved='Y'로 저장되고, 대신 조회 시 owner_id로 본인 소유만 걸러진다.
     assert saved["approved"] == "Y"
     steps = [r for r in client.table("recipe_steps").rows.values() if r["recipe_id"] == result["recipe_id"]]
     assert len(steps) == 2
@@ -109,7 +107,6 @@ def test_ac02_update_recipe_replaces_steps_and_keeps_recipe_id():
         (r for r in client.table("recipe_steps").rows.values() if r["recipe_id"] == recipe_id),
         key=lambda r: r["step_number"],
     )
-    # 2026-09-02 — update_recipe()도 save_recipe()와 같은 "N. " 순번 접두어를 붙인다.
     assert [s["step_text"] for s in steps] == ["1. 새 1단계", "2. 새 2단계"]
 
 
@@ -139,12 +136,13 @@ def test_register_recipe_confirm_passes_owner_id_through_to_save_recipe():
 
 
 def test_save_recipe_auto_tags_variant_phrases_for_tts():
-    """2026-09-01 — 500개 큐레이션 데이터는 term_dict.TERM_PATTERNS에 미리 맞춰
+    """500개 큐레이션 데이터는 term_dict.TERM_PATTERNS에 미리 맞춰
     [TERM:...] 태그가 붙은 채로 들어오지만, 사용자가 직접 등록하는 조리순서는
-    "무를 나박하게 썰어주세요"처럼 자유 형식이라 태그가 없다. save_recipe()가
-    저장 직전 auto_tag_terms()를 거쳐서 이런 변형 표현도 자동으로 태깅해야
-    resolve_for_tts()가 나중에 설명을 붙여줄 수 있다 — 이 경로 전체(등록 ->
-    저장 -> DB에 실제로 들어간 step_text -> TTS 변환)를 끝까지 확인한다."""
+    "무를 나박하게 썰어주세요"처럼 자유 형식이라 태그가 없다. save_recipe가
+    저장 직전 auto_tag_terms를 거쳐서 이런 변형 표현도 자동으로 태깅해야
+    resolve_for_tts가 나중에 설명을 붙여줄 수 있다 — 이 경로 전체(등록 ->
+    저장 -> DB에 실제로 들어간 step_text -> TTS 변환)를 끝까지 확인한다.
+    """
     client = FakeSupabaseClient()
     result = save_recipe(
         "무나물",
@@ -159,7 +157,6 @@ def test_save_recipe_auto_tags_variant_phrases_for_tts():
         for r in client.table("recipe_steps").rows.values()
         if r["recipe_id"] == result["recipe_id"]
     }
-    # 2026-09-02 — save_recipe()가 태깅 뒤에 "N. " 순번 접두어를 붙인다.
     assert steps[1]["step_text"] == "1. 무를 나박하게 썰어주세요\n[TERM:나박썰기]"
     assert steps[2]["step_text"] == "2. 양파는 어슷하게 썰어주세요\n[TERM:어슷썰기]"
     # 매칭되는 용어가 없는 문장은 태그 없이 그대로 저장돼야 한다.

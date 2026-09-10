@@ -1,5 +1,5 @@
-"""ui/theme.py의 순수 로직 헬퍼 테스트 — 사용자 리포트(2026-09-01, 긴 유저명이
-브랜드 버튼/마이레시피 배지를 늘어뜨리는 문제) 기반."""
+"""ui/theme.py의 순수 로직 헬퍼 테스트 — 사용자 리포트 기반.
+"""
 from theme import truncate_display_name
 
 

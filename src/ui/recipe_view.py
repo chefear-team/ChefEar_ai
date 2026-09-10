@@ -1,7 +1,4 @@
-"""ChefEar 레시피 표시용 데이터 — src/app.py에서 분리(2026-08-22, 화면 컴포넌트화).
-
-recipes 테이블 조회(handle_utterance() 응답엔 재료 원문이 없어서 별도로 필요).
-"""
+"""ChefEar 레시피 화면 데이터 — recipes/recipe_steps 조회 결과를 세션에 캐시하고 재료 칩으로 변환한다."""
 from __future__ import annotations
 
 import time
@@ -40,12 +37,6 @@ def refresh_recipe_view(force: bool = False) -> None:
     cached = st.session_state.recipe_view
     if not force and cached and cached.get("recipe_id") == recipe_id and _view_cache_fresh(cached):
         return
-    # 2026-08-28 — recipe_id별 세션 캐시(_recipe_view_cache). 이번 세션에서 한 번이라도
-    # 조회한 레시피면 force=True로 불려도 DB 왕복(recipes by id + recipe_steps by
-    # recipe_id, _fetch_recipe_view() 참고) 없이 캐시에서 돌려준다. "같은 메뉴를 반복
-    # 조회할 때마다 매번 DB를 들른다"는 실측 리포트 대응(ui/dispatch.py의 요리명 조회
-    # 캐시와 한 쌍). 관리자 승인/삭제로 세션 도중 바뀔 수 있어 _VIEW_CACHE_TTL_S(5분)
-    # 지난 항목은 버리고 다시 조회한다. 캐시는 reset_to_start()가 안 지운다.
     view_cache = st.session_state.setdefault("_recipe_view_cache", {})
     view = view_cache.get(recipe_id)
     if not _view_cache_fresh(view):

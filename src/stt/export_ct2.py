@@ -1,21 +1,4 @@
-"""ChefEar STT 배포용 CTranslate2 변환 스크립트 (오프라인, 1회 실행).
-
-`docs/specs/stt_deploy.md`의 "변환 파이프라인" 절 그대로 구현한 것 — 배포 런타임에서 실행되는
-코드가 아니라, 개발자가 로컬/Colab에서 한 번 돌려서 결과물(CTranslate2 int8 모델)을 만들어두는
-오프라인 스크립트다. `src/stt/infer.py`의 `stt_transcribe()`가 이 결과물을 읽는다.
-
-왜 필요한가: faster-whisper는 HuggingFace transformers 체크포인트를 직접 못 읽고 CTranslate2
-포맷만 읽는다. 지금 STT는 base(openai/whisper-large-v3-turbo) + LoRA 어댑터
-(leeony/chefear-stt-large-v3-turbo) 구조라, 변환 전에 merge_and_unload()로 먼저 하나의
-체크포인트로 합쳐야 한다(TTS가 이미 쓰는 merge 패턴과 동일, src/tts/infer.py 상단 주석 참고).
-
-출력:
-    models/stt_finetuned/_merged_fp16/   병합된 HF 포맷 체크포인트 (중간 산출물)
-    models/stt_finetuned/ct2_int8/       CTranslate2 int8 변환 결과 (stt_transcribe()가 읽음)
-둘 다 git 미추적(.gitignore의 "models/" 패턴).
-
-실행: python src/stt/export_ct2.py
-"""
+"""ChefEar STT 배포용 CTranslate2 변환 스크립트 (오프라인, 1회 실행)."""
 from __future__ import annotations
 
 import os
@@ -34,12 +17,6 @@ from orchestration.db import load_env
 
 load_env()
 
-# 2026-08-22 팀 결정(docs/decisions.md #2, 배포가 GPU 데스크탑 상시 노출로 확정됨)으로
-# CPU 강제(os.environ["CUDA_VISIBLE_DEVICES"] = "")를 없애고 GPU를 쓰도록 바꿨다. 예전엔
-# peft의 어댑터 로딩이 CUDA를 잡으려다 충돌한 적이 있어서(2026-08-19, "CUDA-capable
-# device(s) is/are busy or unavailable") GPU를 아예 숨겼는데, 이 크래시는 GPU가 이미
-# 다른 프로세스에 점유돼 있을 때 재현될 수 있다 — 이 스크립트를 돌리기 전에 GPU 데스크탑에
-# 다른 무거운 GPU 작업(예: src/app.py 실행 중)이 없는지 먼저 확인할 것.
 if not torch.cuda.is_available():
     raise RuntimeError(
         "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
@@ -88,11 +65,6 @@ def main() -> None:
         check=True,
     )
 
-    # ct2-transformers-converter가 preprocessor_config.json을 안 옮겨서(2026-08-19 실측
-    # 확인), whisper-large-v3-turbo(feature_size=128, v3부터 mel bin이 80→128로 바뀜)인데도
-    # faster-whisper가 기본값 80으로 특징을 뽑아서 "Invalid input features shape: expected
-    # (1, 128, 3000), but got (1, 80, 3000)"로 죽는다. 병합 모델 쪽 파일을 직접 복사해서
-    # feature_size=128을 명시해준다.
     preprocessor_src = MERGED_DIR / "preprocessor_config.json"
     if preprocessor_src.exists():
         shutil.copy(preprocessor_src, CT2_DIR / "preprocessor_config.json")

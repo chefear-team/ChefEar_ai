@@ -1,26 +1,4 @@
-"""FR-01/FR-15, 문서 7.2/6.6 — 임베딩 유사도 기반 의도분류(intent classification).
-
-## 이 파일이 하는 일 (개념 설명)
-
-사용자가 "다음"이라고 말하면 그게 "다음 단계로 진행해줘"라는 뜻인지 어떻게
-알까? ChatGPT 같은 LLM에 "이 문장의 의도가 뭐야?"라고 매번 물어볼 수도 있지만,
-이 프로젝트는 서비스가 실행되는 동안 외부 LLM API를 호출하면 안 된다는 원칙이
-있다(1.5 원칙 — 강사 가이드 위반). 그래서 대신 "임베딩 유사도 매칭"이라는
-훨씬 가벼운 방법을 쓴다.
-
-1. "의도별 예문 세트"를 미리 준비해둔다. 예를 들어 "진행" 의도에는
-   "다음", "다음꺼", "넥스트" 같은 예문들이 있다(data/intent_examples/기준예문.csv).
-2. sentence-transformers 모델(jhgan/ko-sroberta-multitask)로 문장을 숫자
-   벡터(임베딩)로 바꾼다. 의미가 비슷한 문장은 벡터도 비슷한 방향을 가리키게
-   학습된 모델이다.
-3. 사용자가 실제로 말한 문장도 같은 방식으로 벡터로 바꾼다.
-4. 사용자 발화 벡터와 모든 예문 벡터 사이의 "코사인 유사도"(두 벡터가 얼마나
-   같은 방향을 가리키는지, -1~1 사이 값. 1에 가까울수록 의미가 비슷함)를 계산해서,
-   가장 유사도가 높은 예문이 속한 의도를 채택한다.
-
-이 방식은 LLM 호출이 아니라 그냥 벡터 내적(dot product) 계산이라 매우
-빠르고, 서버 비용도 안 든다.
-"""
+"""FR-01/FR-15, 문서 7.2/6.6 — 임베딩 유사도 기반 의도분류(intent classification)."""
 from __future__ import annotations
 
 import csv
@@ -54,10 +32,6 @@ THRESHOLD = 0.5
 MARGIN = 0.05
 
 VALID_INTENTS = {"조회", "등록", "진행", "재청취", "이전", "감탄사"}
-# 2026-08-26 추가 — "감탄사"(감사합니다/아멘/고마워요 등)만 새로 추가. "긍정"(응/네/좋아
-# 등, 기준예문.csv엔 있지만 여기 화이트리스트엔 의도적으로 빠져있음 — my_recipes.py
-# 관련 코드가 아니라 recipe_confirm 등 화면이 직접 문자열 비교로 처리하기로 이미
-# 결정된 사항, dispatch.py::process_utterance() 주석 참고)는 그대로 안 건드린다.
 
 FALLBACK_UNCLASSIFIED = "죄송해요, 잘 이해하지 못했어요. 다시 한번 말씀해주시겠어요?"
 FALLBACK_EMPTY = "다시 말씀해주세요."
@@ -101,24 +75,9 @@ def _example_embeddings():
 
 
 def _pick_intent(ranked: list[tuple[str, tuple[float, str]]], context_recipe_id: str | None) -> dict:
-    """유사도 점수가 이미 계산된 뒤, threshold/margin/EC-05 규칙만으로 최종 응답을 결정한다.
-
-    classify_intent()에서 이 부분만 따로 함수로 뺀 이유: 임베딩 계산(모델 로딩,
-    벡터화)은 무겁고 진짜 모델이 있어야 테스트할 수 있지만, "1등/2등 점수가
-    이럴 때 어떤 결과를 내야 하는가"라는 판단 로직 자체는 순수하게 숫자
-    비교일 뿐이라 가짜 점수를 손으로 만들어서도 테스트할 수 있다
-    (tests/test_intent_classifier.py의 test_pick_intent_* 참고). 이렇게
-    "계산이 오래 걸리는 부분"과 "순수 로직 부분"을 나누는 건 테스트를 쉽게
-    만드는 흔한 설계 패턴이다.
-
-    ranked는 [(의도, (유사도 점수, 매칭된 예문 문장)), ...] 형태이고,
-    유사도 점수가 높은 순으로 이미 정렬돼 있다고 가정한다.
-    """
+    """유사도 점수가 이미 계산된 뒤, threshold/margin/EC-05 규칙만으로 최종 응답을 결정한다."""
     top_intent, (top_score, top_example) = ranked[0]
 
-    # 2026-08-25 진단 로그 — 1위/2위 의도·점수·매칭 예문. 2026-08-28: 매 발화마다
-    # 사용자 발화(간접적으로 top_example)와 점수가 stdout에 찍히는 게 부담이라
-    # CHEFEAR_DEBUG가 설정된 경우에만 남긴다(로컬 개발/QA용).
     if os.environ.get("CHEFEAR_DEBUG"):
         second_str = f"{ranked[1][0]}={ranked[1][1][0]:.3f}" if len(ranked) > 1 else "N/A"
         print(f"[classify_intent] 1위: {top_intent}={top_score:.3f} (2위: {second_str}) 문장='{top_example}'")
@@ -144,35 +103,9 @@ def _pick_intent(ranked: list[tuple[str, tuple[float, str]]], context_recipe_id:
             return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_UNCLASSIFIED}
 
     if top_intent == "등록" and context_recipe_id:
-        # 2026-08-26 요청 — "등록"은 아직 아무 레시피도 안 고른 첫 화면에서만 의미
-        # 있는 의도다("등록은 첫 페이지 아니면 의미없는 문구다"). 그런데 실측 로그로
-        # "다음 단계 알려줘"류 조리 중 발화가 "진행"과 근소한 차이로 "등록" 예문과도
-        # 계속 비슷하게 잡히는 게 확인됐다(예: 진행=0.435 vs 등록=0.404) — margin
-        # 미달로 대부분은 미분류로 걸러지지만, 운 좋게(?) margin을 넘기면 조리
-        # 흐름 중간에 뜬금없이 등록 화면으로 튕겨나간다. 이미 레시피를 진행
-        # 중(context_recipe_id 있음)이면 "등록"으로
-        # 분류됐어도 미분류로 되돌려 무시한다. 사용자가 "등록"이라는 단어를 직접
-        # 말하는 경로(dispatch.py::_REGISTER_WORD)는 이 함수를 거치지 않는 별도
-        # 분기라 화면과 무관하게 여전히 동작한다 — 명시적 단어 vs 애매한 임베딩
-        # 매칭을 다르게 취급하는 것.
         return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_UNCLASSIFIED}
 
     if top_intent == "조회" and context_recipe_id:
-        # 2026-08-26 실측 리포트 — 조리 3단계("돼지고기와 새우젓을 손질해주세요") 중에
-        # "돼지고기과?"라고만 말했더니 "돼지고기"를 새 요리명으로 보고 완전히 새로운
-        # 조회를 시작해서 김치찌개 조리가 처음부터 다시 시작된 것처럼 리셋됐다. 처음엔
-        # "한 단어짜리 발화만" 막았는데("된장찌개로 바꿔줘"류 명시적 전환 요청은 허용),
-        # 재요청으로 원칙이 바뀌었다: "레시피 전환이 되면 안 된다, 절대로" — 조리 중엔
-        # 문장이 아무리 명확해도("된장찌개로 바꿔줘", "이제 된장찌개 만들래") 음성으로
-        # 다른 레시피로 넘어가는 길 자체를 완전히 막는다. 다른 레시피를 원하면 "처음"으로
-        # 돌아가서(reset_to_start(), is_home_word() 경로 — 이 함수를 안 거치는 별개 경로라
-        # 여전히 동작함) 초기 화면에서 다시 검색해야 한다 — 그게 유일한 전환 경로다.
-        # 이유: "조회" 분기(pipeline.py)가 조건 없이 session["current_recipe_id"]를
-        # 덮어써서(무슨 요리를 진행 중이었는지 확인/경고 절차가 전혀 없음), 확실한
-        # 전환 요청과 애매한 재료명 언급을 임베딩 유사도만으로 구분하는 건 근본적으로
-        # 신뢰할 수 없다고 판단 — "된장찌개"(요리명 단독) 0.915, "돼지고기"(재료명 단독)
-        # 0.619로 오히려 애매한 쪽이 더 낮게 나오는 경우까지 실측된 상태(intent_classifier.py
-        # 관련 대화 참고), 문장 길이/명확성으로 안전하게 가를 수 있는 문제가 아니다.
         return {"intent": "미분류", "similarity_score": top_score, "fallback_message": FALLBACK_UNCLASSIFIED}
 
     return {"intent": top_intent, "similarity_score": top_score, "matched_example": top_example}
@@ -192,33 +125,8 @@ def classify_intent(utterance: str, context_recipe_id: str | None = None) -> dic
         return {"intent": "미분류", "similarity_score": 0.0, "fallback_message": FALLBACK_EMPTY}
 
     intents, examples, example_embeddings = _example_embeddings()
-    # 2026-08-25 추가 — STT가 "그래?"처럼 평서/응답 발화에도 끝에 물음표를 붙이는 경우가
-    # 흔한데(라이징 인토네이션을 의문문으로 오인), 기준예문.csv 쪽 예문엔 이런 문장부호가
-    # 거의 없다. 그 결과 끝에 "?"/"!"가 붙었을 뿐인 같은 의미의 발화가 예문과 미묘하게
-    # 다른 임베딩이 되어 margin이 근소하게(0.05 미만) 갈리는 사례가 실측 확인됐다
-    # ("그래?" -> 진행=0.616 vs 재청취=0.609, margin=0.007로 미분류 처리). is_home_word()가
-    # 이미 하는 것과 같은 정규화(끝 문장부호 제거)를 여기서도 적용해 분류용 벡터만 이
-    # 노이즈를 안 타게 한다 — chat_log 표시나 다른 후처리에 쓰는 원본 utterance는 그대로 둔다.
     normalized = utterance.strip().rstrip("?!.,~ ")
     query_embedding = _get_model().encode([normalized or utterance], normalize_embeddings=True)[0]
-    # 2026-08-25 — 이 자리에 있던 매 호출마다의 torch.cuda.empty_cache() 제거(2026-09-01).
-    # 원래 이유는 "STT/LLM/TTS/임베딩이 12GB GPU를 같이 써서 유휴 상태에도 VRAM 여유가
-    # 500MB 미만"이었는데(그때 그 전제로 stt/infer.py 등 4곳에 나란히 넣었던 방어 코드),
-    # RunPod A40(48GB) + gpu_worker_pool 멀티프로세스 구조로 옮긴 뒤 실측 확인(2026-09-01,
-    # 승욱님 실측 — 워커 3개 합쳐 36~38GB 사용, 워커당 여유 약 3~4GB)한 결과 그 전제
-    # 자체가 더 이상 유효하지 않다. empty_cache()는 PyTorch에서 잘 알려진 안티패턴이다 —
-    # CUDA 동기화를 강제해서 그 순간 대기 중인 GPU 연산을 전부 완료시키고, 캐싱
-    # allocator가 들고 있던 블록을 드라이버에 반환했다가 다음 호출에서 다시 요청하게
-    # 만들어 오히려 느려진다(모델 가중치 자체는 안 줄어드므로 OOM 방지 효과도 크지
-    # 않음). 여유가 500MB 미만이던 절박한 상황을 벗어난 지금은 이 비용을 매 발화마다
-    # 지불할 이유가 없다. 되돌리는 법: 만약 이후에도 "Queue overflow"/GPU idle인데
-    # 응답이 안 잡히는 증상(과거 이 코드를 넣게 된 그 증상)이 재현되면, git으로 이
-    # 커밋을 되돌리거나 아래 두 줄을 복원할 것 — if torch.cuda.is_available():
-    # torch.cuda.empty_cache()
-    # example_embeddings의 shape는 (예문 개수, 768), query_embedding은 (768,).
-    # 행렬 @ 벡터 연산을 하면 예문 하나하나와 query 사이의 내적(=코사인 유사도,
-    # 위 _example_embeddings() 설명 참고)이 한 번에 배열로 나온다. for문 없이
-    # numpy가 벡터 연산을 훨씬 빠르게 처리해준다.
     scores = example_embeddings @ query_embedding
 
     # 같은 의도에 예문이 여러 개 있을 수 있으므로(예: "진행" 의도 예문이 7개),

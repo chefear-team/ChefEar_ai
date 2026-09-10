@@ -97,9 +97,10 @@ def test_handle_utterance_progress_advances_step():
 
 
 def test_handle_utterance_progress_without_active_recipe_is_honest_not_a_crash():
-    """실측 회귀 테스트(2026-08-20): 레시피를 고른 적 없는 상태(session 비어있음)에서
-    "다음"이 오면 advance_step()이 session["current_recipe_id"]를 못 찾아 KeyError로
-    죽던 실제 버그. 정직하게 되물어야 한다."""
+    """실측 회귀 테스트: 레시피를 고른 적 없는 상태(session 비어있음)에서
+    "다음"이 오면 advance_step이 session["current_recipe_id"]를 못 찾아 KeyError로
+    죽던 실제 버그. 정직하게 되물어야 한다.
+    """
     client = FakeSupabaseClient()
     session: dict = {}
 
@@ -198,9 +199,10 @@ def test_handle_utterance_search_pending_approval_gets_distinct_message():
 
 
 def test_handle_utterance_search_owner_id_restricts_user_custom_to_owner():
-    """2026-09-02 — docs/specs/private_recipe_visibility.md AC-01/02: handle_utterance()가
-    받은 owner_id를 select_standard_recipe()까지 그대로 전달해야, 등록자 본인은 바로
-    조회되고 다른 사람은 "아예 없음"과 같은 안내를 받는다."""
+    """docs/specs/private_recipe_visibility.md AC-01/02: handle_utterance가
+    받은 owner_id를 select_standard_recipe까지 그대로 전달해야, 등록자 본인은 바로
+    조회되고 다른 사람은 "아예 없음"과 같은 안내를 받는다.
+    """
     client = FakeSupabaseClient()
     client.table("recipes").seed(
         {
@@ -229,18 +231,10 @@ def test_handle_utterance_search_owner_id_restricts_user_custom_to_owner():
 
 
 def test_handle_utterance_search_llm_dish_name_mismatch_is_honest_not_recovered():
-    """2026-08-26 — dish_name(로컬 LLM 추측)이 DB의 정확한 문자열과 한 글자라도 다르면
+    """dish_name(로컬 LLM 추측)이 DB의 정확한 문자열과 한 글자라도 다르면
     (여기선 "된장찌개"의 흔한 오인식 "된장치개") 완전일치가 실패하고, 그대로 "표준
-    데이터 밖"으로 안내한다 — 발화 원문으로 extract_dish_name() 보정을 한 번 더
+    데이터 밖"으로 안내한다 — 발화 원문으로 extract_dish_name 보정을 한 번 더
     시도하는 안전망을 잠깐 넣었다가 되돌렸다(알고 있는 한계).
-
-    되돌린 이유: extract_dish_name()의 "후보 중 가장 긴 것을 채택"(길이만 보고
-    매칭 신뢰도는 안 봄) 결함이 이 안전망 경로로 새로 노출돼서, 존재하지 않는
-    요리("초코민트 된장찌개" 등)가 편집거리 약한 매칭(0.7대)으로 전혀 다른 실제
-    요리("토마토된장찌개")에 잘못 매칭되는 문제가 실측 확인됐다 — "모르면 모른다고
-    한다"는 1.5 원칙에 이게 더 크게 어긋난다고 판단해, "우리엄마가 만든 된장찌개."
-    같은 진짜 매칭 실패 케이스를 못 구하는 손해를 감수하기로 함(pipeline.py::
-    handle_utterance() "조회" 분기 주석 참고).
     """
     client = FakeSupabaseClient()
     client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부", "source": "api_standard"})
@@ -254,15 +248,7 @@ def test_handle_utterance_search_llm_dish_name_mismatch_is_honest_not_recovered(
 
 
 def test_handle_utterance_search_recovers_when_llm_strips_dish_name_spacing():
-    """2026-08-26 실측 리포트 — "직접 등록한 '고등어 라테'가 조회 안 됨" 재현/수정.
-
-    entity_extract_llm.py::extract_intent_llm()이 LLM에 넘기기 전 띄어쓰기를 전부
-    지우는 전처리를 하기 때문에(2026-08-20 추가, "소고기 미역국"이 "미역국"만 잘리는
-    문제 방지용), LLM이 돌려주는 dish_name도 공백 없이("고등어라테") 오는 경우가
-    흔하다 — DB엔 원문 그대로("고등어 라테") 저장돼 있어 완전일치가 실패했다.
-    find_dish_name_ignoring_spaces()(공백만 무시하는 완전일치, 편집거리 유사도 아님)로
-    구해내야 한다.
-    """
+    """실측 리포트 — "직접 등록한 '고등어 라테'가 조회 안 됨" 재현/수정."""
     client = FakeSupabaseClient()
     recipe = client.table("recipes").seed(
         {"dish_name": "고등어 라테", "ingredients": "고등어, 우유, 커피", "source": "api_standard"}
