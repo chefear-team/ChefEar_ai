@@ -1,70 +1,57 @@
-# Open Issues / 결정 안 된 것들
+# 의사결정 기록 (최종, 2026-09-10)
 
-가이드(`ChefEar_팀_진행_가이드_v2.md`) 기준으로, 착수 초반 반드시 실측/확정해야 할 항목.
+프로젝트 기간 동안 내린 결정과 근거. 열린 항목은 없다. 실측 수치의 원본은 `results/`와 각 모듈 README에 있다.
 
-항목별로 상태·담당·비고를 구분해 적었습니다 (표 형식은 옆으로 길어 편집하기 어려워 목록으로 변경).
+## 모델·학습
 
-## 1. Qwen3-TTS 1.7B 파인튜닝 — 노트북(RTX 4060 8GB)/데스크탑(RTX 5070 12GB) OOM 없이 완주 가능한지
-- 상태: **해결**
-- 담당: 김승욱
-- 비고: Colab A100에서 QLoRA로 checkpoint-epoch-8까지 완주, merge 후 HF Hub(`kimseunguk/qwen3-tts-kss-finetuned`) 업로드 완료
+| 일자 | 결정 | 근거 |
+| --- | --- | --- |
+| 08-15 | STT 베이스를 `whisper-large-v3-turbo`로 확정 | Whisper Small(경량), wav2vec2(구조 비교군)와 비교. wav2vec2는 숫자·단위·일부 한국어 음절 처리 한계 |
+| 08-16 | TTS는 Colab A100에서 QLoRA로 학습, merge 후 HF Hub 업로드 | 노트북(8GB)·데스크탑(12GB)에서는 OOM |
+| 08-16 | STT+TTS 통합 환경의 `transformers`를 4.46.3 → 4.57.3으로 상향 | `qwen-tts 0.1.1`이 4.57.3 요구. Whisper+PEFT+bitsandbytes도 정상 동작 확인 |
+| 08-19 | TTS 체크포인트를 epoch-24에서 epoch-13으로 되돌림 | epoch-24에서 재인식 CER 1.37 → 14.26, 반복 발화. 과적합·화자 임베딩 변경 |
+| 08-19 | TTS 추론을 화자명 지정에서 참조 음성 voice-clone으로 전환 | epoch-13 체크포인트가 `tts_model_type="base"`(화자 테이블 없음) |
+| 08-19 | 한국어 G2P 라이브러리 미채택, 단어 단위 치환만 | g2pk/g2pk3가 "소금을 넣고"→"소그믈 러코"처럼 단어 경계를 넘는 버그 |
+| 08-2x | STT 최종 어댑터 MIX750(리플레이 500 + 숫자보강 250, LR 1e-5) | train1000은 숫자·단위 86.79%, reinforce250은 일반화 저하. MIX750이 90.57%와 신규500 WER 10.72%를 동시에 만족 |
+| 08-2x | V2 추가 학습(신규 300문장) 미채택 | V1 대비 개선 없음 |
+| 08-26 | TTS `max_new_tokens`를 고정 상수에서 문장 길이 비례 동적 계산으로 | 170~360까지 올려도 긴 문장이 잘림. 글자당 10토큰, 상한 1200 |
 
-## 2. Qwen3-TTS 추론 배포 방식 — CPU(HF Spaces Basic) → **GPU 기반으로 방향 전환**
-- 상태: **배포 방향 결정됨(2026-08-19)** — CPU는 목표(5초) 안에 못 들어와서 포기, 전부 GPU 기반으로 간다
-- 담당: 홍민하 / 김승욱
-- 비고: **1차 방안: Tailscale + 로컬 데스크탑(RTX 5070) 상시 노출로 확정.** 2차/대안 방안으로
-  HF Spaces 배포 + 유료 GPU API 호출도 검토됐으나 1차는 아니고 백업. ⚠️ `AGENTS.md`
-  "기술 스택" 절에는 아직 `Hugging Face Spaces(CPU Basic, 무료)`가 배포 대상으로 명시돼
-  있어 이 결정과 어긋난다 — `AGENTS.md`가 지도 강사 가이드 요건과 연결된 문서라 CPU Basic
-  무료 배포가 단순 기술 선택이 아니라 과제 요건일 수도 있음, `AGENTS.md`/팀 가이드 문서도
-  같이 갱신할지 팀 확인 필요.
-  아래는 GPU 전환 결정 전까지 쌓인 CPU/GPU 실측 이력(참고용으로 남김):
-  CPU: 2026-08-17 구 code path 197.48초 → 2026-08-19 공식 스크립트(`tests/tts_cpu_inference_test.py`)
-  재측정 전체 평균 26.11초, `results/tts/cpu_inference_test.csv`. GPU(RTX 5070): 4문장
-  (eager→SDPA→SDPA+compile 6.34→5.48→5.21초) 이후 문장이 5개(가장 긴 양념 문장 98자 추가)·
-  `MAX_NEW_TOKENS` 250→197로 변경된 버전으로 재측정하니 SDPA+`torch.compile(dynamic=True)`
-  전체 평균 8.75초로 다시 악화(긴 문장 하나가 평균 20.1초). `results/tts/gpu_inference_test_20260819.csv`
-  (최신값). `flash-attn`은 이 환경(WSL/torch 2.13+cu130/`sm_120`)에서 설치 불가 재확인(nvcc
-  없어 소스 빌드도 불가, 두 번 실측 동일 결론). 기존 `torch.compile()`(dynamic 미지정)은
-  재컴파일로 비일관적이었으나 `dynamic=True`로는 안정적으로 개선됨(4문장 기준 5.48→5.21초).
-  98자 문장이 `MAX_NEW_TOKENS=197`에서 8회 중 5회 잘리는 것도 확인(250이면 여유 있음) —
-  기존 이슈 #6(`tests/integration_issues_2026-08-18.md`)과 같은 유형, 문장 늘릴 땐 상한도
-  같이 검토할 것.
+## 서비스·인프라
 
-## 3. STT 학습 스택(transformers/peft/accelerate/bitsandbytes) 버전
-- 상태: 학습용은 확정(`requirements-stt.txt`)
-- 담당: 김승욱
-- 비고: 가이드 6.2
+| 일자 | 결정 | 근거 |
+| --- | --- | --- |
+| 08-19 | HF Spaces CPU 배포 포기, GPU 상시 배포 | CPU TTS 26.11초(목표 5초). GPU는 SDPA+compile로 5.21초 |
+| 08-20 | Ollama 등 별도 LLM 서버 미사용, `transformers`로 직접 로드 | 프레임워크를 임의로 늘리지 않기로 |
+| 08-23 | 상시 마이크(streamlit-webrtc + silero-vad) 도입 | 버튼 녹음 방식은 손이 바쁜 상황에 맞지 않음 |
+| 08-24 | STT `beam_size=1` | beam 5에서 "된장찌개"→"된장찌"처럼 조기 종료 후보로 수렴 |
+| 08-26 | STT 내부 VAD 끔(실시간 경로) | 세그먼터 + 내부 VAD 이중 필터로 작은 목소리가 걸러짐 |
+| 08-27 | 모델별 락 4개 → 단일 락으로 되돌림 | 락 분리 시 GIL 경합으로 "Queue overflow" 재현 |
+| 08-27 | 재료 대체 기능 제거 | 실사용 리포트, 오인식 위험 대비 효용 낮음 |
+| 08-27 | 계정 제거, 관리자 승인 모델로 | 화면 잔상 버그가 로그인 화면에서 반복, "누가 등록했는지" 불필요 |
+| 08-28 | 화면 잔상을 `st.empty()` 슬롯 방식으로 근본 대응 | 컨테이너 자식 수 변동이 streamlit#8360 트리거 |
+| 08-28 | 관리자 2FA를 토큰 + ECAPA-TDNN 화자검증(CPU) | GPU VRAM 여유 없음, 소수 관리자에게 비밀번호 대신 목소리 |
+| 08-31 | 팀 데스크탑(RTX 5070 12GB) → RunPod A40(48GB) 이관 | 동시 사용자·VRAM 한계. Docker 멀티스테이지, GHCR, Cloudflare Tunnel 유지 |
+| 08-31 | 저장소를 GitHub Organization `chefear-team`으로 이전 | GHCR 공개·PAT를 계정 소유자 승인 없이 관리 |
+| 09-01 | 스레드 락 → 프로세스 워커 풀(3개) | GIL은 VRAM과 무관하게 남으므로 프로세스 분리만이 해법 |
+| 09-01 | 60,282건 → 한국 가정식 500건 큐레이션 | 6만 건 조리순서(ChatGPT 생성) 검수 불가. 적은 데이터를 확실하게 |
+| 09-01 | 계정 재도입(로컬 + 구글 OAuth), 마이레시피 복원 | 잔상 버그 해결로 제거 사유 소멸, 등록분 수정 요구 |
+| 09-02 | 등록 로그인 필수, 등록 레시피 본인 전용 노출. 관리자 승인은 레거시 전용 | 승인 대기 동안 본인도 못 쓰는 문제, 소유자 기준이 단순·안전 |
+| 09-02 | TTS 끝음절 잘림 원인을 캐시 파일 동시 쓰기 레이스로 확정, 임시파일+원자적 교체 | 무음 패딩·더미 기호 등 우회는 부작용만 생김 |
+| 09-07 | flash-attn 사전빌드 휠(cp313/torch2.6/cu124) 설치, 실패 시 SDPA 폴백 | 공식 휠 없음. triton 런타임 컴파일 때문에 최종 이미지에 gcc 유지 |
+| 09-08 | TTS 끝 더미 기호(`^`) 완전 제거, 무음 재시도 2회 | 더미 기호가 튀는 소리와 무음 판정 무효화를 유발 |
 
-## 4. [2026-08-16] STT+TTS 통합 실행환경 버전 충돌
-- 상태: **해결**
-- 담당: 김승욱
-- 비고: `qwen-tts==0.1.1`이 `transformers==4.57.3`을 요구해서 `requirements-stt.txt`의 기존 고정 버전(`4.46.3`)과 충돌(`ImportError: cannot import name 'ALL_ATTENTION_FUNCTIONS'`)했던 건 — `transformers`를 낮추지 않고 `4.57.3`으로 올리는 쪽으로 `requirements-stt.txt` 자체를 갱신해서 해결(Whisper+PEFT+bitsandbytes 로딩도 최신 transformers에서 문제없이 동작 확인). 이 조합(`transformers==4.57.3` + `qwen-tts==0.1.1`)으로 `tests/tts_stt_roundtrip_test.py`를 2026-08-17 실제로 통과 실행해서 결과까지 확보함(`results/tts/roundtrip_cer.csv`, 상세: `tests/README.md`)
+## 데이터·평가
 
-## 5. TTS 학습 LoRA 저장소 버전 (instavar/qwen3-tts-lora-finetuning 등, 비공식)
-- 상태: **해결**
-- 담당: 김승욱
-- 비고: 자체 QLoRA 스크립트(`train_qwen3_tts.py`)로 진행, 위 항목 참고
+| 일자 | 결정 | 근거 |
+| --- | --- | --- |
+| 08-17 | TTS 재인식 지표를 WER에서 CER로 | 공백 제거 정규화와 WER 조합이 문장 전체를 단어 1개로 취급 |
+| 08-19 | 합성 오디오는 git 제외, CSV 결과만 커밋 | 용량 |
+| 08-25 | MOS를 지인 13명 블라인드로 수집(모델당 10문항, 909건) | 편의표본임을 명시 |
+| 09-10 | 배포 int8 모델을 Fixed100으로 재평가하는 스크립트 추가 | 발표 수치의 재현 경로 확보(WER 11.83%, CER 1.81%) |
 
-## 6. TTS 추론 저장소 버전
-- 상태: **해결**
-- 담당: 김승욱
-- 비고: `qwen-tts==0.1.1` 패키지, `src/tts/infer.py` 참고. 위 통합환경 충돌 해결로 `transformers==4.57.3`과의 조합이 실측 검증됨 — **2026-08-29 갱신**: 이 버전 고정은 이제 `requirements-main.txt`에 반영됨(`qwen-tts==0.1.1`), `python-dotenv`는 두 infer.py 모두 `orchestration.db.load_env()`로 전환하며 의존성 자체가 빠짐(아래 항목 참고)
+## 알려진 미해결
 
-## 7. [신규 2026-08-17] `src/tts/infer.py`·`src/stt/infer.py` 브랜치 간 불일치
-- 상태: **미해결, 병합 전 정리 필요**
-- 담당: 김승욱
-- 비고: `main`(`fix/stt-dotenv`, `fix/tts-dotenv` PR)은 두 파일 모두 `python-dotenv`로 `.env`를 읽도록 바꿨는데, `requirements.txt`/`requirements-main.txt`(배포·TTS가 실제 쓰는 파일)엔 `python-dotenv`가 없어서 그대로면 HF Spaces 배포 시 `ModuleNotFoundError` 위험이 있음(`requirements-stt.txt`에만 추가됨). `seunguk` 브랜치의 `src/tts/infer.py`는 같은 문제를 `src/orchestration/db.py`의 의존성 없는 `load_env()` 재사용으로 우회 해결(이미 실측 검증됨, 아래 tests/README.md 참고) — 병합 시 어느 방식으로 통일할지 결정 필요. 또한 `main`의 `pipeline.py`는 재료대체 매칭 실패 시 `match_type`을 응답에 안 넣는데(`seunguk`은 시나리오 C 실측 중 발견해서 넣도록 수정함, `tests/integration_test.md` 참고), pytest 스위트에 이를 지키는 회귀 테스트가 없어 병합 시 조용히 빠질 위험 있음
-
-
-| 항목 | 상태 | 담당 | 비고 |
-|---|---|---|---|
-| Qwen3-TTS 1.7B 파인튜닝 — 노트북(RTX 4060 8GB)/데스크탑(RTX 5070 12GB) OOM 없이 완주 가능한지 | **해결** | 김승욱 | Colab A100에서 QLoRA로 checkpoint-epoch-8까지 완주, merge 후 HF Hub(`kimseunguk/qwen3-tts-kss-finetuned`) 업로드 완료 |
-| HF Spaces CPU Basic에서 Qwen3-TTS 추론이 목표 응답시간(5초) 이내인지 | **확인됨 — FAIL** (2026-08-17, 전체 평균 197.48초, 목표의 약 39.5배. `tests/cpu_inference_test_20260816_164450.csv`, 상세: `src/tts/README.md`) | 홍민하 | 가이드 9. 대안 결정 필요: ① Modal 등 GPU 플랫폼 ② Tailscale로 데스크탑 상시 노출 ③ Qwen3-TTS 0.6B로 축소 |
-| STT 학습 스택(transformers/peft/accelerate/bitsandbytes) 버전 | 학습용은 확정(`requirements-stt.txt`) | 김승욱 | 가이드 6.2 |
-| **[2026-08-16] STT+TTS 통합 실행환경 버전 충돌** | **해결** | 김승욱 | `qwen-tts==0.1.1`이 `transformers==4.57.3`을 요구해서 `requirements-stt.txt`의 기존 고정 버전(`4.46.3`)과 충돌(`ImportError: cannot import name 'ALL_ATTENTION_FUNCTIONS'`)했던 건 — `transformers`를 낮추지 않고 `4.57.3`으로 올리는 쪽으로 `requirements-stt.txt` 자체를 갱신해서 해결(Whisper+PEFT+bitsandbytes 로딩도 최신 transformers에서 문제없이 동작 확인). 이 조합(`transformers==4.57.3` + `qwen-tts==0.1.1`)으로 `tests/tts_stt_roundtrip_test.py`를 2026-08-17 실제로 통과 실행해서 결과까지 확보함(`results/tts/roundtrip_cer.csv`, 상세: `tests/README.md`) |
-| TTS 학습 LoRA 저장소 버전 (instavar/qwen3-tts-lora-finetuning 등, 비공식) | **해결** | 김승욱 | 자체 QLoRA 스크립트(`train_qwen3_tts.py`)로 진행, 위 항목 참고 |
-| TTS 추론 저장소 버전 | **해결** | 김승욱 | `qwen-tts==0.1.1` 패키지, `src/tts/infer.py` 참고. 위 통합환경 충돌 해결로 `transformers==4.57.3`과의 조합이 실측 검증됨. 2026-08-29 갱신: `requirements-main.txt`에도 이 버전이 반영됨(위 6번 항목 참고) |
-| **[2026-08-19] `src/stt/infer.py` 환경변수 의존성 정리** | **STT 해결 / TTS·orchestration 확인 필요** | 김승욱 | STT의 `src/stt/infer.py`에서 `python-dotenv` 및 `load_dotenv()` 의존성을 제거함. `HF_STT_MODEL_REPO` 환경변수가 있으면 해당 값을 사용하고, 없으면 기본 Adapter(`leeony/chefear-stt-large-v3-turbo`)를 사용하도록 수정하여 `.env` 없이도 실행 가능. STT의 `python-dotenv` 관련 배포 오류 위험은 해결됨. `src/tts/infer.py`와 `src/orchestration/db.py`의 환경변수 처리 방식 및 실제 HF Spaces 실행 환경은 별도 확인 필요 |
-
-
+- 종단 응답 시간(STT+LLM+TTS) 정식 측정 없음. TTS 단독 5.21초.
+- 학습 스크립트는 Colab·개인 작업 공간에만 있음.
+- STT 원본 모델 zero-shot 기준선 미측정(기준선은 2 epoch 시점).
+- 모델 저장소 private.

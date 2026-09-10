@@ -1,22 +1,4 @@
-"""로그인/회원가입 화면 (docs/specs/user_accounts_google_login.md).
-
-2026-08-27에 제거됐던 로그인 화면(remove_user_accounts.md)을 새 스킴으로 재작성한다.
-아이디+비밀번호는 발화가 아니라 폼(텍스트 입력)으로만 받는다 — 비밀번호를 마이크에
-대고 소리 내어 말하게 하는 건 보안상 부적절하다.
-
-app.py::main()이 이 둘을 포함한 4개 화면(login/signup/my_recipes/edit_recipe)에서
-register_ingredients와 같은 방식으로 listen_for_speech=False를 부른다(register_steps는
-listen_for_speech를 안 넘겨서 실제로는 STT까지 계속 돌리고 결과만 버리는 별개의 패턴이라
-정확히 같지는 않음) — 마이크 연결은 유지하되 음성 처리는 건너뛴다(비밀번호를 마이크에 대고 말하게 하는
-건 보안상 부적절하므로 폼으로만 받는다는 원래 취지는 그대로). 한때 "Cannot create so
-many PeerConnections" 크래시로 마이크를 아예 안 그리는 쪽으로 후퇴했었으나, 진짜
-원인(이 넷만 화면을 짧은 간격으로 반복 왕복해 재협상 중인 연결을 죽은 걸로 오판)을
-규명해 voice_io._recover_dead_mic()에서 고쳤다 — app.py의 해당 분기 주석 참고.
-
-구글 로그인은 Streamlit 내장 st.login()/st.user(OIDC)를 그대로 쓴다 — 리다이렉트 왕복은
-Streamlit이 알아서 처리하고, 우리 코드는 돌아온 뒤 st.user.is_logged_in만 확인하면
-된다(handle_google_login_if_returned(), app.py::main()이 매 rerun 앞부분에서 호출).
-"""
+"""로그인/회원가입 화면 (docs/specs/user_accounts_google_login.md)."""
 from __future__ import annotations
 
 import streamlit as st
@@ -65,7 +47,7 @@ def screen_login() -> None:
             st.rerun()
             return
         session_login(user)
-        persist_local_session(user, client=client)  # 새로고침해도 로그인 유지(2026-09-01)
+        persist_local_session(user, client=client)
         goto("start")
 
     with st.container(key="login_signup_link"):
@@ -111,7 +93,7 @@ def screen_signup() -> None:
             st.rerun()
             return
         session_login(user)
-        persist_local_session(user, client=client)  # 새로고침해도 로그인 유지(2026-09-01)
+        persist_local_session(user, client=client)
         goto("start")
 
 
@@ -126,12 +108,4 @@ def handle_google_login_if_returned() -> None:
         return
     user = auth.login_or_create_google(st.user.sub, st.user.email, client=get_client())
     session_login(user)
-    # 2026-09-01 — 로컬 로그인/회원가입(session_login 직후 goto("start"))과 달리
-    # 구글 로그인은 st.login() 리다이렉트로 돌아온 뒤라 화면 상태가 리다이렉트 전
-    # 그대로(대개 "login")였다 — current_user는 채워지는데 화면은 안 넘어가서
-    # 로그인 화면에 그대로 머무는 버그(사용자 리포트, 2026-09-01)가 있었다. 여기서도
-    # goto()를 그대로 쓰면 이 함수 자체가 main()의 화면 렌더링보다 앞에서 호출되는
-    # 도중에 st.rerun()이 걸려버려 이번 rerun에서 하려던 나머지 초기화(restore_local_
-    # session 등)를 건너뛰게 된다 — goto() 대신 세션 상태만 "start"로 바꿔서, 이번
-    # rerun은 그대로 이어가고 그 결과로 그려질 화면만 바꾼다.
     st.session_state.screen = "start"

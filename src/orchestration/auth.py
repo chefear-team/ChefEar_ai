@@ -1,17 +1,4 @@
-"""ChefEar 일반 사용자 회원가입/로그인 (docs/specs/user_accounts_google_login.md).
-
-2026-08-27에 한 번 완전히 삭제됐던 계정 시스템(docs/specs/remove_user_accounts.md)을
-새 스킴으로 재작성한다. 예전과 가장 다른 점: 계정 식별자(`users.id`)가 무작위 UUID가
-아니라 결정론적(deterministic) SHA256 해시값이다 — 로컬 가입은 `sha256(username)`,
-구글 로그인은 `sha256(google_sub)`. 그래서 "이 계정이 이미 있는지" 확인이 곧
-"이 id로 조회했을 때 행이 있는지"와 같아진다(구글 로그인의 "있으면 패스, 없으면
-insert" 요구사항이 이 성질 덕분에 별도 조건문 없이 자연스럽게 성립).
-
-비밀번호 자체는 SHA256 단독이 아니라 salt+PBKDF2-HMAC-SHA256으로 저장한다 — 순수
-SHA256은 솔트가 없으면 레인보우 테이블 공격에 취약하다. 이 포맷 문자열
-("salt(hex):hash(hex)")은 예전 삭제된 auth.py와 동일해서, 나중에 그 시절 데이터가
-남아있어도(지금은 없음, EC-08) 검증 로직을 그대로 재사용할 수 있다.
-"""
+"""ChefEar 일반 사용자 회원가입/로그인 (docs/specs/user_accounts_google_login.md)."""
 from __future__ import annotations
 
 import hashlib
@@ -28,7 +15,6 @@ from orchestration.db import get_client
 # 값은 그 절충점의 최소선.
 _PBKDF2_ITERATIONS = 260_000
 
-# 2026-09-01 — 로컬 로그인 "새로고침해도 안 풀리게" 세션 유지 토큰의 유효기간.
 _SESSION_TOKEN_TTL_DAYS = 30
 
 

@@ -1,0 +1,31 @@
+﻿model,text,category,hypothesis,wer,accuracy,synth_time_s,audio_duration_s,rtf,status,epoch,run_at
+qwen3-tts-1.7b,돼지고기고추장찌개 만드는 법 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,간장쪽갈비 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,참치김치찌개 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,소불고기 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,소불고기 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,순두부찌개 만드는 법 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,돼지고기김치찌개 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,돼지고기고추장찌개 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,잡채 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,닭볶음탕 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,소고기미역국 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,제육볶음 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,소고기무국 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,된장찌개 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,고등어무조림 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,부대찌개 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,잔멸치볶음 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,잔멸치볶음 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,떡볶이 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,제육볶음 만드는 법 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,간장쪽갈비 만드는 법 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,고등어무조림 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,안동찜닭 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,잔치국수양념장 어떻게 만들어?,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,참치김치찌개 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,떡볶이 만드는 법 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,잔치국수양념장 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,콩나물무침 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,잡채 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35
+qwen3-tts-1.7b,소고기무국 만드는 레시피 알려줘,query,,,,,,,fail: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.,63,2026-08-11T21:44:35

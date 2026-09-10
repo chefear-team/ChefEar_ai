@@ -1,13 +1,4 @@
-"""ChefEar 관리자 페이지 2FA — 2차(화자검증 + 랜덤 단어 챌린지).
-
-docs/specs/admin_voice_2fa.md 참고. `app.py::_run_admin_page()`가 `_admin_verified`
-세션 플래그가 없으면 이 화면을, 있으면 `admin.py::render_admin()`(Phase 1 승인 목록)을
-그린다.
-
-챌린지가 "숫자"가 아니라 "랜덤 한글 단어 3개"인 이유: 배포된 STT(faster-whisper +
-요리 도메인 파인튜닝)가 고립된 숫자("일/이/삼...")를 잘 못 잡는 게 실측 확인됐다
-(2026-08-28). 연결된 실단어는 잘 잡으므로 큐레이션한 명사 풀에서 3개를 뽑아 읽게 한다.
-"""
+"""ChefEar 관리자 페이지 2FA — 2차(화자검증 + 랜덤 단어 챌린지)."""
 from __future__ import annotations
 
 import io
@@ -33,13 +24,6 @@ _NEED_MATCH = 2          # 3개 중 2개 이상 맞으면 통과(STT 1개 실수
 _MAX_ATTEMPTS = 5
 _COOLDOWN_S = 60
 
-# 시도 제한을 **IP 기준 + 서버(모듈) 메모리**로 둔다 — 세션 기반은 새로고침 한 번으로
-# 리셋돼서(새 st.session_state) 실질 방어가 안 됐다(2026-08-28 지적). 이 dict는 streamlit
-# 프로세스가 사는 동안만 유지되고, 프로세스 재시작하면 비워진다.
-#
-# 개인정보 최소 보유 — IP는 "최근 60초 안에 실패 기록이 있거나, 잠금이 안 풀린" 동안만
-# 들고 있는다. 60초 지나면(마지막 실패로부터, 또는 잠금 해제 시각으로부터) 해당 IP 항목을
-# 통째로 삭제한다. 인증 성공 시에도 즉시 삭제한다.
 _rate_lock = threading.Lock()
 _rate: dict = {}  # ip -> {"fails": [monotonic timestamps], "locked_until": float}
 
@@ -183,8 +167,6 @@ def render_voice_challenge() -> None:
         wav, sr = _decode_audio(uploaded)
         from orchestration import gpu_worker_pool, speaker_verify
 
-        # STT만 GPU(gpu_worker_pool 워커 프로세스에서 처리). speaker_verify는 CPU라 그대로
-        # 이 프로세스(메인)에서 바로 돈다 — 2026-09-01, 예전 _GPU_LOCK 자리를 대체.
         transcript = gpu_worker_pool.submit_stt(wav, sample_rate=sr).result()
         word_ok, hits = _transcript_matches(transcript, challenge)
         speaker_ok, name, score = speaker_verify.verify(wav, sample_rate=sr)

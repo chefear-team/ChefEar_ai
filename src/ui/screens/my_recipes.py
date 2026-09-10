@@ -1,17 +1,4 @@
-"""마이레시피(내가 등록한 레시피 목록/수정/삭제) 화면 — docs/specs/my_recipes.md.
-
-2026-08-22~27 사이 존재했다가 계정 시스템 전체 제거와 함께 삭제됐던 화면(git show
-92a29ec^:src/ui/screens/my_recipes.py)을 새 인증 스킴(orchestration.auth.User,
-ui.session.get_owner_id())에 맞춰 되살린다 — 카드 레이아웃/삭제 2단계 확인/
-잔상 방지 key 패턴은 그때 구현을 그대로 재사용한다.
-
-이 둘(my_recipes/edit_recipe)도 login/signup과 같은 이유로 폼/버튼 조작 전용
-화면이라 음성 입력은 필요 없다 — app.py::main()이 listen_for_speech=False로
-불러서 마이크 연결은 유지하되(register_ingredients와 같은 패턴) 음성 처리는
-건너뛴다. 한때 "Cannot create so many PeerConnections" 크래시로 마이크를 아예 안
-그리는 쪽으로 후퇴했었으나, 진짜 원인을 규명해 voice_io._recover_dead_mic()에서
-고쳤다 — login.py/app.py의 해당 분기 주석 참고.
-"""
+"""마이레시피(내가 등록한 레시피 목록/수정/삭제) 화면 — docs/specs/my_recipes.md."""
 from __future__ import annotations
 
 import re
@@ -43,11 +30,12 @@ _STEP_PREFIX_RE = re.compile(r"^\d+\.\s*")
 
 
 def _strip_step_prefix(step_text: str) -> str:
-    """수정 폼 프리필용 — registration.py::save_recipe()/update_recipe()가 저장 시
-    붙이는 "N. " 순번 접두어를 뗀다(2026-09-02). 안 떼고 그대로 프리필하면 사용자가
-    안 건드리고 그대로 저장해도 update_recipe()가 또 새 순번을 앞에 붙여
+    """수정 폼 프리필용 — registration.py::save_recipe/update_recipe가 저장 시
+    붙이는 "N. " 순번 접두어를 뗀다. 안 떼고 그대로 프리필하면 사용자가
+    안 건드리고 그대로 저장해도 update_recipe가 또 새 순번을 앞에 붙여
     "1. 1. 재료를 볶는다"처럼 매번 겹쳐 쌓인다. 접두어가 없는(이 변경 이전에 저장된)
-    레거시 행은 패턴이 안 맞아 그대로 반환된다."""
+    레거시 행은 패턴이 안 맞아 그대로 반환된다.
+    """
     return _STEP_PREFIX_RE.sub("", step_text, count=1)
 
 
@@ -83,10 +71,6 @@ def screen_my_recipes() -> None:
     if render_back_link("처음 화면으로"):
         goto("start")
 
-    # 2026-09-01 — 여기 render_spacer()를 뒀었는데(다른 화면들의 관행), 아래 빈 목록
-    # 상태(no rows)의 "정가운데 정렬용" render_spacer() 두 개와 같은 flex:1 형제로
-    # 경쟁하면서 뒤로가기 링크와 배지 사이에 의도치 않은 큰 공백이 생겼다(사용자 리포트
-    # — "윗공간이 붙게 해달라고"). 뒤로가기 링크 바로 아래 배지가 붙어 보이도록 뺀다.
     client = get_client()
     rows = _my_recipes(user.id, client)
 
@@ -99,16 +83,6 @@ def screen_my_recipes() -> None:
             goto("login")
 
     if not rows:
-        # register.py/cooking.py가 쓰는 "원형 아이콘 + 중앙정렬 제목"(ce-lead-icon +
-        # ce-center) 패턴을 그대로 재사용 — st.info()의 파란 박스 대신, 화면 정가운데
-        # 빈 상태(empty state) 표시로 통일한다(2026-09-01 요청).
-        #
-        # render_spacer()로 앞뒤를 감싸는 이유 — render_loading_message()와 완전히
-        # 같은 이유(위 그 함수 문서 참고): block-container가 flex column(min-height:
-        # 100vh)이라, flex:1인 .ce-spacer 두 개가 위/아래 남는 공간을 똑같이 나눠 가지며
-        # 화면 크기와 무관하게 이 블록을 화면 정가운데로 밀어준다(사용자 요청 — "어느
-        # 화면에 가도 정가운데에 오게끔"). 헤더(뒤로가기/배지/로그아웃) 아래로 남는
-        # 공간 기준의 중앙이다.
         render_spacer()
         st.markdown(f'<div class="ce-lead-icon neutral">{ICON_INBOX}</div>', unsafe_allow_html=True)
         st.markdown(
@@ -204,9 +178,6 @@ def screen_edit_recipe() -> None:
     st.markdown(f'**{recipe["dish_name"]} 수정**')
 
     dish_name = st.text_input("요리명", value=recipe["dish_name"], key="edit_recipe_dish_name")
-    # 2026-09-02 — registration.py가 이제 "|"로 저장하므로(private_recipe_visibility.md),
-    # 화면엔 이 폼 라벨("쉼표로 구분")과 맞게 ", "로 되돌려 보여준다. "|"가 없는(레거시)
-    # 행은 replace가 아무것도 안 바꿔서 그대로 나온다.
     ingredients_text = st.text_area(
         "재료 (쉼표로 구분)", value=(recipe.get("ingredients") or "").replace("|", ", "), key="edit_recipe_ingredients"
     )

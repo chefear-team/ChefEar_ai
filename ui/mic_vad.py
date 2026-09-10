@@ -1,14 +1,4 @@
-"""상시 마이크용 실시간 VAD(음성구간감지) 세그먼터 - 2026-08-20 추가.
-
-streamlit-webrtc가 브라우저 마이크에서 실시간으로 오디오 프레임을 넘겨주는데,
-그건 그냥 끊김 없이 이어지는 오디오 스트림일 뿐이다("다음"이라는 한 마디가
-어디서 시작해서 어디서 끝나는지는 모른다). 이 파일의 MicVadSegmenter가 그
-프레임들을 하나씩 받아서, silero-vad로 "지금 말하고 있다/조용하다"를 판단하고,
-"말하다가 min_silence_duration_ms만큼 조용해지면 거기까지가 한 발화"라고
-잘라서 오디오 배열 하나로 돌려준다. 그 결과를 stt.infer.stt_transcribe()에
-넣으면 텍스트가 되고, 그 텍스트를 orchestration.pipeline.handle_utterance()에
-넣으면 텍스트 테스트 화면과 똑같은 파이프라인을 탄다.
-"""
+"""상시 마이크용 실시간 VAD(음성구간감지) 세그먼터 — silero-vad로 발화 구간을 잘라 STT에 넘긴다."""
 from __future__ import annotations
 
 import os
@@ -16,10 +6,6 @@ from collections import deque
 
 import numpy as np
 
-# 2026-09-01 — threshold/min_silence_duration_ms 둘 다 코드 주석에 스스로 "실측 튜닝
-# 전 임시값"이라고 밝혀둔 하드코딩 값이었다. 재배포(이미지 재빌드) 없이 RunPod Pod
-# 환경변수만 바꿔서 실사용 중에 튜닝할 수 있게 env로 오버라이드 가능하게 뺀다 — 안 주면
-# 기존 기본값(threshold=0.5, min_silence_duration_ms=750) 그대로다.
 _ENV_VAD_THRESHOLD = os.environ.get("VAD_THRESHOLD")
 _ENV_VAD_MIN_SILENCE_MS = os.environ.get("VAD_MIN_SILENCE_MS")
 
@@ -31,21 +17,10 @@ class MicVadSegmenter:
 
     CHUNK_SAMPLES = 512  # silero-vad가 16kHz에서 요구하는 고정 청크 크기(32ms)
 
-    # 2026-08-23 추가 — "된장찌개"가 "상장찌개"로 인식되는 등 첫 음절이 잘려나가는 문제
-    # 실측 확인. silero-vad의 VADIterator는 "말 시작"이라고 확정하기까지 몇 청크의 증거가
-    # 쌓여야 event를 내보내는데(감지 지연), 예전 코드는 그 event가 뜬 청크부터만 담아서
-    # 실제 발화 시작 부분(첫 자음/모음)이 통째로 잘려나갔다. 청크 10개(32ms*10≈320ms)를
-    # 항상 미리 들고 있다가, "말 시작" event가 뜨는 순간 그 사전 버퍼를 앞에 붙여서
-    # 실제 발화 시작 지점을 보존한다.
     PRE_ROLL_CHUNKS = 10
 
     def __init__(
         self,
-        # 2026-08-28 — 600 -> 750. 600ms면 사람이 문장 중간에 숨 쉬는 멈춤("어... 된장찌개...
-        # 어떻게 만들어")을 "발화 끝"으로 잘라서, 요리명만 먼저 조회돼 recipe_confirm으로
-        # 점프하고 나머지 말이 씹히는 게 리뷰에서 지적됐다. 750ms면 자연스러운 문장 내
-        # 쉼은 더 흡수하고, 짧은 명령("다음")의 확정 지연은 150ms만 늘어난다. 값 자체는
-        # 여전히 실측 튜닝 전 임시값 — 명령 반응이 굼뜨게 느껴진다는 보고가 나오면 되돌릴 것.
         min_silence_duration_ms: int = int(_ENV_VAD_MIN_SILENCE_MS) if _ENV_VAD_MIN_SILENCE_MS else 750,
         threshold: float = float(_ENV_VAD_THRESHOLD) if _ENV_VAD_THRESHOLD else 0.5,
         max_speech_duration_s: float = 10.0,
@@ -64,14 +39,6 @@ class MicVadSegmenter:
             min_silence_duration_ms=min_silence_duration_ms,
         )
 
-        # 2026-09-01 — threshold를 "감으로 찍어서 몇 번씩 재배포/재시도"하는 대신,
-        # VADIterator가 매 청크(32ms)마다 실제로 계산하는 "발화 확률"을 직접 실측해서
-        # 한 번에 근거 있는 값을 정하기 위한 진단 로그. 모델을 별도로 한 번 더 호출하면
-        # (같은 청크를 두 번 넣는 셈) VADIterator 내부의 시계열 상태(RNN류라 청크 순서에
-        # 의존)가 꼬일 위험이 있어서, 그 대신 self._iterator.model 호출 자체를 얇게
-        # 감싸서(원래 결과를 그대로 반환하며 곁다리로 로그만 남김) VADIterator가 실제
-        # 판정에 쓰는 바로 그 확률값을 가로챈다 — 동작은 1바이트도 안 바뀐다.
-        # VAD_DEBUG=1일 때만 켜진다(청크마다 찍혀서 평소엔 로그 스팸이라 기본은 끔).
         if os.environ.get("VAD_DEBUG"):
             _real_model = self._iterator.model
 
@@ -85,41 +52,8 @@ class MicVadSegmenter:
 
             self._iterator.model = _debug_model
 
-        # 2026-08-26 요청 — "사람이 말할 때 최대 길어도 7초 이상은 넘기지 않는다"는
-        # 기준으로 강제 컷오프를 추가. 이 min_silence_duration_ms(600ms) 침묵 신호가
-        # 한 번도 안 뜨면(배경 소음/음악이 계속 이어지거나, silero-vad가 뭔가를 계속
-        # "말하는 중"으로 오판하는 등) _speech_chunks_raw가 아무 상한 없이 무한정
-        # 쌓일 수 있었다 — 실제 사람 발화라면 절대 안 벌어질 일이지만, 벌어지면 그
-        # 오디오가 계속 자라기만 하다 STT에 한 번에 통째로 들어가서(비정상적으로 긴
-        # 오디오라 인식 품질도, 지연 시간도 나빠짐) 오늘 다룬 Queue overflow류 문제와
-        # 같은 성격의 버퍼 무한 성장 위험이 된다. 7초 기준에 여유를 조금 얹어 10초로
-        # 잡아서, 정상적인 조금 긴 문장까지 실수로 잘리지 않게 한다 — feed()의 "end"
-        # 강제 처리 분기 참고. 초 단위로만 들고 있는다 — 원본 샘플레이트(_raw_sample_rate)는
-        # 첫 feed() 호출 전까지 모르므로 여기서 샘플 수로 미리 못 바꾼다.
         self._max_speech_duration_s = max_speech_duration_s
 
-        # 2026-08-23 추가 — "테스트용 wav 파일로는 STT가 멀쩡한데 실시간 마이크만 넣으면
-        # (매번 다른 음절이) 이상하게 들린다"는 리포트로 실측 확인한 원인 수정.
-        #
-        # webrtc 오디오 프레임은 보통 20ms 단위(48kHz 기준 960샘플)로 하나씩 들어오는데,
-        # 예전 코드는 그 프레임 하나가 들어올 때마다 매번 독립적으로
-        # librosa.resample(frame, 48000, 16000)을 불렀다. librosa.resample()은 "짧은
-        # 조각 하나를 통째로" 처리하는 함수라 앞뒤 프레임의 문맥을 전혀 모른 채 매번 새
-        # 필터를 거는 것과 같다 — 발화 4초짜리면 프레임-프레임 이음매가 200개 가까이
-        # 생기고, 그 이음매마다 미세한 위상 불연속(작은 클릭/링잉)이 낀다. 파일 하나를
-        # 통째로 리샘플링하는 배치 테스트 경로는 이 이음매가 시작·끝 두 군데뿐이라
-        # 이 문제가 안 보였던 것.
-        #
-        # 하필 이 이음매 잡음이 된소리(ㅉ)/거센소리(ㅊ)처럼 몇 ms짜리 미세한 타이밍
-        # 차이로 구분되는 음소를 잘 뭉갠다("찌개"→"치게" 등) — 그리고 프레임 경계가
-        # 정확히 어느 음소 위에 걸리는지는 네트워크 타이밍에 달려있어 매번 달라지므로,
-        # 매번 다른 음절이 깨지는 것도 이걸로 설명된다.
-        #
-        # 고친 방식: VAD 판정(말하는지/조용한지)에는 그대로 프레임 단위 리샘플링을 쓴다
-        # (에너지 패턴만 보면 되니 이 정도 잡음엔 안 민감함). 대신 실제로 Whisper에
-        # 넘길 오디오는 원본 샘플레이트(예: 48kHz) 그대로 별도 버퍼에 쌓아뒀다가,
-        # VAD가 "발화 끝"을 확정하는 시점에 그 구간 전체를 딱 한 번만 리샘플링한다
-        # (_pending_raw/_speech_chunks_raw/_pre_roll_raw가 그 원본 샘플레이트 버퍼).
         self._pending16k = np.zeros(0, dtype=np.float32)  # VAD 판정 전용(리샘플됨)
         self._pending_raw = np.zeros(0, dtype=np.float32)  # 최종 STT 입력용(원본 샘플레이트)
         self._raw_sample_rate: int | None = None  # feed()에 들어오는 원본 sr(세션 내내 고정 가정)
@@ -184,12 +118,6 @@ class MicVadSegmenter:
                 # 최근 청크만 계속 굴려서 들고 있는다.
                 self._pre_roll_raw.append(raw_chunk)
 
-            # 2026-08-26 요청 — 자연스러운 "end" 신호를 기다리지 않고, 이미 max_speech_duration_s
-            # (기본 10초)를 넘겨 계속 쌓이고 있으면 여기서 강제로 "끝"으로 취급한다. 진짜
-            # end 이벤트가 아니라서 self._iterator(내부 RNN 상태)는 "아직 말하는 중"이라고
-            # 알고 있을 수 있는데, reset_states()로 같이 정리해줘야 다음 판정이 이 중간에
-            # 끊긴 상태에 영향받지 않는다(마이크 재연결 시 reset()을 부르는 것과 같은 이유,
-            # voice_io.py::_recover_dead_mic() 참고).
             forced_cutoff = False
             if self._in_speech and self._raw_sample_rate:
                 elapsed_s = sum(len(c) for c in self._speech_chunks_raw) / self._raw_sample_rate
@@ -206,9 +134,6 @@ class MicVadSegmenter:
                     # 때 생기던 이음매 잡음이 없다.
                     full_raw = np.concatenate(self._speech_chunks_raw)
                     result = self._resample(full_raw, self._raw_sample_rate, 16000)
-                    # 2026-08-23 임시 진단 — "녹음된 게 내 목소리가 아니다" 리포트 원인 파악용.
-                    # 리샘플링 등 이 파일의 가공을 거치기 전 원본(raw, 원본 샘플레이트)도
-                    # 호출부(voice_io.py)가 같이 덤프할 수 있게 남겨둔다. 원인 확인되면 지울 것.
                     self.last_raw_utterance = full_raw
                     self.last_raw_sample_rate = self._raw_sample_rate
                 self._speech_chunks_raw = []
@@ -221,17 +146,6 @@ class MicVadSegmenter:
         """samples를 모노 float32([-1, 1])로 바꾼다 — 리샘플링은 하지 않는다
         (원본 샘플레이트를 그대로 유지해야 나중에 발화 전체를 한 번에만
         리샘플링할 수 있다).
-
-        2026-08-23 수정 — "녹음이 내 목소리가 아니다"(음이 낮고 늘어져 들림) 리포트 원인
-        실측 확인: 예전 코드는 "배열의 더 작은 축이 채널 축"이라고 짐작했는데, 실제로는
-        av.AudioFrame.to_ndarray()가 stereo/packed(s16, non-planar) 프레임을
-        (채널, 샘플) 모양이 아니라 **(1, 샘플수*채널수)짜리 한 줄**로 준다(실측:
-        frame.samples=960인데 shape=(1, 1920)). 그 모양에선 "더 작은 축=채널"이라는
-        가정이 깨져서 L0,R0,L1,R1...이 채널 분리 없이 그냥 순서대로 이어진 모노 샘플인
-        것처럼 처리됐다 — 그러면 실제 시간의 2배 길이 가짜 파형이 만들어지고, 그걸
-        16kHz라고 우기며 재생하니 훨씬 느리고 음높이 낮은(뭉개진, 다른 사람 목소리 같은)
-        소리가 나왔던 것. 배열 모양만으로는 인터리브 여부를 알 수 없어서, 호출부가
-        frame.layout에서 알아낸 실제 채널 수(channels)를 받아 명시적으로 나눈다.
         """
         samples = np.asarray(samples)
         if np.issubdtype(samples.dtype, np.integer):
@@ -243,14 +157,6 @@ class MicVadSegmenter:
         if channels <= 1:
             return samples.reshape(-1)
 
-        # 2026-08-23 임시 진단 — "여전히 굵고 안 들리는 목소리로 녹음됨"(위 인터리브
-        # 수정 이후에도 재현, max_amp=0.9151/rms=0.0755로 크레스트 팩터 비정상 확인)
-        # 원인을 좁히기 위해, (L+R)/2 평균 대신 L채널만 뽑아 비교한다 — 이 마이크가
-        # 진짜 2채널을 서로 다르게(에코 캔슬 처리 등) 담고 있다면 평균이 위상 간섭
-        # (콤필터링)을 일으켜 먹먹/저음으로 들릴 수 있다는 가설 테스트. 이 가설이
-        # 맞으면 L채널만 써도 이 문제가 사라져야 한다 — 아니라면 원인은 다른 곳
-        # (AGC 클리핑 등)이라는 뜻이니 아래 두 return을 각각 .mean(axis=0)/
-        # .mean(axis=1)로 되돌릴 것.
         if samples.ndim == 2 and samples.shape[0] == channels and samples.shape[0] != samples.shape[1]:
             # planar 레이아웃 — 채널마다 행이 분리돼 있음(각 행이 그 채널의 연속된 샘플들).
             return samples[0]

@@ -1,17 +1,5 @@
 # -*- coding: utf-8 -*-
-"""500개 레시피(규칙 기반 생성 조리순서)를 recipes/recipe_steps에 적재한다.
-
-전제: db/migrate_500_recipes_step1_truncate.sql을 Supabase SQL Editor에서 먼저
-실행해서 (1) recipe_steps.source CHECK 제약에 'rule_generated' 추가, (2) 기존
-recipes/recipe_steps 데이터를 TRUNCATE 해둔 상태여야 한다 — 이 스크립트는 순수
-데이터 조작(INSERT)만 한다(supabase-py로 DDL은 못 함, orchestration/db.py 문서 참고).
-
-- recipes: source="api_standard", approved="Y"(기존 load_data.py의 표준 데이터
-  적재 관례와 동일 — 승인 대기 없이 바로 조회 가능해야 하는 표준 데이터라서).
-- recipe_steps: COOKING_STEPS를 "숫자. " 시작 기준으로 단계 분리(그 뒤에 붙는
-  [TERM:...] 줄까지 그 단계에 포함). source="rule_generated"(LLM이 아니라
-  재료 기반 규칙 생성 알고리즘으로 만든 조리순서라는 걸 명시).
-"""
+"""500개 레시피(규칙 기반 생성 조리순서)를 recipes/recipe_steps에 적재한다."""
 from __future__ import annotations
 
 import csv
@@ -93,8 +81,6 @@ def main() -> None:
             )
 
     print(f"[load_500] recipe_steps {len(step_payload)}건 insert 중...")
-    # 2026-08-20 load_data.py의 기존 관례와 동일 — 한 번에 너무 많이 보내면 실패할 수
-    # 있어서 batch로 나눠 보낸다.
     BATCH = 500
     for start in range(0, len(step_payload), BATCH):
         batch = step_payload[start : start + BATCH]

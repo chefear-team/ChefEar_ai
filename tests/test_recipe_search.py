@@ -1,29 +1,17 @@
-"""recipe_search.py 테스트 — 문서 7.3/7.6 AC-03~05, EC-18~19, 승인(approved) 워크플로우.
-
-FakeSupabaseClient(인메모리)로 필터링/선정 로직만 검증한다. 실제 Supabase(PostgREST)
-연동 자체는 자격증명 확보 후 별도 확인이 필요하다(작업1 보고 참고).
-
-2026-08-27 — 재료대체 기능 삭제(remove_ingredient_substitution.md)로 search_variant_recipe()/
-search_by_ingredient_content() 테스트를 걷어냈다. 계정/쿠키 시스템 삭제(remove_user_accounts.md)로
-owner_id 기반 개인화 테스트도 걷어내고, 대신 관리자 승인(approved) 워크플로우
-(admin_recipe_approval.md) 테스트로 교체했다.
-
-2026-09-02 — docs/specs/private_recipe_visibility.md: 로그인 재도입으로 owner_id가 다시
-쓰이면서, "승인되면 전체 공개" 테스트를 "승인 + 본인 소유일 때만 공개"로 되돌린다(approved
-자체는 레거시 approved='N' 행을 걸러내는 역할로 남아 관련 테스트는 그대로 유지).
-"""
+"""recipe_search.py 테스트 — 문서 7.3/7.6 AC-03~05, EC-18~19, 승인(approved) 워크플로우."""
 from fake_supabase import FakeSupabaseClient
 
 from orchestration.recipe_search import extract_dish_name, select_standard_recipe
 
 
 def test_single_candidate_selected():
-    """2026-09-01 — EC-18(조회수 기반 대표성) 테스트를 대체. 500개 표준 데이터는
+    """EC-18(조회수 기반 대표성) 테스트를 대체. 500개 표준 데이터는
     DB unique index(uq_recipes_dish_name_standard)로 요리명당 api_standard가
     정확히 1행만 있도록 이미 보장돼서, "여러 후보 중 대표 선정" 개념 자체가
-    없어졌다(select_standard_recipe() 문서 참고) — total_candidates/
+    없어졌다(select_standard_recipe 문서 참고) — total_candidates/
     representativeness 필드도 함께 제거됐다. 후보가 하나뿐일 때 그 하나가
-    그대로 선택되는지만 확인한다."""
+    그대로 선택되는지만 확인한다.
+    """
     client = FakeSupabaseClient()
     row = client.table("recipes").seed(
         {"dish_name": "된장찌개", "ingredients": "두부", "source": "api_standard", "view_count": 1403370}
@@ -37,12 +25,13 @@ def test_single_candidate_selected():
 
 
 def test_api_standard_preferred_over_user_custom_same_name():
-    """2026-09-01 — EC-19(조회수 0일 때 최신 등록일 우선) 테스트를 대체. 다중
+    """EC-19(조회수 0일 때 최신 등록일 우선) 테스트를 대체. 다중
     api_standard 후보 시나리오는 이제 DB 제약상 발생할 수 없어서(위 문서 참고)
     그 규칙 자체가 무의미해졌다. 지금 실제로 남아있는 유일한 다중 후보 케이스—
     같은 요리명으로 api_standard와 user_custom이 같이 있는 경우—를 대신
     검증한다: 검증된 표준(api_standard)이 사용자 임의 제출보다 항상 우선해야
-    한다(select_standard_recipe() 문서 참고)."""
+    한다(select_standard_recipe 문서 참고).
+    """
     client = FakeSupabaseClient()
     client.table("recipes").seed(
         {
@@ -86,9 +75,10 @@ def test_pending_when_only_unapproved_user_custom_exists():
 
 
 def test_approved_user_custom_visible_only_to_owner():
-    """2026-09-02 — 승인(approved='Y')만으로는 더 이상 전체 공개되지 않는다. 등록한
+    """승인(approved='Y')만으로는 더 이상 전체 공개되지 않는다. 등록한
     본인(owner_id 일치)만 조회되고, 다른 사용자·비로그인 조회자에게는 안 보인다
-    (private_recipe_visibility.md)."""
+    (private_recipe_visibility.md).
+    """
     client = FakeSupabaseClient()
     row = client.table("recipes").seed(
         {
@@ -165,10 +155,11 @@ def test_extract_dish_name_fuzzy_matches_misheard_word_inside_sentence():
 
 
 def test_extract_dish_name_fuzzy_matches_phoneme_level_mishearing():
-    """2026-08-23 실사용 보고: 상시 마이크로 "된장찌개"라고 말했는데 STT가 "된장치게"로
+    """실사용 보고: 상시 마이크로 "된장찌개"라고 말했는데 STT가 "된장치게"로
     오인식(찌/치 된소리-거센소리 혼동 + 개/게 애-에 모음 혼동, 자모 하나씩만 다름).
-    음절 단위 SequenceMatcher.ratio()는 0.5로 FUZZY_CUTOFF(0.7) 미달이라 기존 구현은
-    이 케이스를 못 잡았다 — 자모 분해 비교(_decompose_hangul)로 고쳐서 잡아야 한다."""
+    음절 단위 SequenceMatcher.ratio는 0.5로 FUZZY_CUTOFF(0.7) 미달이라 기존 구현은
+    이 케이스를 못 잡았다 — 자모 분해 비교(_decompose_hangul)로 고쳐서 잡아야 한다.
+    """
     client = FakeSupabaseClient()
     client.table("recipes").seed({"dish_name": "된장찌개", "ingredients": "두부, 감자", "source": "api_standard"})
 
@@ -183,11 +174,12 @@ def test_extract_dish_name_returns_none_when_nothing_close():
 
 
 def test_extract_dish_name_ignores_stt_inserted_space_over_shorter_real_dish():
-    """2026-08-27 실측 리포트 — "10분잡채"(DB엔 공백 없이 저장)를 STT가 "10분 잡채"로
+    """실측 리포트 — "10분잡채"(DB엔 공백 없이 저장)를 STT가 "10분 잡채"로
     중간에 공백을 넣어 인식하면, 그 안에 우연히 들어있는 더 짧은 다른 요리명("잡채",
     이것도 실제 DB에 있음)만 부분일치로 잡혀서 "10분잡채" 대신 "잡채"로 조회되는
     버그였다. 공백을 지운 버전으로도 부분일치를 시도해서 더 긴(구체적인) 이름을
-    우선 채택해야 한다."""
+    우선 채택해야 한다.
+    """
     client = FakeSupabaseClient()
     client.table("recipes").seed({"dish_name": "10분잡채", "ingredients": "당면, 채소", "source": "api_standard"})
     client.table("recipes").seed({"dish_name": "잡채", "ingredients": "당면, 채소", "source": "api_standard"})

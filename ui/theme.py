@@ -1,8 +1,8 @@
-"""ui/html/assets/style.css와 같은 디자인 토큰을 Streamlit용으로 옮긴 공통 스타일/컴포넌트.
+"""ChefEar 공용 스타일·화면 컴포넌트(CSS, 아이콘, 배지, 카드, 재료칩, 대화 로그, 오디오 재생).
 
 Streamlit 기본 위젯(st.button 등)은 그대로 쓰고, 배지·카드·재료칩·대화 로그처럼
 Streamlit 기본 컴포넌트로 표현하기 어려운 조각만 st.markdown(unsafe_allow_html=True)로
-그린다. docs/ChefEar_PRD_SDD_v0.8.md 3.3의 화면 구성(①~⑥)을 그대로 따른다.
+그린다. docs/ChefEar_PRD_SDD_v0.9.md 3.4의 화면 구성을 따른다.
 """
 import base64
 import io
@@ -16,40 +16,18 @@ import numpy as np
 import soundfile as sf
 import streamlit as st
 
-# 2026-08-26 요청 — 상단 "ChefEar" 아이콘+글자 로고를 실제 브랜드 로고 이미지로 교체.
-# ui/theme.py 자신이 ui/ 바로 밑에 있어서 .parent가 곧 ui/ 폴더 — images/ 하위 경로만
-# 더하면 된다(voice_io.py의 PROJECT_ROOT 패턴과 같은 방식, 계층만 하나 덜 올라감).
-# 모듈 임포트 시 딱 한 번만 파일을 읽어 base64로 인코딩해서 캐시해둔다(Streamlit이
-# 매 rerun마다 이 모듈을 다시 import하지 않고 이미 로드된 모듈 객체를 재사용하므로,
-# 모듈 최상단 코드는 프로세스 생애주기 동안 한 번만 실행됨 — 매번 디스크에서 다시
-# 안 읽어도 됨). 파일이 없거나(팀원 로컬 등) 읽기 실패해도 서비스가 죽으면 안 되므로
-# (EC-05와 같은 정신) 조용히 None으로 남겨서 render_brand()가 예전 아이콘+글자로
-# 대체(fallback)하게 한다.
 _LOGO_PATH = Path(__file__).resolve().parent / "images" / "chefear_logo_투명.png"
 try:
     _LOGO_DATA_URI = "data:image/png;base64," + base64.b64encode(_LOGO_PATH.read_bytes()).decode("ascii")
 except Exception:
     _LOGO_DATA_URI = None
 
-# 2026-09-01 — 구글 로그인/회원가입 버튼(ui/screens/login.py)의 "G" 로고 이미지.
-# 위 _LOGO_PATH(ui/images/, 이 파일과 같은 폴더 밑)와 달리 이건 src/ui/images/에 있다
-# (사용자가 직접 그 경로에 저장) — 이 파일(ui/theme.py)은 top-level ui/ 소속이라
-# .parent.parent가 프로젝트 루트, 거기서 src/ui/images/로 내려간다. 헷갈리기 쉬운 두
-# ui/ 폴더 얘기는 이 프로젝트 여러 파일 상단에 반복해서 적혀있는 그 주의사항과 같다.
 _GOOGLE_ICON_PATH = Path(__file__).resolve().parent.parent / "src" / "ui" / "images" / "google_icon.png"
 try:
     _GOOGLE_ICON_DATA_URI = "data:image/png;base64," + base64.b64encode(_GOOGLE_ICON_PATH.read_bytes()).decode("ascii")
 except Exception:
     _GOOGLE_ICON_DATA_URI = None
 
-# 2026-08-26 요청 — 바깥 배경(.stApp, 모바일 폭 카드 바깥쪽 뷰포트 전체)에 배경 이미지를
-# 입힌다. 원본(ui/images/chefear_배경.png)이 2816x1536 PNG로 6.2MB나 돼서 그대로
-# base64로 CSS에 박으면 매 페이지 로드마다 8MB 넘게 더 얹는 꼴이라(무거운 화면 잔상
-# 스크립트에 시달린 오늘 밤 성능 감각으로 볼 때 절대 좋을 게 없음), 미리 리사이즈+JPEG
-# 재압축해서 로컬에 별도 캐시 파일로 저장해두고(_BG_OPTIMIZED_PATH) 그걸 읽어서 인코딩한다
-# (최초 1회만 리사이즈, 이후엔 캐시 파일만 읽음 — PIL을 매 프로세스 시작마다 또 돌릴
-# 필요 없음). 원본이 사람 손으로 바뀔 수 있어서 원본보다 캐시가 더 오래됐으면(또는
-# 캐시가 아직 없으면) 그때만 다시 만든다.
 _BG_PATH = Path(__file__).resolve().parent / "images" / "chefear_배경.png"
 _BG_OPTIMIZED_PATH = Path(__file__).resolve().parent / "images" / "_chefear_배경_optimized.jpg"
 
@@ -101,12 +79,7 @@ CSS = """
 footer { visibility: hidden; }
 [data-testid="stToolbar"] { visibility: hidden; }
 [data-testid="stHeader"] { background: transparent; box-shadow: none; }
-/* 버그 실측(2026-08-19, Playwright): background만 투명하게 해도 헤더 <header> 자체는
-   여전히 화면 맨 위(y=0~약 46px)를 뷰포트 기준 고정으로 덮고 있어서, 그 자리에 있는
-   콘텐츠(recipe_confirm의 "처음으로" 링크가 order:-1로 맨 위까지 끌어올려짐)를 클릭해도
-   투명한 헤더가 클릭을 가로채 버렸다(눈엔 안 보이니 원인 파악이 어려웠음,
-   document.elementFromPoint()로 실제 확인). 헤더 전체를 클릭 통과시키고, 남겨두기로 한
-   사이드바 열기 버튼만 다시 클릭 가능하게 되돌린다. */
+
 [data-testid="stHeader"] { pointer-events: none; }
 [data-testid="stExpandSidebarButton"] { pointer-events: auto; }
 
@@ -116,9 +89,7 @@ footer { visibility: hidden; }
   max-width: 430px; background: var(--bg);
   padding: 20px 22px 44px;
   box-shadow: 0 20px 46px rgba(36, 28, 21, 0.14);
-  /* 2026-08-28 — 카드가 뷰포트 위아래에 꽉 붙어 배경사진이 좌우로 뚝 잘려 보이던 것 →
-     위아래 20px 여백 + 둥근 모서리로 "떠있는 카드"처럼, 상단 accent 4px 라인으로
-     브랜드컬러 확장. min-height는 그 40px 여백만큼 줄여 카드가 정확히 뷰포트에 맞게. */
+
   margin: 20px auto;
   border-radius: 28px;
   border-top: 4px solid var(--accent);
@@ -145,17 +116,7 @@ footer { visibility: hidden; }
    stVerticalBlock에서 실측 확인함). shrink:0으로 고정하면 콘텐츠가 짧을 때 grow:1로
    남는 공간을 채우는 동작은 그대로 유지하면서, 콘텐츠가 길어져도 절대 안 찌그러진다. */
 .block-container > [data-testid="stVerticalBlock"] { flex: 1 0 auto !important; }
-/* 2026-09-01 — my_recipes 빈 목록 화면의 render_spacer() 위아래 감싸기(아래 .ce-spacer
-   규칙 참고, "화면 크기 상관없이 정가운데"를 만드는 방식)가 실사용에서 전혀 안 먹혔다
-   (사용자 리포트 — 아이콘이 헤더 바로 아래에 붙어 있고 안 내려감). Playwright로 실제
-   DOM/computed style을 찍어서 확인한 원인: app.py::main()의 st.container(key=f"screen_
-   {screen}")는 stVerticalBlock 하나가 아니라 그걸 감싸는 stLayoutWrapper까지 한 겹 더
-   생긴다(위 "order:0" 수정에 쓰인 [data-testid="stLayoutWrapper"]:has(...) 규칙과 같은
-   구조). 안쪽 stVerticalBlock에 flex:1을 줘봐야, 그 부모인 stLayoutWrapper 자체가
-   flex-grow:0라 자기 콘텐츠 높이(예: 372px)만큼만 차지하고 그 위 조상(792px짜리 큰
-   stVerticalBlock)이 남겨준 나머지 공간을 안 물려준다 — 그러면 안쪽에 flex:1을 줘도
-   나눠 가질 "남는 공간" 자체가 없다. stLayoutWrapper 쪽에 직접 flex:1을 줘야 진짜
-   늘어난다. */
+
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_my_recipes"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_edit_recipe"]) {
   flex: 1 0 auto !important;
@@ -200,13 +161,7 @@ html, body, [class*="css"] { font-family: "Pretendard", -apple-system, "Apple SD
    반응형으로 중앙 정렬이 유지된다. */
 .ce-spacer { width: 100%; flex: 1 1 auto; }
 
-/* 커스텀 컴포넌트(.ce-*)는 각각 별도의 st.markdown() 호출로 그려지는데, Streamlit이
-   그 감싸는 컨테이너(stElementContainer) 높이를 CSS margin을 반영하지 않고 먼저
-   측정해버려서, 그 컴포넌트 자체에 위/아래 margin을 주면 다음 요소와 실제로 겹치는
-   문제가 있었다("이전/다시/다음" 버튼 줄이 마이크 상태줄과 겹쳐 보인 원인).
-   그래서 요소 사이 간격은 개별 margin이 아니라 부모의 flex gap 하나로만 통일한다.
-   2026-08-28 — 콘텐츠 적은 화면에서 요소간 간격이 좁아 빈 공간이 리듬 없이 남아
-   1.35 -> 1.75rem. 조리 카드/footer/점 줄 등은 아래에서 자기 gap을 따로 덮어씀. */
+
 [data-testid="stVerticalBlock"] { gap: 1.75rem; }
 .block-container hr { border-color: var(--border); margin: 10px 0; }
 .block-container small, [data-testid="stCaptionContainer"] { color: var(--text-secondary) !important; font-size: 12.5px !important; }
@@ -219,12 +174,7 @@ div.stTextArea textarea {
   border-radius: 14px; border: 1.5px solid var(--border); background: transparent;
   color: var(--text); font-family: inherit;
 }
-/* 비밀번호 입력칸의 "표시/숨기기"(눈 모양) 토글 버튼 - Streamlit이 클래스명을
-   렌더링마다 새로 해시해서(st-emotion-cache-*) 클래스로는 못 짚고, 값이 고정인
-   aria-label(Show/Hide password)로 짚는다. 버튼 자체 배경은 원래도 투명이지만,
-   버튼을 감싸는 바로 위 div가 회색 배경(rgb(240,242,246))을 따로 갖고 있어서
-   버튼만 투명하게 해선 그 사각 회색 박스가 그대로 남는다 - 그 감싸는 div까지
-   :has()로 같이 짚어서 투명하게 만든다(실측 확인, 2026-08-21).*/
+
 button[aria-label="Show password"], button[aria-label="Hide password"] {
   background: transparent; border: none; box-shadow: none;
 }
@@ -234,15 +184,11 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 
 .ce-back-link { display:inline-flex; align-items:center; gap:4px; font-size:13px; color: var(--text-secondary); font-weight:700; margin-bottom: 4px; }
 
-.ce-brand { display:flex; align-items:center; gap:8px; font-size:22px; font-weight:800; color:var(--text); margin-top: -10px; }  /* 2026-08-26: -15 -> -35px 재요청. 2026-08-28: 카드 상단 accent 라인/둥근모서리 도입 후 로고가 그 위로 너무 떠 보여 -10px로 축소 재요청 */
+.ce-brand { display:flex; align-items:center; gap:8px; font-size:22px; font-weight:800; color:var(--text); margin-top: -10px; }
 .ce-brand .icon { color: var(--accent); display:inline-flex; }
-/* 2026-08-26 — 로고 이미지 버전(.ce-brand-logo). 원본(1024x559)엔 "당신의 AI 요리
-   파트너" 부제도 같이 그려져 있어서, 아이콘+글자 한 줄(22px)보다 세로로 더 크다 —
-   상단 한 줄(로그인 버튼과 나란한 자리)에 자연스럽게 앉도록 높이만 고정하고 너비는
-   원본 비율 그대로 따라가게(auto) 한다. */
-.ce-brand-logo { height: 90px; width: auto; display: block; }  /* 2026-08-26: 40->60->1.5배(90px) 재요청 */
-/* 2026-08-26 — 로고와 같은 줄(render_brand()의 st.columns 오른쪽 칸)에 있는 로그인
-   아이콘 버튼도 같이 위로 15px 옮겨서 로고와 나란한 높이를 유지한다. */
+
+.ce-brand-logo { height: 90px; width: auto; display: block; }
+
 [class*="st-key-brand_login_wrap"] { margin-top: -15px; }
 
 .ce-section-title { display:flex; align-items:center; gap:7px; font-size:15px; font-weight:800; color:var(--text); margin-top: 18px; }
@@ -279,19 +225,12 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 .ce-recipe-name { display:flex; align-items:center; gap:8px; font-size:15px; font-weight:700; color: var(--text); }
 .ce-recipe-name .icon { color: var(--accent); display:inline-flex; }
 
-/* 마이 레시피 목록 전체를 감싸는 컨테이너 - 레시피 개수가 많아지면 화면 밖으로 한없이
-   길어지던 걸, 일정 높이(60vh)가 넘으면 그 안에서만 스크롤되게 한다(2026-08-22 요청).
-   overflow가 오른쪽 카드 그림자(box-shadow)를 잘라먹지 않도록 카드 padding만큼
-   여유(4px)를 좌우에 더 준다. */
+
 [data-testid="stVerticalBlock"][class*="st-key-my_recipes_list"] {
   max-height: 60vh; overflow-y: auto; padding: 4px; margin: -4px;
 }
 
-/* 마이 레시피 카드의 수정/삭제 버튼 두 개 - st.columns로 나누면 감싸는 칸이 넓어질
-   때마다 두 버튼도 같이 벌어져서(각자 칸의 절반씩 차지) 화면이 넓을수록 간격이
-   커지는 문제가 있었다(2026-08-21, 실측). 대신 세로 블록 하나(stVerticalBlock)에
-   버튼 둘을 넣고 여기서 가로 배치로 강제한다 - flex-shrink:0이라 칸이 넓어져도
-   버튼 자체 크기만큼만 차지하고, justify-content:flex-end로 오른쪽에 붙는다. */
+
 [data-testid="stVerticalBlock"][class*="st-key-my_recipe_actions_"] {
   flex-direction: row; flex-wrap: nowrap; gap: 6px; justify-content: flex-end;
   flex-shrink: 0; width: auto;
@@ -304,38 +243,23 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 [data-testid="stVerticalBlock"][class*="st-key-brand_login_wrap"] {
   display: flex; align-items: center; justify-content: flex-end;
 }
-/* 2026-09-01 재요청 — 로고(왼쪽 칸)와 로그인/유저 버튼(오른쪽 칸)이 서로 다른 세로
-   기준(로고는 자연스러운 위쪽 정렬, 버튼은 위 규칙으로 자기 칸 안에서 아래쪽/가운데
-   정렬)으로 떠 있어서, 구글 로그인처럼 유저명이 이메일(길어짐)이면 버튼 칸 자체의
-   높이가 달라져 로고와 어긋나 보이는 문제(사용자 리포트 — "유저 이름이 길어지면
-   유저 구역이 위로 붕 뜨는 느낌"). render_brand()가 두 칸(st.columns)을
-   st.container(key="brand_row")로 감싸도록 바꾸고, 그 안의 가로 블록 자체를
-   세로 중앙 정렬해서 두 칸의 내용물이 서로의 높이와 무관하게 항상 같은 기준선에
-   오도록 한다. */
+
 [class*="st-key-brand_row"] [data-testid="stHorizontalBlock"] {
   align-items: center;
 }
 
-/* 레시피 등록 · 조리 순서 화면(register_steps)의 순서 번호 배지 - 원형 배지 + 문장,
-   마이 레시피 카드(.ce-recipe-name)와 같은 둥근 배지 언어를 재사용한다(2026-08-21).
-   줄 전체 박스는 이제 st-key-reg_step_row_(위 참고)가 담당한다(2026-08-22, 수정/삭제
-   버튼을 넣으려고 순수 HTML 대신 진짜 컨테이너로 바꾸면서 .ce-step-list/.ce-step-row는
-   더 안 쓰게 됨). */
+
 .ce-step-num {
   width:26px; height:26px; min-width:26px; border-radius:50%; background: var(--accent);
   color:#fff; display:grid; place-items:center; font-weight:800; font-size:13px; margin-top:1px;
 }
 
-/* register_steps 화면의 순서 한 줄(2026-08-22 요청, 수정/삭제 버튼 추가) - 안에 실제
-   st.button이 들어가서 순수 HTML .ce-step-row로 못 감싸므로(cs_step_card/my_recipe_card_와
-   같은 이유) 진짜 컨테이너를 카드로 쓴다. 줄마다 키가 다르니(st-key-reg_step_row_<i>)
-   부분일치 선택자로 짚는다. */
+
 [data-testid="stVerticalBlock"][class*="st-key-reg_step_row_"] {
   background: var(--surface); border-radius: 16px; padding: 10px 16px;
   box-shadow: 0 4px 12px rgba(36,28,21,0.05); gap: 4px;
 }
-/* 수정/삭제 버튼 두 개 - my_recipe_actions_와 같은 이유(2026-08-21, 칸이 넓어질수록
-   버튼이 벌어지는 문제)로 세로 블록 하나에 담고 가로 배치 + 오른쪽 붙임으로 강제한다. */
+
 [data-testid="stVerticalBlock"][class*="st-key-reg_step_actions_"] {
   flex-direction: row; flex-wrap: nowrap; gap: 6px; justify-content: flex-end;
   flex-shrink: 0; width: auto;
@@ -349,12 +273,7 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 .ce-dots .d.active { background: var(--accent); transform: scale(1.25); }
 .ce-dots .d.done { background: var(--accent-soft-text); opacity:.45; }
 
-/* cooking_step 상단 점을 실제로 눌러서 그 단계로 바로 이동할 수 있게 만든 버전
-   (2026-08-21 요청) - _dots_html()의 장식용 span 대신 진짜 st.button()을 한 줄에
-   나란히 놓는다. st.columns로 나누면 my_recipe_actions_와 같은 이유로 화면이
-   넓을수록 점 사이 간격이 벌어지므로, 세로 블록 하나에 버튼들을 넣고 여기서
-   가로 배치로 강제한다. 버튼 상태(active/done/todo)를 키 이름 자체에 인코딩해서
-   (cs_dot_active_01 등) CSS가 셀렉터만으로 바로 스타일을 입힐 수 있게 한다. */
+
 [data-testid="stVerticalBlock"][class*="st-key-cs_dots_row"] {
   flex-direction: row; flex-wrap: nowrap; justify-content: center; gap: 2px;
 }
@@ -377,31 +296,16 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
   background: var(--accent); transform: translate(-50%, -50%) scale(1.25);
 }
 
-/* 2026-08-22 리포트 — 위아래 margin이 32px/14px로 비대칭이었어서, vertical_alignment=
-   "center"가 화살표 칸과 텍스트 칸을 각자의 박스(margin 포함) 높이 기준으로 정렬하다 보니
-   텍스트가 화살표보다 아래로 처져 보였다(짧은 한 줄 문장일수록 그 9px 안팎의 어긋남이
-   전체 높이에서 차지하는 비중이 커서 더 두드러짐). margin을 0으로 맞춰서 텍스트 박스
-   높이 = 실제 글자 높이가 되게 하고, 점(dots)과의 간격은 아래 stHorizontalBlock의
-   margin-top으로 화살표·텍스트 칸 셋을 한 덩어리로 같이 밀어서 만든다. */
+
 .ce-step-title { font-size:22px; font-weight:800; text-align:center; line-height:1.45; margin: 0 !important; }
-/* 조리순서 단계 텍스트 양옆의 이전/다음 화살표(2026-08-21 요청) - 화살표는 각자 칸
-   가장자리에 붙어있고 가운데 텍스트 칸만 늘어나면 되므로(2개 아이콘이 서로 벌어지는
-   my_recipe_actions_ 문제와 달리 여기선 오히려 벌어지는 게 의도된 배치), st.columns를
-   그대로 써도 된다. */
+
 [class*="st-key-cs_step_card"] div[data-testid="stHorizontalBlock"] { margin-top: 18px; }
 [class*="st-key-cs_prev_arrow"] button, [class*="st-key-cs_next_arrow"] button {
   background: var(--surface-alt); border: 1px solid var(--border); color: var(--accent);
-  /* use_container_width=True가 버튼을 칸 전체 너비로 늘리는데, 아이콘 하나만 들어있어서
-     칸을 좁게 잡아도(st.columns([1,7,1])) 버튼이 뚱뚱해 보인다는 지적(2026-08-22)으로
-     버튼 자체 너비를 강제로 좁혀 칸 안에서 가운데 정렬한다. */
+
   width: 36px !important; min-width: 36px !important; margin: 0 auto;
 }
-/* 2026-08-22: st.columns([1,10,1])로 비율을 줘도 화면엔 반영 안 됐는데, 원인은 위(298줄
-   근처) "컬럼이 항상 가로로 나란히 있도록" 규칙의 `div[data-testid="stColumn"] { flex: 1 1
-   0 !important; }` — 이게 이 앱의 모든 st.columns()를 강제로 똑같은 너비(1:1:1)로 만들어서
-   Python 쪽 비율 인자를 완전히 무시하고 있었다. cs_step_card 안의 컬럼(화살표-텍스트-화살표)
-   에만 더 구체적인 선택자로 그 규칙을 다시 덮어써서, 화살표 칸은 좁게 고정하고 텍스트
-   칸이 남는 공간을 전부 차지하게 한다. */
+
 [class*="st-key-cs_step_card"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-of-type(1),
 [class*="st-key-cs_step_card"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:nth-of-type(3) {
   flex: 0 0 44px !important; width: 44px !important;
@@ -427,9 +331,7 @@ div:has(> button[aria-label="Show password"]), div:has(> button[aria-label="Hide
 .ce-row p { margin:4px 0 0; font-size:14.5px; line-height:1.65; }
 
 .ce-center { text-align:center; }
-/* 2026-08-28 — 22 -> 30px, margin 하단 8 -> 10px. 제목/본문 크기 차이가 작아 타이포
-   위계가 약했음. .ce-center를 쓰는 큰 중앙 메시지 화면(start/complete/cooking_complete/
-   unclassified)에만 적용됨(조리 단계 텍스트는 .ce-step-title로 별도). */
+
 .ce-center h1 { font-size:30px; font-weight:800; margin:6px 0 10px; }
 .ce-center p { font-size:14.5px; color: var(--text-secondary); line-height:1.6; margin:0; }
 
@@ -488,10 +390,7 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
 .ce-mic-icon { width:50px; height:50px; min-width:50px; border-radius:50%; display:grid; place-items:center; position:relative; }
 .ce-mic-icon.listening { background: var(--accent); color:#fff; box-shadow: 0 0 0 7px rgba(238,123,54,0.16); }
 .ce-mic-icon.idle { background: var(--surface-alt); color: var(--accent); border:2px solid var(--border); }
-/* "듣는 중" 마이크가 정말 활성화된 것처럼 보이도록 링이 바깥으로 퍼지며 옅어지는
-   펄스 애니메이션 - 정적인 고리(box-shadow)만으로는 그냥 켜져있는 건지 실제로
-   듣고 있는 건지 구분이 안 된다는 지적으로 추가함(2026-08-21). idle 상태에는
-   안 붙는다(듣고 있지 않을 땐 펄스도 없어야 앞뒤가 맞음). */
+
 .ce-mic-icon.listening::after {
   content:""; position:absolute; inset:-7px; border-radius:50%;
   border:2px solid var(--accent); opacity:.6;
@@ -522,15 +421,10 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
 .ce-big-mic { width:84px; height:84px; border-radius:50%; display:grid; place-items:center;
   background: var(--surface-alt); color: var(--accent); border: 2px solid var(--border);
   animation: ce-big-mic-pulse 1.8s ease-in-out infinite; transition: background .25s, border-color .25s, box-shadow .25s; }
-/* 2026-08-23 추가 — "준비됐는지 안 됐는지 모르겠다"는 리포트로, 상시 마이크가 실제로
-   연결됐을 때(webrtc_ctx.state.playing)만 .ce-mic-icon.listening(다른 화면의 "듣는 중"
-   표시)과 같은 색(accent) + 번지는 링으로 바뀐다 — 연결 전엔 계속 회색(기존 그대로)이라
-   "아직 준비 안 됨"이 한눈에 구분된다. */
+
 .ce-big-mic.ready { background: var(--accent); color:#fff; border-color: var(--accent);
   box-shadow: 0 0 0 10px rgba(238,123,54,0.16); }
-/* start 화면 큰 마이크 아이콘이 커졌다 작아지길 반복해서 "지금 듣고 있다"는 느낌을 주는
-   숨쉬기(breathing) 애니메이션 - ce-mic-icon.listening::after의 퍼지는 링과는 다르게,
-   여긴 아이콘 자체가 확대/축소된다(2026-08-21 요청). */
+
 @keyframes ce-big-mic-pulse {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.12); }
@@ -547,20 +441,7 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
    색을 못 바꾼다 - 재생 버튼·테두리·배경만 앱 색감에 맞춘다. */
 [data-testid="stAudioInput"] [data-testid="stAudioInputActionButton"] { color: var(--accent) !important; }
 
-/* 큰 원형 마이크(장식용 그림 + 안내 문구) 전체를 클릭 영역으로 만들어, 눌렀을 때만
-   실제 녹음 위젯(st.audio_input)이 나타나게 한다 - hint_chip과 같은 방식으로 투명
-   버튼을 그 위에 겹친다.
 
-   버그 실측(2026-08-19, Playwright로 실제 클릭 좌표 확인): stElementContainer는
-   position:absolute+inset:0로 부모(151px 높이) 전체를 정확히 덮었지만, 그 안의
-   실제 <button>은 40px 높이로만 렌더링돼서 아이콘 아래쪽·안내 문구 영역은 눌러도
-   반응이 없었다. 원인은 button { height:100% }가 자기 직계 부모인 div.stButton
-   기준으로 계산되는데, div.stButton 자체엔 height가 없어(기본값 auto) 퍼센트
-   높이가 안 먹혔기 때문(width는 block 요소가 기본으로 부모 너비를 꽉 채우는 것과
-   달리 height:auto는 내용물 높이만큼만 차지함 - 그래서 width:100%는 이미 되고
-   있었는데 height:100%만 깨져 있었다). div.stButton 자체에도 height:100%를 줘서
-   퍼센트 체인을 이어준다 - 아래 hint_chip/ce_back_link도 같은 패턴이라 동일하게
-   고침. */
 [class*="st-key-ce_big_mic"] { position: relative; }
 [class*="st-key-ce_big_mic"] [data-testid="stElementContainer"]:has(div.stButton) {
   position: absolute; inset: 0; z-index: 2;
@@ -610,39 +491,8 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
    무관하게 정상적으로 다음 형제와의 간격을 줄인다. */
 
 [data-testid="stLayoutWrapper"]:has([class*="st-key-ce_back_link"]) { order: -1; margin-bottom: -14px; }
-/* 2026-08-26 — 실제 DOM/computed style로 확인해보니 위 규칙의 :has()가 back-link의
-   바로 안쪽 wrapper뿐 아니라, back-link를 자손으로 가진 *바깥* stLayoutWrapper까지
-   같이 잡고 있었다 — st.container(key=f"screen_{screen}")로 화면 전체를 한 번 더
-   감싸는 바깥 stLayoutWrapper도 "back-link를 안의 어딘가 자손으로 가진다"는 조건을
-   만족하기 때문(:has()는 직계 자식이 아니라 모든 깊이의 자손을 다 잡음). 그 결과
-   back-link가 있는 화면(전체)가 브랜드보다 앞으로 밀린다(대부분 화면은 내용이 짧아
-   눈에 잘 안 띄었을 뿐, login처럼 폼이 길면 브랜드가 맨 아래로 밀려나는 게 뚜렷이
-   보인다(실제 리포트: login 화면만 예외로 이 바깥 wrapper를 되돌린다) —
-   [class*="st-key-screen_login"]을 자손으로 가진 stLayoutWrapper를 콕 집어서(back-link
-   자체가 아니라 컨테이너 전체를 감싼 바깥 wrapper) order를 0으로 되돌린다, 그 안의
-   back-link 자체는(더 안쪽 규칙이 그대로 적용돼) 화면 본문 맨 위(원래 자기 위치)에
-   남고, 화면 브랜드 뒤에 정상적으로 온다 — 결과적으로 브랜드(그 첫 줄 back-link)
-   순서가 된다.
 
-   2026-08-26 추가 — cooking_complete에서 같은 증상(로고가 아래로 밀림)이 재현돼
-   일반화한다. render_back_link()를 화면 맨 앞에서 부르는 화면은 전부 같은 구조적
-   문제를 겪는다(register.py 3곳 + my_recipes.py 3곳 + cooking.py 1곳, grep으로 확인) —
-   login 하나만 고치고 나머지는 리포트 들어올 때마다 하나씩 고치는 대신, 그 화면들
-   전부를 미리 이 목록에 넣는다.
 
-   ⚠️ 2026-08-26 이 규칙이 두 번째로 사라졌다가 복구됨 — VS Code에서 이 파일을 같이
-   열어두고 있으면, VS Code 자체 버퍼(이 편집 이전 상태로 캐시된)를 저장(Ctrl+S)할 때
-   방금 여기서 한 편집을 그대로 덮어써버리는 것으로 추정된다(git 커밋에도 이 규칙이
-   빠진 채로 들어간 적 있음). 이 파일을 VS Code에서도 동시에 열어두고 있다면, Claude
-   Code가 이 파일을 고친 직후엔 VS Code에서 그 파일을 반드시 새로고침(다시 불러오기)
-   한 뒤에 저장할 것 — 안 그러면 이 규칙(그리고 이 파일의 다른 최근 수정분)이 또
-   조용히 사라질 수 있다. */
-/* 2026-09-01 — screen_signup도 render_back_link()를 맨 앞에서 부르는데(screen_login과
-   같은 구조) 이 목록에 없어서 로고가 화면 맨 아래로 밀리는 게 실측 확인됐다(사용자
-   리포트) — login 옆에 추가. */
-/* 2026-09-01 — screen_my_recipes/screen_edit_recipe 항목은 2026-08-27 계정 시스템
-   전체 삭제 때도 여기서 안 지워진 채 남아있던 죽은 규칙이었는데, my_recipes.md로
-   두 화면이 다시 생기면서 그대로 다시 유효해졌다(내용은 그때와 동일 — 손 안 댐). */
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_login"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_signup"]),
 [data-testid="stLayoutWrapper"]:has([class*="st-key-screen_cooking_complete"]),
@@ -663,11 +513,6 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
   box-shadow: none; color: transparent; cursor: pointer;
 }
 
-/* 2026-09-01 — 구글 로그인/회원가입 버튼(ui/screens/login.py)의 "G" 로고 배경 이미지
-   자체(url(...) 포함)는 inject_css() 안에서 _GOOGLE_ICON_DATA_URI로 별도 <style>
-   블록으로 붙인다(_BG_DATA_URI와 같은 이유 — 이 CSS 문자열 전체를 f-string으로
-   바꾸면 중괄호 수백 개 이스케이프가 위험해서, data URI가 필요한 규칙만 뒤에 분리).
-   여기서는 배경색/모양 등 데이터 URI가 필요 없는 부분만 잡는다. */
 
 /* 화면 하단 버튼 줄을 화면 밑에 고정한다(recipe_confirm의 응/시작·다른 레시피,
    substitution_confirm의 네/아니요 등 - 컨테이너 key가 "_footer_buttons"로 끝나는
@@ -700,8 +545,7 @@ div.stButton > button[kind="primary"]:hover { background: var(--accent-dark); bo
 }
 [class*="st-key-cs_demo_buttons"] div.stButton > button:hover { background: rgba(36,28,21,0.95); }
 
-/* 화면 전환(goto) 중 잠깐 끼워 넣는 로딩 스피너(.ce-loading) - 2026-08-20, "화면마다
-   로딩화면" 요청. 다른 중앙 정렬 화면들과 같은 render_spacer() 패턴으로 수직 중앙에 둔다. */
+
 .ce-loading { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }
 .ce-spinner {
   width:42px; height:42px; border-radius:50%;
@@ -745,9 +589,6 @@ ICON_QUESTION_CIRCLE = _SVG.format(
     body='<circle cx="12" cy="12" r="10"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1.3 1-1.3 1.9"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
 )
 ICON_SPARKLE = _SVG.format(size=26, body='<path d="M12 3v6M12 15v6M3 12h6M15 12h6"/>')
-# 빈 보관함(inbox) 모양 — "아직 아무것도 없음"을 나타내는 범용 empty-state 아이콘
-# (2026-09-01, 마이레시피 빈 목록 화면). ICON_BASKET은 레시피 항목 자체를 가리키는
-# 아이콘이라 "없음"의 의미가 잘 안 살아서 별도로 추가했다.
 ICON_INBOX = _SVG.format(
     size=26,
     body='<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>'
@@ -755,11 +596,6 @@ ICON_INBOX = _SVG.format(
 )
 _BASKET_BODY = '<path d="M3 11h18M12 3v3M7 5v1M17 5v1"/><path d="M4 11l1.2 8.4A2 2 0 0 0 7.2 21h9.6a2 2 0 0 0 2-1.6L20 11"/>'
 ICON_BASKET = _SVG.format(size=21, body=_BASKET_BODY)
-# 재료 이름별로 식재료 이모지를 하나씩 골라줄 파서가 없는 곳(실제 Supabase 조회 재료처럼
-# 자유 형식 텍스트라 재료명만으로 식재료 종류를 안정적으로 못 알아냄 - start.py의
-# _ingredients_text_to_chips() 참고)에서 재료 종류와 무관하게 두루 쓸 칩 아이콘.
-# 이전엔 모든 칩에 당근(🥕) 이모지를 그대로 썼는데, 스팸·떡처럼 안 맞는 음식에도 당근이
-# 붙어 보였다(2026-08-20, 사용자 지적) - 위 섹션 제목과 같은 바구니 아이콘을 작게 재사용.
 ICON_BASKET_SM = _SVG.format(size=14, body=_BASKET_BODY)
 _MIC_BODY = (
     '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3Z"/>'
@@ -773,12 +609,6 @@ ICON_CHEVRON_LEFT = _SVG.format(size=12, body='<polyline points="15 18 9 12 15 6
 
 def inject_css() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
-    # 2026-08-26 요청 — 배경 이미지(위 _BG_DATA_URI, 모듈 최상단 문서 참고). CSS 문자열
-    # 전체를 f-string으로 바꾸면(중괄호가 수백 개라) 이스케이프 위험이 커서, 이 작은
-    # 규칙 하나만 별도 <style> 블록으로 뒤에 이어붙인다 — 나중에 오는 규칙이 같은
-    # 선택자(.stApp)의 앞쪽 규칙(단색 background)을 자연스럽게 덮어써서 !important
-    # 없이도 이긴다. 이미지 로딩 실패 시(_BG_DATA_URI가 None) 아무것도 안 그려서
-    # 원래 단색 배경 그대로 유지된다.
     if _BG_DATA_URI:
         st.markdown(
             f"<style>.stApp {{ background-image: url('{_BG_DATA_URI}'); "
@@ -787,9 +617,6 @@ def inject_css() -> None:
             unsafe_allow_html=True,
         )
 
-    # 2026-09-01 — 구글 로그인/회원가입 버튼의 "G" 로고(_GOOGLE_ICON_DATA_URI, 모듈
-    # 최상단 문서 참고). 위 배경 이미지와 같은 이유로 별도 <style> 블록. 이미지 로딩
-    # 실패 시(파일 없음 등) 아이콘 없이 텍스트만 있는 버튼으로 조용히 대체된다.
     if _GOOGLE_ICON_DATA_URI:
         st.markdown(
             "<style>"
@@ -804,26 +631,10 @@ def inject_css() -> None:
 
 
 def render_loading_overlay(message: str = "말씀 잘 들었어요, 잠시만요...") -> None:
-    """전체 화면을 덮는 반투명 로딩 팝업(2026-08-23 요청) — 발화 인식 후 다음 화면으로
-    넘어가기 전(LLM/DB 조회, TTS 합성 등 몇 초 블로킹되는 구간, voice_io._drain_mic_while()
+    """전체 화면을 덮는 반투명 로딩 팝업 — 발화 인식 후 다음 화면으로
+    넘어가기 전(LLM/DB 조회, TTS 합성 등 몇 초 블로킹되는 구간, voice_io._drain_mic_while
     참고) 동안, "지금 뭔가 처리 중이니 다른 동작을 하지 말아달라"는 걸 명확하게 보여준다.
-
-    st.dialog()(진짜 모달)는 버튼 클릭 등으로 여러 번의 rerun에 걸쳐 열고 닫는 흐름에
-    맞춰져 있어서, "이 스크립트 실행 안에서 블로킹 대기가 끝나면 그냥 사라진다"는 이번
-    쓰임새와는 안 맞는다 — 대신 이 markdown 하나만 그리면 되는 순수 CSS 오버레이를 쓴다.
-    z-index를 최상단으로 두고 pointer-events:all로 밑에 있는 버튼/입력 클릭을 막아서
-    시각적으로도 실질적으로도 "팝업"처럼 동작한다. 이 함수를 호출하는 코드가 블로킹
-    작업을 끝내고 다음 st.rerun()으로 넘어가면(또는 이 함수를 그냥 다시 안 부르면) 다음
-    화면 렌더링엔 이 markdown 자체가 없으니 자연히 사라진다 - 별도로 "닫기" 처리가 필요
-    없다.
     """
-    # 2026-08-26 요청 — "자꾸 깜박깜박거려서 불편하다"는 지적으로 페이드인 추가. 이
-    # div는 뜰 때마다 DOM에 새로 삽입되고 지워질 때는 그냥 통째로 제거되는 구조라(진짜
-    # 모달이 아니라 markdown 하나짜리 순수 오버레이, 위 문서 참고), CSS transition으로
-    # "사라질 때"까지 부드럽게 만들 수는 없다(이미 지워진 노드에 애니메이션을 걸 수
-    # 없음) — 대신 "나타날 때"만 짧게 페이드인시켜서 뚝 튀어나오는 느낌을 줄인다.
-    # 사라지는 쪽의 "반짝임"(뜨자마자 바로 없어짐)은 _drain_mic_while()의 최소 표시
-    # 시간 보장으로 따로 막는다.
     st.markdown(
         f'''
         <div style="position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.45);
@@ -848,19 +659,8 @@ def render_loading_overlay(message: str = "말씀 잘 들었어요, 잠시만요
 
 
 def render_error_notice(message: str = "잠시 후 재시도 해주시길 바랍니다.") -> None:
-    """예상 못한 예외가 화면 그리다 말고 터졌을 때 쓰는 전체 화면 안내(2026-08-26 요청 —
-    "예방 차원으로 다른 에러들에 대해서도 셋팅"). app.py::main()의 최상위 try/except가
+    """예상 못한 예외가 화면 그리다 말고 터졌을 때 쓰는 전체 화면 안내. app.py::main의 최상위 try/except가
     부른다.
-
-    render_loading_overlay()와 같은 순수 CSS 오버레이 패턴(스피너 대신 경고 아이콘) —
-    이미 일부 그려진 화면 위를 덮어서, 사용자에게 원본 스택트레이스/기술적 에러 문구
-    대신 이 문구 하나만 보이게 한다. 실제 예외 내용은 화면에 안 보이고 서버 콘솔에만
-    남는다(EC-05와 같은 정신 — 사용자에게는 조용히 실패하되 개발자는 원인을 추적할 수
-    있어야 함, 호출부인 app.py::main()의 except 블록 참고).
-
-    이건 화면 안 개별 실패(TTS 합성 실패 등, speak() 자신의 st.warning())를 대체하는
-    게 아니다 — 그런 곳들은 이미 더 구체적이고 유용한 문구를 따로 갖고 있어서 그대로
-    둔다. 이 함수는 그 어디서도 안 잡힌, 완전히 예상 못한 예외의 최후 방어선이다.
     """
     st.markdown(
         f'''
@@ -883,18 +683,8 @@ def render_error_notice(message: str = "잠시 후 재시도 해주시길 바랍
 
 def render_access_blocked() -> None:
     """랜딩페이지(https://chefear-landingpage.vercel.app) 버튼을 거치지 않은 직접 URL
-    접근을 막는 안내 화면(2026-08-26 요청 — "토큰 붙은 URL" 방식, app.py::main()
-    상단의 _access_gate_ok() 참고).
-
-    render_error_notice()와 같은 순수 CSS 풀스크린 오버레이 패턴을 재사용하지만
-    쓰임새는 다르다 — 저건 "이미 그려진 화면 위를 덮는" 최후 방어선이고, 이건 그
-    자체로 유일하게 그려지는 화면이다(호출부가 이 함수 직후 st.stop()으로 나머지
-    렌더링/모델 워밍업/DB 연결을 전부 건너뛴다). inset:0 풀스크린 div라 밑에 아무것도
-    안 그려져 있어도(= init_state() 등을 아직 안 거쳐도) 레이아웃이 안 깨진다.
-
-    이 게이트는 완전한 보안이 아니다 — 랜딩페이지 버튼의 URL(?key=...)은 그 페이지
-    HTML/JS를 열어보면(view-source) 그대로 노출된다. "우연히 주소를 직접 쳐보는"
-    정도의 진입만 막는 용도다.
+    접근을 막는 안내 화면( "토큰 붙은 URL" 방식, app.py::main
+    상단의 _access_gate_ok 참고).
     """
     st.markdown(
         '''
@@ -950,31 +740,12 @@ def render_loading_screen(message: str = "불러오는 중...") -> None:
     render_spacer()
 
 
-# 2026-08-22~23 이력: TTS 합성 대기 중 로딩 인디케이터를 GIF → SVG 냄비 마스코트로
-# 두 번 갈아탔었는데(render_tts_loading()/_TTS_LOADING_MASCOT_SVG였음), 2026-08-23
-# 사용자가 "로딩바 다 제거하자, 의미없다 - 렉만 더 걸리는 느낌"이라고 확인해서 아예
-# 없앴다. 원인은 voice_io.py::speak()가 0.2초마다 placeholder를 다시 그리던 폴링
-# 루프였다 — 그 루프째 제거하고 지금은 그냥 블로킹으로 조용히 기다린다(자세한 경위는
-# voice_io.py::speak() 주석 참고). 여기 함수·CSS(ce-tts-*)·SVG 상수가 전부 그 루프
-# 안에서만 불렸어서 호출부가 없어지며 같이 죽은 코드가 됐길래 통째로 지웠다.
-
-
 def render_brand(show_login: bool = False, username: str | None = None) -> bool:
     """show_login=True면 "ChefEar" 제목과 같은 줄 오른쪽에 로그인 아이콘 버튼을 나란히
-    놓는다(2026-08-21, start 화면 요청 - 원래는 화면 쪽에서 별도 줄로 그렸었는데 제목과
-    안 나란해서 여기로 옮김). 로그인 내비게이션(goto)은 이 파일이 모르는 app.py 쪽
+    놓는다. 로그인 내비게이션(goto)은 이 파일이 모르는 app.py 쪽
     개념이라, 여기서는 버튼이 눌렸는지 bool만 돌려주고 실제 화면 전환은 호출부가 한다
-    (render_back_link()와 같은 패턴).
-
-    username이 주어지면(로그인 상태) 로그인 아이콘 대신 그 아이디를 보여준다
-    (2026-08-22 요청) - 눌렀을 때 어디로 갈지(마이 레시피)도 이 파일이 모르는
-    app.py 쪽 개념이라, 여기서도 클릭 여부만 bool로 돌려준다. 로그아웃은 여기서
-    바로 하지 않고 그 마이 레시피 화면의 로그아웃 버튼에 맡긴다.
+    (render_back_link와 같은 패턴).
     """
-    # 2026-08-26 요청 — 아이콘+글자 로고를 실제 브랜드 로고 이미지(ui/images/
-    # chefear_logo_투명.png)로 교체. 이미지를 못 읽은 경우(_LOGO_DATA_URI가 None —
-    # 위 모듈 최상단 로딩부 참고)에는 예전 아이콘+글자로 조용히 대체해서 서비스가
-    # 안 죽게 한다(EC-05와 같은 정신).
     if _LOGO_DATA_URI:
         brand_html = f'<div class="ce-brand"><img class="ce-brand-logo" src="{_LOGO_DATA_URI}" alt="ChefEar"></div>'
     else:
@@ -982,17 +753,11 @@ def render_brand(show_login: bool = False, username: str | None = None) -> bool:
     if not show_login:
         st.markdown(brand_html, unsafe_allow_html=True)
         return False
-    # 2026-09-01 — 로고 칸과 버튼 칸을 이 컨테이너로 감싸서, CSS(st-key-brand_row)가
-    # 그 안의 가로 블록을 세로 중앙 정렬할 수 있는 고유 선택자를 갖게 한다(유저명이
-    # 길어질 때 버튼 칸이 로고와 어긋나 보이던 문제 수정 — 위 CSS 주석 참고).
     with st.container(key="brand_row"):
         left, right = st.columns([6, 1])
         with left:
             st.markdown(brand_html, unsafe_allow_html=True)
         with right:
-            # 버튼이 자기 칸 왼쪽에 붙어서 화면 오른쪽 끝까지 안 갔다(실측 지적,
-            # 2026-08-21) - my_recipe_actions_와 같은 방식으로 감싸는 세로 블록에
-            # justify-content:flex-end를 줘서 칸 안에서 오른쪽 끝으로 민다.
             with st.container(key="brand_login_wrap"):
                 if username:
                     label = f":material/person: {truncate_display_name(username)}"
@@ -1015,11 +780,6 @@ def render_badge(text: str) -> None:
     st.markdown(f'<span class="ce-badge">{text}</span>', unsafe_allow_html=True)
 
 
-# 2026-09-01 — 구글 로그인은 username에 이메일 전체(예: "hlkm1667hehe@gmail.com")가
-# 들어가서, 브랜드 상단 버튼/마이레시피 헤더 배지가 유저명 길이만큼 늘어나거나
-# 줄바꿈되는 문제가 사용자 리포트로 확인됐다(render_brand()/ui/screens/my_recipes.py::
-# screen_my_recipes() 둘 다 영향받음). 9자를 넘으면 "..."으로 생략한다(2026-09-01
-# 사용자 확정값 — 처음엔 5자였다가 너무 짧다는 재요청으로 9자로 조정).
 _DISPLAY_NAME_LIMIT = 9
 
 
@@ -1029,13 +789,6 @@ def truncate_display_name(name: str) -> str:
     return name[:_DISPLAY_NAME_LIMIT] + "..."
 
 
-# 2026-08-26 재요청 — 대화 기록(render_chat())에 "나: 다음...." 처럼 STT가 붙인 끝
-# 문장부호(마침표·물음표·느낌표·쉼표·물결·말줄임표)가 그대로 노출돼 지저분해 보인다는
-# 지적으로, 표시 직전에만 정규식으로 잘라낸다. classify_intent()가 이미 같은 목적으로
-# 쓰는 문자 집합(intent_classifier.py의 `.rstrip("?!.,~ ")` 패턴)과 맞춰서 일관성을
-# 유지한다 — 다만 거긴 str.rstrip()이고 여긴 사용자가 명시적으로 정규식을 요청해서
-# re.sub()로 구현. 문장 끝에서 저 문자들이 연속으로(말줄임표 등) 몇 개가 오든 한 번에
-# 다 떼어낸다. 중간에 있는 물음표/쉼표는 의미에 영향을 줄 수 있어 안 건드린다(끝만).
 _CHAT_TRAILING_PUNCT_RE = re.compile(r"[?!.,~…\s]+$")
 
 
@@ -1086,13 +839,9 @@ def render_dots(total: int, current: int) -> None:
 
 
 def render_interactive_dots(total: int, current: int) -> int | None:
-    """render_step_card()의 점(dots) - _dots_html()과 똑같이 생겼지만 실제 st.button()이라
-    눌러서 그 단계로 바로 이동할 수 있다(2026-08-21, 조리순서 화면 요청). 클릭된 단계
+    """render_step_card의 점(dots) - _dots_html과 똑같이 생겼지만 실제 st.button이라
+    눌러서 그 단계로 바로 이동할 수 있다. 클릭된 단계
     번호(1..total)를 반환하고, 아무 것도 안 눌렸으면 None을 반환한다.
-
-    register_dish_name 등 다른 화면의 render_dots()(진행 단계 안내용, 클릭 불가)는 그대로
-    둔다 - 이건 cooking_step처럼 "실제로 그 단계로 건너뛸 수 있어야" 의미 있는 화면
-    전용이다.
     """
     target: int | None = None
     with st.container(key="cs_dots_row"):
@@ -1185,17 +934,7 @@ _AUDIO_PLAYER_TEMPLATE = Template("""
 
 
 def _compute_wave_bars(audio_path: str | Path, num_bars: int = 60, min_h: int = 4, max_h: int = 28) -> list[int]:
-    """실제 wav 파형을 num_bars개 구간으로 나눠 구간별 RMS 진폭을 막대 높이(px)로 바꾼다.
-
-    기존 _WAVE_HEIGHTS는 모든 문장에 똑같이 재사용되는 가짜(장식용) 값이었다 — 이 함수는
-    합성된 wav를 실제로 읽어서, 조용한 구간은 낮게 시끄러운(강세가 있는) 구간은 높게
-    나오도록 진짜 파형 모양을 만든다(2026-08-19, 사용자 요청).
-
-    num_bars: 막대 폭은 CSS(_AUDIO_PLAYER_TEMPLATE의 .wave span, flex:1 1 0)가 재생바
-    전체 너비를 이 개수만큼 나눠 정하므로, 개수를 늘리면 그만큼 막대 하나하나가 가늘어진다
-    (2026-08-22 요청 — 막대가 두꺼운 블록처럼 보이지 말고 더 촘촘한 파형처럼 보이게, 20 ->
-    60으로 늘림).
-    """
+    """실제 wav 파형을 num_bars개 구간으로 나눠 구간별 RMS 진폭을 막대 높이(px)로 바꾼다."""
     data, _ = sf.read(str(audio_path), dtype="float32", always_2d=False)
     if data.ndim > 1:
         data = data.mean(axis=1)
@@ -1213,33 +952,7 @@ def _compute_wave_bars(audio_path: str | Path, num_bars: int = 60, min_h: int = 
 
 
 def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450, tail_ms: int = 0) -> bytes:
-    """TTS 재생 시작 부분이 브라우저에서 살짝 씹혀 들리는 문제 완화용.
-
-    **시작(pad_ms, 2026-08-23)** — "된장찌개"가 "장찌개"로 들림, 크롬에서 특히
-    뚜렷함. 2026-08-24 — 250ms로도 여전히 앞부분이 들린다는 재확인 리포트로 450ms로
-    올림. 정확한 브라우저 내부 메커니즘은 확정 못 했다(크롬이 autoplay로 막 시작한
-    오디오에 pop 방지용으로 아주 짧은 페이드인을 거는 것으로 추정 — 그렇다면 그
-    페이드인이 실제 말소리의 첫 파열음(ㄷ 등)을 깎아먹는 것과 증상이 정확히 일치함,
-    Chrome 한정이라는 리포트와도 들어맞음). 원인을 정확히 몰라도, **재생용 데이터
-    맨 앞에 짧은 무음을 붙여두면** 그 페이드인/시작 손실이 무음을 깎아먹지 실제
-    말소리를 깎아먹지 않으므로 안전하게 완화된다.
-
-    **끝(tail_ms, 2026-09-03 추가 -> 2026-09-04 되돌림)** — "끝음절 1~2글자가
-    잘려 들린다"는 리포트에 500ms -> 1500ms까지 끝 무음 패딩을 시도했었다. 그런데
-    브라우저 `<audio>` 엘리먼트에 직접 이벤트 리스너를 심어 확인한 결과
-    `currentTime === duration`, `ended: true`로 재생이 매번 끝까지 완주하고
-    있었다 — 애초에 재생 쪽이 뭔가를 잘라먹는 게 아니었으므로 이 패딩은 처음부터
-    증상에 아무 영향을 줄 수 없는 조치였다(효과 있었던 적이 한 번도 없음, 실측
-    확인). 진짜 원인은 TTS 생성 자체의 문제였고(tts/pronunciation.py 참고 —
-    Qwen3-TTS의 알려진 이슈, 텍스트 끝에 더미 기호 추가로 해결), 원인이 해결된
-    지금 이 무음 패딩은 매 응답마다 불필요한 재생 지연만 주는 죽은 코드라
-    되돌린다(tail_ms 기본값 1500 -> 0). 함수 시그니처/로직은 남겨둔다 — 필요하면
-    호출부에서 다시 tail_ms=<값>으로 켤 수 있다.
-
-    원본 캐시 파일(디스크)은 그대로 둔다 — _arm_tts_mute()가 그 파일의 실제 길이로
-    마이크 무음 구간을 계산하므로 원본을 건드리면 안 된다. 화면에 실제로 내보내는
-    재생용 바이트만 이 함수를 거쳐서 만든다.
-    """
+    """TTS 재생 시작 부분이 브라우저에서 살짝 씹혀 들리는 문제 완화용."""
     audio, sr = sf.read(str(audio_path), dtype="float32")
     lead_samples = int(sr * pad_ms / 1000)
     tail_samples = int(sr * tail_ms / 1000)
@@ -1255,115 +968,34 @@ def _wav_bytes_with_lead_silence(audio_path: str | Path, pad_ms: int = 450, tail
 
 
 def render_audio_player(audio_path: str | Path, height: int = 64, nonce: int | str = 0) -> None:
-    """theme.py의 장식용 재생바(.ce-player)와 똑같이 생긴, 실제로 재생되는 위젯.
-
-    st.audio()는 브라우저 기본 재생 컨트롤(탐색바 포함)을 그대로 노출해서 앱 디자인과
-    안 어울린다 — 브라우저 네이티브 미디어 컨트롤은 CSS로 커스터마이징이 사실상 불가능하다
-    (표준화된 크로스 브라우저 방법이 없음, Chromium의 ::-webkit-media-controls는 비표준·
-    브라우저 업데이트마다 깨질 수 있음). 그래서 st.iframe()으로 이 카드와 똑같은
-    모양(둥근 배경 + 막대 파형)의 HTML/JS를 직접 그려서 자동재생한다. render_step_card()의
-    장식용 재생바는 건드리지 않고, 그 아래에 이 진짜 위젯을 별도로 놓는다.
-
-    2026-08-21: 원래는 파형 옆에 원형 재생/정지 버튼도 있었는데(눌러서 수동 재생/정지),
-    자동재생만으로 충분하다는 요청으로 버튼은 없애고 파형만 남겼다 - 이제 이 위젯은
-    순전히 "재생 중" 진행 표시용이고 클릭해도 아무 반응이 없다.
-
-    iframe이라 부모 문서의 CSS 변수(:root)를 못 물려받아서, .ce-player/.ce-wave와
-    같은 색상값을 여기서 다시 하드코딩했다(위 CSS :root의 --surface-alt/--accent/
-    --accent-soft 값과 동일 — 그쪽이 바뀌면 여기도 같이 바꿔야 함).
-
-    막대 높이는 _compute_wave_bars()로 이 파일의 실제 진폭을 읽어서 그린다(고정된 가짜
-    파형이 아님). <audio autoplay>를 넣어서 "다음"/"이전"으로 이 위젯이 새로 렌더링될
-    때마다(=화면이 다시 그려질 때마다) 자동 재생을 시도한다 — 브라우저 자동재생 정책상
-    100% 보장되진 않지만(사용자가 이미 페이지와 상호작용한 뒤라 대부분 허용됨), 막히면
-    조용히 대기 상태로 남는다 - 2026-08-21 요청으로 재생 버튼을 없애서, 막혔을 때 이
-    위젯 안에서 수동으로 다시 시작할 방법은 이제 없다(파형만 표시, 클릭 불가).
-
-    nonce: "다시"(재청취)처럼 같은 파일을 같은 단계에서 다시 재생해야 할 때 쓴다 — 최종 html
-    문자열이 이전 렌더와 완전히 같으면 Streamlit 프론트엔드(React)가 이 st.html() 위젯
-    내용이 안 바뀐 걸로 보고 DOM을 그대로 유지해버려서(리마운트 안 함) <audio autoplay>가
-    다시 실행되지 않는다(2026-08-21, "다시" 재생 요청으로 확인됨).
-
-    2026-08-28 수정 — 원래는 html 맨 앞에 `<!-- replay-nonce:N -->` 주석을 붙여 문자열을
-    다르게 만들었는데(st.iframe() 시절 srcDoc 비교엔 이걸로 충분했음), 2026-08-27
-    st.iframe() -> st.html() 전환 이후로 이 방식이 조용히 깨졌다: st.html()이 거치는
-    DOMPurify 새니타이저가 HTML 주석 노드를 통째로 제거해서, "다시"(같은 wav·같은 파형)
-    에선 nonce가 몇이든 최종 html이 완전히 동일해졌다 -> 프론트엔드가 리마운트를 안 해
-    autoplay 재실행이 안 됨(라이브 DOM 실측 — "다시" 후에도 <audio>가 ended 상태 그대로,
-    새 엘리먼트도 안 생김. 사용자 리포트 "'다시' 해도 안 읽어줌"의 원인). 이제 nonce를
-    제거되는 주석 대신 <audio src>의 data URI 뒤 프래그먼트(`...#<nonce>`)로 넣는다 —
-    브라우저는 data URI의 `#...`를 디코딩에서 무시하지만(재생엔 영향 없음, 실측 확인)
-    src 속성값 자체가 달라지므로 html 문자열이 바뀌어 프론트엔드가 리마운트한다.
-    """
+    """theme.py의 장식용 재생바(.ce-player)와 똑같이 생긴, 실제로 재생되는 위젯."""
     data = _wav_bytes_with_lead_silence(audio_path)
     audio_src = "data:audio/wav;base64," + base64.b64encode(data).decode("ascii")
     bar_heights = _compute_wave_bars(audio_path)
     bars_html = "".join(f'<span style="height:{h}px"></span>' for h in bar_heights)
-    # nonce는 템플릿 안에서 <audio src="...#$nonce">로 들어간다(위 docstring 2026-08-28
-    # 수정 참고 — DOMPurify가 지우는 주석 대신 src 프래그먼트로).
     html = _AUDIO_PLAYER_TEMPLATE.substitute(
         bars=bars_html,
         audio_src=audio_src,
         nonce=nonce,
     )
-    # 2026-08-27 수정 — render_audio_autoplay()와 같은 원인/같은 수정(그쪽 문서 참고) —
-    # st.iframe()의 중첩 iframe이 autoplay 권한을 못 받아 조용히 차단됐다. 이 함수는
-    # <script>(파형 진행 표시)가 있어서 st.html()의 unsafe_allow_javascript=True가 필요.
     st.html(html, unsafe_allow_javascript=True)
 
 
 def render_audio_autoplay(audio_path: str | Path, nonce: int | str = 0) -> None:
     """재생바(원형 버튼+파형)는 안 보이고 음성만 자동재생되는, render_audio_player()의
     화면 없는 버전. "저장이 완료됐어요!" 화면처럼 안내 문구를 음성으로만 들려주고
-    재생 컨트롤 자체는 화면에 남기고 싶지 않을 때 쓴다(2026-08-21).
-
-    화면에 거의 자리를 차지하지 않지만, 안의 <audio autoplay>는 render_audio_player()와
-    똑같이 동작한다 — nonce로 매 호출마다 html 문자열을 다르게 만들어야 재렌더 시에도
-    프론트엔드가 이 위젯을 새로 마운트해 autoplay가 다시 실행된다. nonce를 <audio src>의
-    data URI 뒤 프래그먼트로 넣는 이유는 render_audio_player() 문서(2026-08-28 수정) 참고 —
-    st.html()의 DOMPurify가 HTML 주석을 제거해서 예전의 `<!-- replay-nonce -->` 방식이
-    깨졌었다.
     """
     data = _wav_bytes_with_lead_silence(audio_path)
     audio_src = "data:audio/wav;base64," + base64.b64encode(data).decode("ascii")
     html = f'<audio src="{audio_src}#{nonce}" autoplay></audio>'
-    # 2026-08-27 수정 — "hidden 재생 음성이 계속 안 들린다"(등록 안내 등) 실측 리포트
-    # 원인 확정: st.iframe()은 내용을 별도 iframe으로 감싸는데, Streamlit의 st.iframe()
-    # 파이썬 API엔 allow="autoplay" 같은 permissions-policy를 넘길 방법 자체가 없다
-    # (공식 시그니처 확인 — src/width/height/tab_index뿐). 그 결과 크롬이 이 안쪽
-    # <audio autoplay>를 "권한 없는 중첩 iframe"으로 보고 조용히(에러 없이) 차단한다 —
-    # Playwright 헤드리스 브라우저로 직접 재현/검증: 같은 오디오를 allow 속성 없는
-    # iframe에 넣으면 paused=true, allow="autoplay"를 명시하면 정상 재생됨을 확인.
-    # st.html()은 공식 문서에 "content is not iframed"라고 명시돼 있어(iframe.py와
-    # 대조 확인) 최상위 문서에 직접 삽입되므로 이 중첩 iframe 문제 자체가 없다 —
-    # 실제 라이브 서버(디버그 패널 + 캐시된 조회 응답)로 autoplay 정상 동작까지 검증 후 반영.
     st.html(html)
 
 
 def render_processing_chime(nonce: int | str = 0) -> None:
-    """"처리 중" 정적을 메우는 짧은 효과음 한 번(2026-08-26 요청 — "강사님이 얘가 진짜
-    움직이고 뭔가를 하고있는지를 모르겠다고 하시는데" 피드백, 사용 중 정적이 길어서
-    답답했다는 확인 후 도입). STT 인식 후 LLM/DB/TTS 처리가 몇 초 걸리는 동안
-    (voice_io._drain_mic_while() 참고) 화면을 안 보고 있어도(이 프로젝트 핵심 컨셉
+    """"처리 중" 정적을 메우는 짧은 효과음 한 번. STT 인식 후 LLM/DB/TTS 처리가 몇 초 걸리는 동안
+    (voice_io._drain_mic_while 참고) 화면을 안 보고 있어도(이 프로젝트 핵심 컨셉
     자체가 "화면 안 보고 음성만으로") "지금 듣고 처리 중"이라는 걸 알 수 있게 하는
-    청각 신호. render_loading_overlay()(화면 팝업)와 같은 지점, 같은 조건(0.4초 넘게
-    걸릴 때만)에서 같이 트리거된다.
-
-    TTS로 만든 음성이 아니라 순수 사인파를 그 자리에서 합성한다 — 실제 TTS(GPU,
-    _GPU_LOCK)를 쓰면 지금 처리 중인 진짜 작업과 GPU를 다시 두고 경합해서 오히려
-    응답이 더 늦어진다(이 신호음 자체가 "처리가 오래 걸린다"는 신호인데, 그걸 알리려고
-    처리를 더 늦추는 건 앞뒤가 안 맞는다). render_audio_player()/render_audio_autoplay()가
-    쓰는 _wav_bytes_with_lead_silence()는 TTS 씹힘 방지용 450ms 무음 패딩이 있어서
-    여기엔 안 맞다(효과음은 트리거되는 바로 그 순간 들려야 의미가 있음) — 그래서
-    디스크 파일도 안 거치고 패딩 없이 매번 새로 합성한다(짧은 사인파라 비용도 무시할
-    만큼 작음).
-
-    nonce: 호출마다 다른 값을 넘겨야 한다 — 사인파 합성 파라미터가 고정이라 audio_src
-    자체는 매번 똑같아서, nonce가 html 문자열을 다르게 만들어주지 않으면 프론트엔드가
-    이 위젯을 리마운트 안 해 autoplay가 다시 실행되지 않는다(그러면 효과음이 세션당
-    사실상 한 번만 난다). nonce를 <audio src>의 data URI 뒤 프래그먼트로 넣는 이유는
-    render_audio_player() 문서(2026-08-28 수정) 참고. 호출부(_drain_mic_while())가 자기
-    시작 시각(time.monotonic())을 그대로 넘겨서 매 호출마다 자연히 달라진다.
+    청각 신호. render_loading_overlay(화면 팝업)와 같은 지점, 같은 조건(0.4초 넘게
     """
     sr = 24000
     duration_s = 0.16
@@ -1378,10 +1010,6 @@ def render_processing_chime(nonce: int | str = 0) -> None:
     sf.write(buf, tone, sr, format="WAV")
     audio_src = "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
     html = f'<audio src="{audio_src}#{nonce}" autoplay></audio>'
-    # 2026-08-27 수정 — render_audio_autoplay()/render_audio_player()와 같은 원인(그쪽
-    # 문서 참고): st.iframe()엔 allow="autoplay"를 넘길 방법이 없어 중첩 iframe의
-    # <audio autoplay>가 크롬에서 조용히 차단된다. 이 효과음도 같은 매커니즘으로 안
-    # 들렸을 것 — st.html()로 통일.
     st.html(html)
 
 
@@ -1393,40 +1021,11 @@ def render_step_card(
     audio_path: str | Path | None = None,
     audio_nonce: int | str = 0,
 ) -> int | None:
-    """조리 화면의 카드(점 표시 + 단계 텍스트 + 재생바)를 흰 박스 안에 그린다.
-
-    순수 HTML(`<div class="ce-card">`)로 카드를 열고 여러 st.markdown 호출을 거쳐
-    나중에 닫으면 안의 내용이 카드 밖으로 빠져나간다(각 st.markdown은 완전히 분리된
-    HTML 조각이라 — 예전엔 이래서 카드 내용을 전부 한 st.markdown 호출로 합쳤었다).
-    그런데 render_audio_player()가 쓰는 st.iframe()은 markdown 문자열 안에 넣을 수
-    없는 별도 Streamlit 엘리먼트라 그 방법이 안 통한다. 그래서 실제 오디오가 있을 땐
-    진짜 Streamlit 컨테이너(st.container(key="cs_step_card"))를 카드로 쓴다 — 그
-    컨테이너가 만드는 실제 DOM 래퍼에 .ce-card와 같은 스타일을 입혀뒀고(위 CSS 참고),
-    그 컨테이너의 자식으로 dots+제목(markdown)과 재생바(markdown 또는 iframe)를
-    순서대로 넣으면 진짜로 같은 흰 박스 안에 nesting된다(2026-08-19, 재생바를 카드
-    안에 넣어달라는 요청으로 구조 변경).
-
-    audio_path가 주어지면 그 wav를 render_audio_player()로 카드 안에서 자동재생하고
-    재생바(파형)도 그대로 보여준다(2026-08-22). audio_path가 None이면 아무것도 안 그린다.
-
-    2026-08-21: 점을 눌러 그 단계로 바로 이동하고, 단계 텍스트 양옆 화살표로
-    이전/다음 단계로 넘어갈 수 있게 해달라는 요청 - 이 함수는 순수 표시만 담당하고
-    (theme.py는 orchestration을 모른다) 실제 단계 전환(세션 갱신·음성 재생)은
-    호출부(screen_cooking_step())가 반환값을 보고 처리한다. 점 클릭과 화살표 클릭
-    둘 다 같은 반환값(이동할 단계 번호)으로 합쳐서 돌려준다 - 호출부가 "누가
-    눌렀는지"까지 구분할 필요는 없어서다.
-    """
+    """조리 화면의 카드(점 표시 + 단계 텍스트 + 재생바)를 흰 박스 안에 그린다."""
     nav_target: int | None = None
     with st.container(key="cs_step_card"):
         nav_target = render_interactive_dots(total, current_step)
 
-        # vertical_alignment="center": 단계 텍스트가 여러 줄로 길어져도 화살표가 위쪽에
-        # 붙지 않고 텍스트 블록 세로 중앙에 맞춰져서, 화살표와 텍스트가 시각적으로
-        # "같은 줄"에 있는 것처럼 보이게 한다(2026-08-22 요청, 기본값 "top"이라 긴 텍스트일
-        # 때 화살표가 첫 줄에만 붙어 보였음).
-        # 화살표 버튼 자체는 CSS(cs_prev_arrow/cs_next_arrow, 36px 고정)로 이미 좁혀놔서
-        # 칸을 예전만큼 넓게(1) 안 잡아도 된다 — 화살표 칸을 줄이고 그만큼 가운데 텍스트
-        # 칸을 넓힌다(2026-08-22 요청).
         arrow_l, mid, arrow_r = st.columns([1, 10, 1], vertical_alignment="center")
         with arrow_l:
             if st.button(
@@ -1437,21 +1036,12 @@ def render_step_card(
         with mid:
             st.markdown(f'<p class="ce-step-title">{step_text}</p>', unsafe_allow_html=True)
         with arrow_r:
-            # 2026-08-22 요청: 마지막 단계에서도 화살표를 막아두지 않는다 — 이 화살표가
-            # "완료"로 넘어가는 유일한 화면 접점이 되도록, current_step==total일 때도
-            # 눌리게 두고 nav_target을 total+1(범위 밖)로 돌려준다. 호출부
-            # (screen_cooking_step())가 그 값을 "요리 완성" 신호로 해석해서 완료 화면으로
-            # 보낸다 — 이 함수 자체는 orchestration을 몰라서 여기서 직접 화면 전환은 안 한다.
             if st.button(
                 ":material/chevron_right:", key="cs_next_arrow", help="다음 단계",
                 use_container_width=True,
             ):
                 nav_target = current_step + 1
 
-        # 2026-08-22 재요청: 단계 텍스트 밑에 재생바(파형)가 보여야 한다는 요청으로
-        # render_audio_player()를 다시 쓴다(같은 날 있었던 "재생 버튼 없애기" 요청은
-        # 화면 전환 중 반짝이는 별개의 speak() 호출들에만 적용 — voice_io.speak()의
-        # hidden=True 파라미터 참고, 이 카드 자체의 상시 표시 재생바와는 다른 문제).
         if audio_path is not None:
             render_audio_player(audio_path, nonce=audio_nonce)
     return nav_target
@@ -1468,18 +1058,7 @@ def render_mic_bar(state: str, hint: str, listening: bool = True) -> None:
 
 
 def render_mic_bar_interactive(hint: str, key: str = "cs_mic_bar"):
-    """render_mic_bar()의 실제 녹음 가능한 버전 - "듣는 중" 표시가 장식으로 끝나지 않고
-    진짜 마이크 입력을 받는다(2026-08-19, cooking_step용으로 추가).
-
-    render_big_mic()과 같은 2단계 구조: 이 바를 누르면 그 아래 진짜 st.audio_input()이
-    나타나고, 그 위젯 자체의 녹음 버튼을 눌러야 브라우저 마이크 권한 프롬프트가 뜬다
-    (커스텀 오버레이 버튼 하나로 브라우저 getUserMedia() 권한 요청까지 한 번에 흉내낼
-    수 없음 - render_big_mic() 문서 참고). 녹음된 오디오(UploadedFile) 또는 아직 없으면
-    None을 반환한다.
-
-    register_dish_name.py/unclassified.py는 여전히 장식용 render_mic_bar()를 쓴다 -
-    요청받은 화면(cooking_step)만 바꿨다.
-    """
+    """render_mic_bar()의 실제 녹음 가능한 버전 - "듣는 중" 표시가 장식으로 끝나지 않고"""
     state_key = f"{key}_show_recorder"
     st.session_state.setdefault(state_key, False)
 
@@ -1500,30 +1079,8 @@ def render_mic_bar_interactive(hint: str, key: str = "cs_mic_bar"):
 def render_big_mic(ready: bool = False):
     """ui/html 01_start.html의 큰 원형 마이크 아이콘 — 상시(실시간) 마이크 연결의 상태
     표시용 장식 요소.
-
-    2026-08-23 이전엔 이 아이콘 밑에 "마이크 켜기" 버튼을 누르면 st.audio_input()(그때그때
-    녹음하는 옛날 방식)이 나타나는 구조였는데, 실시간 스트리밍 마이크(voice_io.listen(),
-    webrtc_streamer(desired_playing_state=True))로 넘어오면서 그 흐름 자체가 안 맞게
-    됐다(리포트: "저건 녹음 기능이지 실시간 대화 시작 버튼이 아니다") — 실제 연결은
-    이 화면이 그리는 listen()이 화면에 렌더링되는 순간 자동으로 시작되므로(사용자가
-    브라우저에 마이크 권한을 이미 준 적 있으면 클릭 없이 곧장 연결됨), 버튼을 눌러야
-    뭔가 시작되는 구조 자체가 필요 없어졌다. 그래서 아이콘 모양(펄스 애니메이션 포함)은
-    그대로 두고, 버튼과 옛 녹음 위젯만 없앴다 — 이제 순수하게 "지금 실시간으로 듣고
-    있다"는 상태를 보여주는 장식 요소다(실제 듣기/인식은 이 화면이 별도로 부르는
-    listen("start")가 담당).
-
-    ready(2026-08-23 추가) — "준비됐는지 안 됐는지 모르겠다"는 리포트로 추가. 호출부
-    (screen_start())가 voice_io.mic_is_playing()으로 실제 webrtc 연결 상태를 확인해서
-    넘겨준다 — 연결 전엔 계속 회색(기존 그대로), 연결되고 나면 다른 화면의 "듣는 중"
-    표시와 같은 강조색+번지는 링(.ce-big-mic.ready, theme.py CSS 참고)으로 바뀌고
-    안내문도 "듣고 있어요"로 바뀐다. 아직 연결 전에 말해봐야 안 들리므로, 이 색 전환
-    자체가 "지금은 말해도 소용없다"는 신호 역할을 한다.
     """
     cls = "ce-big-mic ready" if ready else "ce-big-mic"
-    # 2026-08-26 재요청 — "그냥 연결 중"이라고만 하면 마이크 연결 자체가 실측으로
-    # 9~10초, 느리면(다른 기기/네트워크 상황에 따라) 수십 초까지 걸리는 걸(위 문서
-    # 참고, streamlit-webrtc 구조적 특성) 사용자가 얼마나 더 기다려야 할지 모른다는
-    # 지적으로, 무엇을 하는 중인지+예상 소요 시간을 같이 안내한다.
     hint = (
         "듣고 있어요 · 편하게 말씀해주세요"
         if ready
@@ -1537,55 +1094,17 @@ def render_big_mic(ready: bool = False):
         )
 
 
-# 2026-08-25 — render_screen_cleanup()이 쓰는, "오디오를 절대 안 만드는 화면" 목록.
-# src/app.py::SCREENS의 각 screen_*() 함수 본문을 직접 확인해서 정함(speak()/
-# _render_cached_speech()/render_step_card(audio_path=...) 호출이 하나도 없는 화면만).
-# 화면을 새로 추가하거나 기존 화면에 오디오 호출을 새로 넣을 땐 이 목록도 같이 검토할 것.
-#
-# 2026-09-01 재감사 — src/app.py::SCREENS(줄 68)와 대조해서 login/my_recipes/
-# edit_recipe 세 화면을 뺐다. 계정 시스템 자체가 2026-08-27에 제거되면서 이 화면들의
-# screen_*() 함수도 같이 삭제됐다(ui/README.md 참고) — 이제 SCREENS 딕셔너리에 없는
-# 화면이라 CURRENT가 될 일이 없으므로, 여기 남겨둬도 해도 없지만 죽은 항목이라 지운다.
 _AUDIO_FREE_SCREENS = (
     "start",
     "register_ingredients",
     "register_steps",
     "register_dish_name",
-    # 2026-09-02 — register_intro 화면 자체가 삭제됨(ui/screens/register.py 참고).
-    # 2026-09-01 재도입 — login/signup(ui/screens/login.py)도 speak()/오디오 재생을
-    # 전혀 안 쓰는 순수 폼 화면이라 register_ingredients/register_steps와 같은 부류.
     "login",
     "signup",
-    # 2026-09-01 — my_recipes/edit_recipe(ui/screens/my_recipes.py, docs/specs/
-    # my_recipes.md)도 마찬가지로 speak() 호출이 전혀 없는 순수 폼/목록 화면.
     "my_recipes",
     "edit_recipe",
 )
 
-# 2026-08-25 — render_screen_cleanup()이 쓰는, "텍스트 대체 입력칸을 절대 안 만드는
-# 화면" 목록. src/app.py::main()의 화면별 listen() 호출부에서 show_text_fallback=False로
-# 넘기는 화면만(voice_io.py::listen() 참고 — False면 st.text_input() 자체를 안 그림).
-# 오디오 iframe과 같은 패턴의 잔상(cooking_complete의 "또는 텍스트로 입력" 칸이 start로
-# 넘어간 뒤에도 남는 것)이 실측 확인돼 같은 방식으로 추가.
-# no_match(2026-08-25 추가) — "초기"/"등록" 두 키워드만 반응하는 좁은 화면으로 바뀌면서
-# (register.py::handle_no_match() 참고) show_text_fallback=False로 바뀜.
-#
-# 2026-08-27 전수 점검 — src/app.py::main()의 실제 listen()/listen_background_only()
-# 호출부를 전부 교차검증한 결과, show_text_fallback=False로 부르는 화면이 이 목록에
-# 5개 빠져 있었다(register_ingredients/register_steps/login/my_recipes/edit_recipe —
-# 전부 직접 False를 넘기거나 listen_background_only()를 거쳐서 항상 False로 불림).
-# ruleTextFallback()은 "이 목록에 없으면 = 이 화면이 정상적으로 만든 것"으로 간주해서
-# unhide()해버리므로, 이 5개 화면에 있는 동안 다른 화면(cooking_step/register_intro/
-# register_dish_name 등, show_text_fallback 기본값 True)에서 새어든 범용 텍스트
-# 입력칸("또는 텍스트로 입력") 잔상을 못 잡고 오히려 되살렸을 것 — 아직 실사용
-# 재현 리포트로 확인된 건 아니라(다른 마커들처럼 "재현됨"이 아니라 코드 대조로 찾은
-# 것), 배포 전 실제 화면 전환으로 재검증할 것.
-#
-# 2026-09-01 재감사 — no_match/login/my_recipes/edit_recipe 네 화면을 뺐다(위
-# _AUDIO_FREE_SCREENS와 같은 이유 — SCREENS 딕셔너리에서 이미 삭제된 화면들).
-#
-# 2026-09-01 재도입 — 뺐던 지 몇 시간 만에 login/signup이 다시 생겼다(app.py::main()이
-# 이 둘을 show_text_fallback=False로 부름, ui/screens/login.py 참고). 다시 넣는다.
 _NO_TEXT_FALLBACK_SCREENS = (
     "start",
     "recipe_confirm",
@@ -1593,149 +1112,26 @@ _NO_TEXT_FALLBACK_SCREENS = (
     "register_steps",
     "login",
     "signup",
-    # 2026-09-02 — my_recipes/edit_recipe도 login/signup과 같은 이유(바로 위 주석)로
-    # app.py::main()이 listen(..., show_text_fallback=False)로 부른다 — 한때(2026-09-01)
-    # 이 넷 다 listen() 자체를 안 부르는 워크어라운드였던 적이 있어 이 주석도 그때는
-    # 맞았지만, PeerConnection 크래시 근본 원인을 고치면서(voice_io._recover_dead_mic()
-    # 문서 참고) listen()을 다시 부르는 쪽으로 되돌아갔다 — 지금은 다른 화면들과 같은
-    # 이유(show_text_fallback=False)로 범용 텍스트 입력칸이 안 만들어지는 것.
     "my_recipes",
     "edit_recipe",
 )
 
-# 2026-08-25 — fallback_buttons()와 같은 부류의 잔상을 no_match 화면에서도 실측 확인:
-# screen_no_match()의 두 버튼(st.button()에 key= 없이 호출돼서 fallback_buttons()처럼
-# 화면 접두사로 잡아낼 CSS key가 없음 — 버튼 문구로 직접 특정한다)이 no_match ->
-# start(음성 "처음") 전환 뒤에도, 심지어 새로 생긴 st-key-screen_start 컨테이너
-# *안에* 자식으로 남아있는 게 확인됐다(단순히 컨테이너 밖으로 새는 정도가 아니라
-# React 재조정 과정에서 이전 화면의 자식 일부가 새 컨테이너 밑에 그대로 붙어버림).
-# {"버튼 문구": "그 버튼이 원래 속한 화면"} — CURRENT가 그 화면이 아니면 잔상으로
-# 판정해 지운다. 같은 증상이 다른 화면에서도 나오면 여기 계속 추가할 것.
-#
-# 2026-08-25 추가 확장 — register_dish_name -> start(음성 "처음") 전환에서 더 심한
-# 사례를 발견: "취소" 버튼뿐 아니라 캡션("짐작한 이름: ...")·마이크 바 문구까지
-# 통째로 새 screen_start 컨테이너 *안쪽 자식*으로 남아있었다. "취소"는 my_recipes.py/
-# register.py 여러 화면이 같이 쓰는 흔한 문구라 그것만으론 어느 화면 잔상인지 특정할
-# 수 없어서(잘못 지우면 다른 화면의 진짜 취소 버튼을 지울 위험) 버튼 문구 대신, 그
-# 화면에서만 나오는 고유한 문구(예: register_dish_name의 "짐작한 이름")를 마커로 삼고
-# "그 마커를 담은 자식부터 화면 컨테이너 끝까지(꼬리 전체)"를 지우는 방식으로 일반화했다
-# — 뒤에 뭐가 더 붙어있든(캡션+마이크바+취소 버튼처럼 여러 종류가 섞여도) 한 번에 잡힌다.
-#
-# 2026-08-25 추가 — 값이 항상 화면 이름 "리스트"다(예전엔 문자열 하나였는데, "처음
-# 화면으로" 문구가 cooking_complete/register_dish_name/register_ingredients/
-# register_steps/complete 다섯 군데에서 같이 쓰이는 게 실측 확인돼 단일 소유자로는
-# 표현이 안 됨 — CURRENT가 이 리스트 안에 있으면 정상, 없으면 잔상으로 판정).
-#
-# 2026-08-25 추가 통찰 — **음성으로 전환할 때가 버튼 클릭보다 잔상이 더 잘 남는다.**
-# 버튼 클릭(예: cooking_complete의 "처음 화면으로")은 screen_*() 함수 "본문 실행
-# 도중"에 reset_to_start()가 불려서 그 스크립트 실행이 그 자리에서 바로 끊긴다 —
-# 그 화면 자신의 뒷부분(이 경우엔 버튼 자체)조차 이 실행에서 완전히 커밋되기 전이라
-# 남을 거리 자체가 적다. 반면 음성 "처음"은 화면 본문이 SCREENS[screen]()로 완전히
-# 다 그려진 *뒤에*, app.py 하단 dispatch 블록에서 별도로 처리되므로 화면 전체가
-# 완전히 커밋된 상태에서 전환이 일어난다 — 남길 거리가 더 많다. 그래서 이 세션에서
-# 버튼 클릭 테스트는 깨끗했던 케이스도 실제 음성으로 하면 새 잔상이 나오는 경우가
-# 있었다(cooking_complete "처음 화면으로" 버튼 자체가 실사용 전체 플로우 테스트에서
-# 잔상으로 남는 것 확인, 2026-08-25). **앞으로 잔상 테스트는 반드시 음성(또는 음성과
-# 동등한 debug_panel 경로)으로 할 것 — 버튼 클릭만으로는 과소평가된다.**
-# 2026-09-01 재감사 — no_match 화면 전용이었던 마커 4개("원래 레시피로 계속하기"/
-# "새 레시피로 등록할래요"/"실데이터 검색만으로 판단해요"/"로그인을 하시면 레시피를
-# 등록할 수 있어요")를 지웠다. no_match 화면 자체가 2026-08-27에 삭제돼서(ui/dispatch.py
-# 447번 줄 주석 — 아이러니하게도 이 잔상 문제가 잦았던 게 삭제 이유 중 하나) 이 문구를
-# 만드는 코드 자체가 이제 없다 — 죽은 마커.
 _STALE_CONTENT_MARKERS = {
-    # 2026-09-02 재감사 — register_intro 화면 전용이던 마커('"네" 또는 "등록할래요"라고
-    # 말해보세요')를 지웠다. register_intro 화면 자체가 삭제돼서(ui/screens/register.py
-    # 참고, 취소 버튼이 이제 처음 화면으로 바로 감) 이 문구를 만드는 코드가 이제
-    # 없다 — 죽은 마커(위 no_match 재감사와 같은 이유).
-    #
-    # 2026-09-01 재감사 — login 화면 전용이던 "아이디"/"비밀번호" 마커 2개를 지웠다.
-    # my_recipes.py::screen_login()이 2026-08-27에 계정 시스템과 함께 통째로 삭제돼서
-    # (ui/README.md 참고) 이 문구를 만드는 화면 자체가 이제 없다 — 죽은 마커.
-    #
-    # register_ingredients/register_steps 각각 자기 화면 전용 텍스트 입력 라벨을
-    # 마커로 쓴다 — 두 화면 다 그 입력칸이 본문에서 맨 마지막 위젯 그룹 시작이라,
-    # 꼬리 제거로 뒤따르는 버튼들도 같이 잡힌다(2026-08-25 실사용 리포트로 확인된
-    # 화면 전환 잔상 대응, 위 no_match 사례와 같은 부류).
     "재료 추가(쉼표로 여러 개 가능)": ["register_ingredients"],
     "순서 추가": ["register_steps"],
     "짐작한 이름": ["register_dish_name"],
-    # 2026-08-28 — st.empty() 스왑(app.py::main())이 화면 전환 잔상 대부분을 흡수했는데,
-    # register 폼의 "맨 마지막 primary 버튼" 하나만 도착 화면 컨테이너의 직계 자식으로
-    # 남는 게 라이브 재현됐다(register_steps -> complete: "네, 저장할게요"가 complete의
-    # "처음 화면으로" 바로 뒤 index로 남음). 이 버튼들은 각 화면 고유 문구라 마커로
-    # 안전하게 잡힌다("순서 추가"/"재료 추가" 마커는 폼 입력칸 기준이라 그 뒤 confirm
-    # 버튼이 별도 시점에 도착하면 못 잡을 때가 있어 독립 마커로 추가).
     "네, 저장할게요": ["register_steps"],
     "네, 맞아요": ["register_ingredients"],
-    # 2026-08-25 사용자 실사용 재현 보고 — cooking_step -> start(음성 "처음") 전환에서
-    # 4번 규칙(fallback_buttons 버튼 3개, CSS key 기반)은 버튼만 지우고, 그 버튼들
-    # 바로 위에 있는 마이크바 캡션("듣는 중"/"이전"·"다시"·"다음")과 fallback_buttons()
-    # 자체의 안내문("음성이 잘 안 될 땐...")은 못 잡았다 — 같은 "꼬리 전체 제거" 방식으로
-    # 보강. 이 마이크바 문구('"이전" · "다시" · "다음"')는 cooking_step 전용(다른 화면은
-    # 다른 문구를 씀, screen_cooking_step()의 render_mic_bar() 호출부 확인).
     '"이전" · "다시" · "다음"': ["cooking_step"],
-    # 2026-08-27 재현 — 위 2026-08-25 주석은 "꼬리 전체 제거"로 이 캡션까지 같이
-    # 잡힌다고 적어놨지만, 실제로는 fallback_buttons()가 cooking_step *과*
-    # unclassified 둘 다에서 불리는데(dispatch.py 참고) unclassified의 마이크바는
-    # 다른 문구를 써서 앞쪽 앵커(위 마커)가 아예 없다 — 그러면 꼬리 제거 자체가
-    # 발동을 못 해서 이 캡션이 그대로 샌다(실측: "처음으로" 전환 후 start에 남음).
-    # 메모리 기록의 교훈("꼬리 제거에 기대지 말고 각 잔상 후보는 독립 마커로")대로
-    # 별도 마커로 뺀다 — fallback_buttons()를 부르는 두 화면 다 소유자로 등록.
     "음성이 잘 안 될 땐 아래 버튼으로도 진행할 수 있어요": ["cooking_step", "unclassified"],
-    # 2026-08-25 사용자 실사용 재현 보고 — 실제 음성으로 "닭도리탕" 조회 -> recipe_confirm
-    # (레시피 소개 화면) -> "처음으로" -> start 전환에서, recipe_confirm의 재료 칩
-    # (예: "닭 1마리", "당근 1/3개")과 "다른 레시피 찾을래요" 버튼까지 통째로 남는 것
-    # 재현됨. screen_recipe_confirm()의 맨 첫 호출인 render_badge("조회수 1위 표준
-    # 레시피 자동 선택 · 되묻지 않음 (FR-05)")를 마커로 써서, 그 뒤에 나오는
-    # typewriter 메시지·재료 칩·마이크바·"다른 레시피 찾을래요" 버튼까지 한 번에
-    # (꼬리 전체 제거로) 잡는다 — 마커가 화면 본문 맨 앞이라 뒤에 뭐가 오든 다 잡힘.
-    # 2026-08-26 — /code-review 발견: 배지 문구 자체가 "조회수 1위 표준 레시피 자동
-    # 선택 · 되묻지 않음 (FR-05)"에서 "조회수 1위 표준 레시피"로 짧아졌는데(cooking.py::
-    # screen_recipe_confirm()의 render_badge() 호출부) 이 마커는 옛 문구 그대로 남아있어서
-    # 실제 DOM엔 이 문자열이 다신 안 뜨는 죽은 마커였다 — 현재 배지 문구로 맞춘다.
     "조회수 1위 표준 레시피": ["recipe_confirm"],
-    # 위 배지 마커 하나로는 부족했다(실측) — 배지+칩은 지워지는데 "다른 레시피
-    # 찾을래요" 버튼만 따로 늦게 도착해서 배지가 이미 지워진 뒤라 "그 지점부터 꼬리
-    # 전체 제거" 규칙의 앵커를 못 찾고 혼자 남는 사례 확인. 각자 독립적으로 잡히게
-    # 버튼 자체도 별도 마커로 추가(register.py엔 같은 문구가 주석으로만 있고 실제
-    # 버튼은 없음 — 안전하게 고유함, 2026-08-25 확인).
     "다른 레시피 찾을래요": ["recipe_confirm"],
-    # 2026-08-25 사용자 실사용 재현 보고(전체 플로우 재검증 중) — 배지/버튼 마커로도
-    # recipe_confirm 자신의 마이크바 캡션('"응" 또는 다른 요청을 말씀해주세요',
-    # render_mic_bar() 호출부)이 여전히 새는 사례 확인 — 버튼과 같은 이유(비동기로
-    # 따로 늦게 도착)로 추정, 독립 마커로 추가.
     '"응" 또는 다른 요청을 말씀해주세요': ["recipe_confirm"],
     # 위와 같은 이유로 예방적으로 추가 — render_typewriter_message()의 나머지 고정
     # 문구 두 줄(요리명은 매번 달라서 마커로 못 씀, 이 둘은 고정 문구라 가능).
     "조회수 1위 표준 레시피예요.": ["recipe_confirm"],
     "이걸로 시작할까요?": ["recipe_confirm"],
-    # 2026-08-25 사용자 실사용 재현 보고(버그.png, st.iframe() 교체 이후에도 재현) —
-    # 재료 칩 목록("재료 미리보기" 제목 + 칩들 + 마이크바 + 버튼)이 통째로 남는 사례
-    # 계속 확인. "재료 미리보기"는 cooking.py::screen_recipe_confirm()에만 있는
-    # 고유 문구(cooking_step은 "오늘의 재료"를 씀, register.py 재료 화면은 제목 없음).
     "재료 미리보기": ["recipe_confirm"],
-    # 2026-08-25 사용자 실사용 전체 플로우 재현 보고 — 검색→확인→10단계 조리→완료→
-    # 음성 "처음"까지 실제로 끝까지 가본 뒤 재현. "처음 화면으로" 문구는 cooking.py의
-    # cooking_complete 버튼과 register.py의 register_dish_name/register_ingredients/
-    # register_steps(뒤로가기 링크)·complete(버튼) 다섯 화면이 전부 같이 쓴다 — 그래서
-    # 소유자를 리스트로 표현해야 한다(위 설명 참고).
-    # 2026-08-26 재요청 이후 실사용 재현 보고(버그.png) — register.py::screen_no_match()에
-    # "처음 화면으로" 뒤로가기 링크를 추가했는데(다른 화면과 통일하려던 요청) 이 owner
-    # 리스트에 "no_match"를 안 넣었다. ruleStaleMarkers()가 그 링크(화면 첫 자식)를
-    # "no_match 소속이 아닌 잔상"으로 오판해서 그 지점부터 화면 끝까지(=사실상 화면
-    # 전체) 숨겨버렸다 — 음성 응답(TTS)은 정상 재생되는데 화면만 완전히 비어 보이는
-    # 증상으로 실측 재현됨. no_match를 owner에 추가해서 자기 자신의 뒤로가기 링크를
-    # 잔상으로 오판하지 않게 한다.
-    # 2026-09-01 재감사 — no_match 화면 자체가 2026-08-27에 삭제돼서 위 항목을 owner
-    # 목록에서 뺐다(SCREENS에 없는 이름이라 CURRENT가 될 일이 없어 남겨둬도 무해하긴
-    # 했지만, 바로 위 주석이 이미 없는 화면을 설명하고 있어 혼란스러워서 정리).
-    # 2026-09-01 — login도 render_back_link("처음 화면으로")를 화면 맨 앞에서 부른다
-    # (ui/screens/login.py::screen_login()). 이 owner 리스트에 "login"을 빠뜨리면 위
-    # no_match 사례와 똑같은 증상(뒤로가기 링크를 잔상으로 오판해 화면 전체를 숨김,
-    # 사용자 실사용 재현: 로그인 버튼 눌러도 브랜드 헤더 밑이 통째로 빈 화면)이 난다.
-    # 2026-09-01 — my_recipes(ui/screens/my_recipes.py, docs/specs/my_recipes.md)도
-    # 같은 문구로 render_back_link()를 화면 맨 앞에서 부른다 — 위 login과 같은 이유로
-    # 미리 owner에 추가해서 같은 버그 클래스를 재현 전에 막는다.
     "처음 화면으로": [
         "cooking_complete",
         "register_dish_name",
@@ -1751,94 +1147,21 @@ _STALE_CONTENT_MARKERS = {
     "마이레시피로": ["edit_recipe"],
 }
 
-# 2026-08-25 사용자 실사용 재현 보고(버그.png) — cooking_step에서 실제 대화를 나눈 뒤
-# "처음"으로 start로 넘어가니, render_chat()이 그리는 대화 기록(render_chat()이 항상
-# 출력하는 고정 wrapper `<div class="ce-transcript">`)까지 통째로 남아있었다. 대화
-# 내용은 매번 달라서 텍스트 마커로 못 잡지만, 감싸는 클래스는 항상 같아서 그걸로
-# 구조적으로 잡는다 — _STALE_CONTENT_MARKERS(텍스트 앵커 기반)와 별개의 규칙.
-# render_chat()을 쓰는 화면 = cooking_step(cooking.py)·
-# recipe_confirm(cooking.py, 2026-08-26 추가 — render_typewriter_message() 대신
-# render_chat()을 쓰도록 바뀜, cooking.py::screen_recipe_confirm() 참고). 이 목록에
-# 추가를 빠뜨리면 keepLastOnly()가 "허용 안 된 화면"으로 보고 .ce-transcript를 전부
-# 숨겨버린다 — 실제로 recipe_confirm에 막 render_chat()을 추가했을 때 "화면 전환은
-# 되는데 챗 박스(조회 확인 문구)가 안 보인다"로 정확히 이 증상이 재현됐다(위 docstring
-# 경고 "새 화면/새 위젯을 추가할 때 여기 쓰는 상수들도 같이 검토할 것"이 실제로 걸린
-# 사례).
-# 2026-09-01 재감사 — no_match(register.py) 화면이 2026-08-27에 삭제돼서 뺐다.
 _CHAT_LOG_SCREENS = ("cooking_step", "recipe_confirm")
 
-# 2026-08-25 사용자 실사용 재현 보고(버그.png, st.iframe() 교체 이후에도 재현) —
-# render_chips()가 그리는 재료 칩 목록(고정 wrapper `<div class="ce-chip-grid">`)도
-# 같은 이유(내용이 매번 다른 요리의 재료라 텍스트 마커로 못 잡음)로 구조적 규칙이
-# 필요하다. render_chips()를 쓰는 화면 = recipe_confirm·cooking_step(둘 다 cooking.py)·
-# register_ingredients(register.py).
 _CHIP_GRID_SCREENS = ("recipe_confirm", "cooking_step", "register_ingredients")
 
-# 2026-08-27 사용자 실사용 재현 보고 — recipe_confirm에서 음성 "처음"으로 start 전환한
-# 뒤에도 recipe_confirm의 마이크 카드(.ce-mic-bar, render_mic_bar() 호출부 — "듣는 중"/
-# '"응" 또는 다른 요청을 말씀해주세요')와 "다른 레시피 찾을래요" 버튼이 화면에 그대로
-# 남는 것 확인. 이 문구들은 이미 _STALE_CONTENT_MARKERS에 있었는데도 안 잡혔다 —
-# ruleStaleMarkers()는 CURRENT 화면 컨테이너의 "직계 자식"만 훑으므로, React 재조정
-# 과정에서 이 잔상이 그보다 더 깊이 중첩되거나 컨테이너 밖에 붙어버리면 텍스트 매칭
-# 자체가 그 자식까지 못 내려간다(반대로 .ce-transcript/.ce-chip-grid는 이 구조 문제를
-# 진작에 겪어서 규칙 7/8로 별도 승격됐었는데, .ce-mic-bar는 아직 텍스트 마커에만
-# 의존하고 있었음). render_mic_bar()를 실제로 쓰는 화면만 여기 whitelist로 두고,
-# ruleChatAndChips()와 완전히 같은 keepLastOnly() 구조 규칙으로 승격한다 — start는
-# 원래 .ce-mic-bar를 안 쓰는 화면(큰 마이크 아이콘은 별도 컴포넌트)이라 여기 없으면
-# start에 남은 .ce-mic-bar는 전부 잔상으로 간주돼 지워진다.
 _MIC_BAR_SCREENS = ("recipe_confirm", "cooking_step", "unclassified", "register_dish_name")
-# 2026-09-02 — register_intro 화면 삭제로 이 목록에서 뺐다(ui/screens/register.py 참고).
 
-# 2026-08-27 — "취소"처럼 여러 화면이 같이 쓰는 흔한 버튼 문구는 텍스트 마커로 어느
-# 화면 소속인지 특정할 수 없다(_STALE_CONTENT_MARKERS에 "취소"를 못 넣는 이유,
-# 잘못 지우면 다른 화면의 진짜 취소 버튼까지 지울 위험). 이런 위젯은 화면 전용 key를
-# 직접 주고(예: st.container(key="register_dish_name_cancel_btn")) 여기 {key: 소유
-# 화면} 형태로 등록하면 구조적으로(텍스트 무관) 잡힌다 — recipe_confirm의 "다른
-# 레시피 찾을래요" 버튼에서 처음 쓴 패턴을 재사용 가능하게 일반화했다.
 _SINGLE_OWNER_WIDGET_KEYS = {
     "recipe_confirm_other_recipe_btn": "recipe_confirm",
     "register_dish_name_cancel_btn": "register_dish_name",
-    # 2026-08-28 — fallback_buttons()(캡션 + 이전/다시/다음)를 감싼 화면 전용 컨테이너.
-    # cooking_step/unclassified -> start("처음") 전환 시 이 캡션·버튼이 새 화면 컨테이너
-    # 밑으로 재부모화돼 잔상으로 남던 것(특히 st.caption은 어느 규칙으로도 안 잡혔음)을
-    # 구조적으로 숨긴다. ui/dispatch.py::fallback_buttons()의 st.container(key=...) 참고.
     "cooking_step_fallback": "cooking_step",
     "unclassified_fallback": "unclassified",
 }
 
-# 2026-08-25 — 로그인/회원가입 위젯(login_*/signup_* key)이 다른 화면으로 넘어간 뒤에도
-# 남는 사례가 있어서(각 위젯이 개별 텍스트 마커로 잡혔었는데, "아이디"/"비밀번호" 같은
-# 문구가 화면마다 다른 위치에 비동기로 나뉘어 도착해 위 마커 방식만으론 불안정했다),
-# 이 화면들의 위젯을 공유하는 key 접두사로 구조적으로 잡는 규칙을 추가했다. login/signup
-# 두 뷰(_login_view) 다 이 접두사를 쓴다(my_recipes.py::screen_login() 참고).
-#
-# 2026-09-01 재도입(docs/specs/user_accounts_google_login.md) — ui/screens/login.py의
-# screen_login()/screen_signup()이 이 접두사 그대로(login_username_*, signup_password_*
-# 등) 위젯 key를 쓴다. 위 2026-09-01 재감사에서 "완전히 죽은 규칙"이라고 적었던 건
-# 몇 시간 전 얘기다 — 로그인/회원가입이 다시 생기면서 이 상수와 JS 쪽
-# ruleLoginSignup()(_CE_SWEEP_JS 안) 둘 다 다시 살아 있다. 그때 "값만 남기고 지우지
-# 않았던" 덕분에 이번엔 코드 추가만으로 그대로 재사용됐다.
-# 2026-09-01 — my_recipes/edit_recipe(docs/specs/my_recipes.md)도 같은 이유로 이
-# 접두사 방식을 쓴다. ui/screens/my_recipes.py의 모든 위젯 key를 my_recipes_*/
-# edit_recipe_*로 통일해서 이 구조적 규칙이 그대로 커버하게 했다.
 LOGIN_KEY_PREFIXES = ("login_", "signup_", "my_recipes_", "edit_recipe_")
 
-# ⚠️ 2026-08-26 재구성 — 이 아래 render_screen_cleanup()은 2026-08-25 새벽 세션에서 여러
-# 시행착오를 거쳐 완성된 원본이 커밋 한 번 안 된 채로(git에 저장된 적 없음, 워킹 디렉토리
-# 에서만 존재) 다른 세션의 편집 실수로 삭제됐다. git reflog·dangling object·VS Code Local
-# History 전부 뒤졌지만 원본 소스 자체는 복구 못 했고, 위에 남아있던 데이터(각 상수)와
-# chefear-screen-ghosting-investigation 메모리 기록(규칙별 원인/수정 내역이 상세히 남아있음)
-# 을 근거로 기능적으로 재구성한 버전이다 — 원본과 100% 동일하다는 보장은 없으니, 배포 전
-# 반드시 실제 브라우저로 화면 전환 잔상이 다시 깨끗한지 재검증할 것.
-#
-# 아래 JS는 st.html(unsafe_allow_javascript=True)로 메인 페이지 DOM에 직접 삽입된다
-# (iframe이 아님 — window.parent가 아니라 document/window를 바로 쓴다, 2026-08-25에
-# st.iframe()/components.html()에서 이걸로 교체한 이유는 전달 신뢰도 문제였다).
-#
-# ⚠️ 아래 문자열 안(코드·주석 전부)에는 "꺾쇠+영문자" 리터럴(예: script 태그·audio 태그·
-# div 태그를 <> 있는 그대로 적는 것)을 절대 쓰지 말 것 — Streamlit의 살균 단계가 그 패턴을
-# 실제 HTML 태그 시작으로 오인해서 이 지점부터 스크립트를 통째로 잘라버리는 게 실측
-# 확인됐다(2026-08-25). 꼭 필요하면 String.fromCharCode(60)으로 런타임에 조립해서 쓴다.
 _CE_SWEEP_JS = r"""
 <script>
 (function () {
@@ -2258,33 +1581,9 @@ _CE_SWEEP_JS = r"""
 def render_screen_cleanup(current_screen: str) -> None:
     """화면 전환 잔상(이전 화면의 버튼/텍스트/오디오/재료칩/대화기록 등이 새 화면 위에
     그대로 남는 문제) 최후 수단 — 브라우저에서 직접 이전 화면의 잔재를 찾아 숨긴다.
-
-    app.py::main()이 SCREENS[screen]() 호출 직후(st.container(key=f"screen_{screen}")가
-    닫힌 뒤) 매 rerun마다 부른다. 근본 원인은 Streamlit(1.61.1)/streamlit-webrtc 조합에서
-    화면이 바뀔 때 이전 실행의 일부 엘리먼트가 안 지워지는 stale-widget 부류의 문제로
-    추정되며(관련: streamlit/streamlit#14404, 아직 미해결) 화이트리스트 방식으로 하나씩
-    막는 whack-a-mole 성격이 있다 — 새 화면/새 위젯을 추가할 때 여기 쓰는 상수들
-    (_AUDIO_FREE_SCREENS/_NO_TEXT_FALLBACK_SCREENS/_STALE_CONTENT_MARKERS/
-    _CHAT_LOG_SCREENS/_CHIP_GRID_SCREENS/LOGIN_KEY_PREFIXES)도 같이 검토할 것.
-
-    마이크(webrtc_streamer())는 완전히 격리된 별도 origin-same-but-separate iframe에
-    살아서 이 스크립트가 절대 못 건드린다(의도된 것 — 잔상은 지우되 상시 마이크 연결은
-    안 끊는 게 이 함수의 핵심 제약, 위 파일 docstring 경고 참고).
     """
     payload = {
         "current": current_screen,
-        # 2026-08-28 — 매 rerun마다 값이 달라지는 nonce. 없으면 같은 화면에 머무는 동안
-        # (start의 마이크 idle 폴링 등으로 초당 수 회 rerun) 이 payload JSON이 완전히
-        # 동일해서 Streamlit이 st.html()의 스크립트를 재실행하지 않는다 — sweep()이 화면
-        # 전환 직후 딱 한 번만 돌고, 그 뒤 Streamlit이 비동기로 이전 화면 위젯을 새
-        # 컨테이너 밑에 재부모화하는 잔상(#8360)은 아무도 안 쓸어낸다. 스크립트 안의
-        # 감시장치도 유한하다(setInterval 20틱=2초, MutationObserver는 60초 뒤 self-
-        # disconnect) — 그게 만료된 뒤 도착한 잔재는 영영 안 지워졌다("처음"으로 start에
-        # 온 뒤 cooking_step 채팅/마이크바/버튼이 계속 남는 실측 리포트). nonce로 매 rerun
-        # 스크립트가 다시 돌게 해서 sweep() 1회 실행 + 감시장치 재장전이 항상 이뤄지게
-        # 한다(render_audio_player()의 src 프래그먼트 nonce와 같은 취지 — st.html()은
-        # 내용이 바이트 단위로 같으면 재실행 안 함). JS는 이 값을 안 읽어도 된다,
-        # 문자열을 바꾸는 것 자체가 목적.
         "nonce": time.monotonic(),
         "audioFreeScreens": list(_AUDIO_FREE_SCREENS),
         "noTextFallbackScreens": list(_NO_TEXT_FALLBACK_SCREENS),
@@ -2301,27 +1600,6 @@ def render_screen_cleanup(current_screen: str) -> None:
     js = js.strip()
     js = js.removeprefix("<script>").removesuffix("</script>").strip()
 
-    # 2026-08-28 — 이 스크립트를 st.html()에 <script> 그대로 넣으면 Streamlit의 DOMPurify
-    # 새니타이저(unsafe_allow_javascript=True여도 거침)가 통째로 제거한다는 걸 실측
-    # 확인했다: 렌더된 stHtml 엘리먼트 innerHTML이 길이 0. 작은 <script>는 통과하는데
-    # 이 15KB짜리(정규식·[class*=] 속성 선택자·`<` 비교연산자·MutationObserver 등이
-    # 섞임)는 어딘가가 새니타이저를 건드려 전량 삭제된다(이 파일 1052줄 주석이 이미
-    # "특정 줄에서 <script>가 통째로 사라짐"을 기록 — 그때는 주석의 꺾쇠만 뺐지만 코드
-    # 본문에도 트리거가 남아있었던 것). 그 결과 render_screen_cleanup()이 배포 내내 한
-    # 번도 실행된 적이 없어 화면 전환 잔상이 계속 남았다(사용자 반복 리포트의 진짜 원인).
-    #
-    # base64로 감싸서 "꺾쇠로 시작하는 토큰이 전혀 없는" 아주 단순한 로더만 통과시키고,
-    # 실제 코드는 atob() 후 간접 eval로 실행한다. 문자열은 우리가 이 파일에서 직접 만든
-    # 신뢰된 코드라 eval이 안전하다(사용자 입력 아님). 간접 eval `(0, eval)(...)`은 전역
-    # 스코프에서 실행돼 window.__ceSweepObserver 등 전역 상태가 정상 동작한다.
-    #
-    # 2026-08-28 재수정 — atob()만 쓰면 UTF-8이 깨진다: atob()는 base64를 "바이트당 1글자"
-    # Latin-1 문자열로 돌려줘서, 스크립트 안의 한글 리터럴(_STALE_CONTENT_MARKERS 마커들,
-    # showRetryToast()의 "잠시 후 재시도 해주시길 바랍니다." 등)이 전부 모지바케가 된다
-    # (실측: 그 문구가 mojibake로 화면 하단에 떴다 사라짐 — 깨진 리터럴이 JS 에러를 내고
-    # 스크립트 자신의 window.onerror 핸들러가 그 깨진 토스트를 띄운 것). atob() 결과를
-    # decodeURIComponent(escape(...))로 한 번 더 풀어 원래 UTF-8 문자열로 복원한다
-    # (base64→UTF-8의 표준 관용구). escape/unescape는 deprecated지만 전 브라우저 지원.
     js_b64 = base64.b64encode(js.encode("utf-8")).decode("ascii")
     st.html(
         f'<script>(0,eval)(decodeURIComponent(escape(atob("{js_b64}"))))</script>',

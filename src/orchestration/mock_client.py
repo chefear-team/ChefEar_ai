@@ -1,28 +1,4 @@
-"""강사 체크리스트 4번 "백엔드 골격 — 가짜(mock) 응답을 먼저 돌려준다"용 가짜 Supabase 클라이언트.
-
-## 왜 필요한가
-
-지금 이 프로젝트는 Supabase 프로젝트 자체가 아직 없어서(자격증명 없음) 진짜 DB에
-연결할 수가 없다. 그렇다고 오케스트레이션 함수들(recipe_search.py, pipeline.py 등)을
-완성해놓고도 아무도 눈으로 결과를 못 보는 채로 기다리는 건 손해다 — UI 담당자가
-화면을 이어붙여보거나, 발표용으로 미리 흐름을 시연해보려면 "그럴듯한 가짜 데이터"라도
-지금 당장 리턴해줄 무언가가 필요하다.
-
-그래서 진짜 supabase-py 클라이언트와 겉모습(메서드 이름, 체이닝 방식)이 완전히 같은
-가짜 클라이언트를 만들고, DB 자격증명이 없을 때 db.get_client()가 자동으로 이걸
-대신 돌려주게 만들었다. recipe_search.py 등의 코드는 한 줄도 안 바꿔도 된다 —
-클라이언트가 진짜인지 가짜인지 구분하지 않고 그냥 .table("recipes").select(...)
-같은 동일한 방식으로 부르기 때문이다(테스트에서 쓰던 tests/fake_supabase.py와
-같은 설계 원리, "덕 타이핑". 사실 이 파일이 그 엔진의 원본이고, 테스트 쪽은
-이 파일을 그대로 가져다 쓴다).
-
-## 진짜 DB랑 다른 점
-
-- 서버를 껐다 켜면(프로세스가 새로 시작되면) 가짜 데이터도 초기 시드 상태로 리셋된다
-  (진짜 DB처럼 영구 저장이 아니라 파이썬 메모리에만 있음).
-- 아래 시드 데이터는 문서 5장 시나리오(된장찌개 진행 중 "바지락 넣어도 돼?")를
-  그대로 재현할 수 있게 일부러 골랐다 — 데모/발표에서 바로 그 대화를 보여줄 수 있다.
-"""
+"""강사 체크리스트 4번 "백엔드 골격 — 가짜(mock) 응답을 먼저 돌려준다"용 가짜 Supabase 클라이언트."""
 from __future__ import annotations
 
 import uuid
@@ -117,9 +93,6 @@ class FakeQuery:
                 row.setdefault("view_count", 0)
                 row.setdefault("created_at", "")
                 row.setdefault("origin_id", None)
-                # 2026-08-27 추가 — 실제 스키마(db/schema.sql)의 approved 컬럼
-                # `default 'Y'`와 맞춘다. registration.py::save_recipe()는 매번
-                # "approved": "N"을 명시적으로 넣으므로 이 기본값을 덮어쓴다.
                 row.setdefault("approved", "Y")
                 self.table.rows[row["id"]] = row
                 inserted.append(row)

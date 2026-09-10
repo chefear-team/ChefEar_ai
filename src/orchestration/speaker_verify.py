@@ -1,29 +1,4 @@
-"""ChefEar 관리자 페이지 2FA — 화자검증(ECAPA-TDNN).
-
-docs/specs/admin_voice_2fa.md 참고. 관리자 페이지(`/admin`) 접근은 2단계다:
-  1차 = `.env`의 `ADMIN_ACCESS_TOKEN` (`?admin_key=`, `app.py::_admin_gate_ok()`)
-  2차 = 화면에 뜬 랜덤 한글 단어 3개를 읽은 녹음을, 등록된 관리자 목소리와 대조 (이 모듈)
-
-[모델] `speechbrain/spkrec-ecapa-voxceleb` — ECAPA-TDNN, 192-dim 화자 임베딩.
-VoxCeleb 학습, 파라미터 ~22M로 작다.
-
-[배포 — CPU 전용] 팀 GPU 데스크탑(RTX 5070, 12GB)은 STT/TTS/LLM/문장임베딩으로 이미
-VRAM 여유가 ~1GB뿐이라 여기에 못 올린다. 관리자 인증은 드물고 지연에 둔감해서
-(5초 클립 CPU 임베딩 ~1~2초) CPU로 충분하다 — 그래서 `_GPU_LOCK`도 안 잡는다.
-챌린지 단어 인식용 STT(`stt_transcribe`)만 GPU를 쓰고, 그건 호출부
-(`ui/screens/admin_auth.py`)가 `_GPU_LOCK`으로 감싼다.
-
-[torchaudio 심] 이 저장소 배포 venv는 torchaudio 2.11인데 speechbrain 1.0.2가
-`torchaudio.list_audio_backends()`(2.9+에서 제거됨)를 import 시점에 부른다 —
-speechbrain을 import하기 전에 이 함수를 심어준다(soundfile 백엔드만 쓰므로 무해).
-
-[성문 저장] `data/admin_voiceprints.json` — `{이름: {"embedding": [192 float],
-"sample_count": int, "updated_at": iso}}`. Supabase 테이블 대신 파일을 쓰는 이유:
-저장소 폴더가 네트워크 공유라 파일도 기기 간 공유되고, 관리자가 소수라 파일 하나로
-충분하며, Supabase DDL을 사람이 대시보드에서 직접 실행하는 단계를 생략할 수 있다.
-관리자 제거 = 이 dict에서 키 삭제. 나중에 필요하면 verify/enroll 인터페이스는 그대로
-두고 저장소만 Supabase로 바꾸면 된다.
-"""
+"""ChefEar 관리자 페이지 2FA — 화자검증(ECAPA-TDNN)."""
 from __future__ import annotations
 
 import io
@@ -43,10 +18,11 @@ _MODEL_ID = os.environ.get("ADMIN_SPEAKER_MODEL") or "speechbrain/spkrec-ecapa-v
 
 
 def _env_threshold(default: float = 0.55) -> float:
-    """2026-08-28 — 예전엔 float(os.environ[...])를 모듈 로드 시점에 바로 불러서, .env의
+    """예전엔 float(os.environ[...])를 모듈 로드 시점에 바로 불러서, .env의
     ADMIN_VOICE_THRESHOLD에 오타(숫자 아님)가 있으면 이 모듈 import 자체가 ValueError로
     실패했다 → speaker_verify를 쓰는 관리자 인증 전체가 죽음(fail-closed라 안전하긴 하나
-    원인 파악이 어려운 잠금). 파싱 실패 시 기본값으로 폴백하고 경고만 남긴다."""
+    원인 파악이 어려운 잠금). 파싱 실패 시 기본값으로 폴백하고 경고만 남긴다.
+    """
     raw = os.environ.get("ADMIN_VOICE_THRESHOLD")
     if raw is None or raw.strip() == "":
         return default
@@ -207,8 +183,6 @@ def enroll(name: str, audios: list, sample_rate: int | None = None) -> None:
     name = (name or "").strip()
     if not name:
         raise ValueError("이름이 비어 있습니다.")
-    # 2026-08-28 — 최소 2개(화면은 3개 강제하지만, 다른 호출부/테스트가 1개만 넘기면
-    # 성문이 그 한 녹음의 노이즈까지 그대로 학습해 오검증률이 나빠진다).
     if not audios or len(audios) < 2:
         raise ValueError("음성 샘플이 2개 이상 필요합니다.")
     embs = [embed(a, sample_rate) for a in audios]

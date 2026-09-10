@@ -46,7 +46,7 @@ def test_ac01_signup_creates_row_with_sha256_id_and_hashed_password():
 
 
 def test_signup_records_last_login_at():
-    """2026-09-01 요청 — 가입은 최초 로그인으로 취급해 last_login_at을 채운다."""
+    """가입은 최초 로그인으로 취급해 last_login_at을 채운다."""
     client = FakeSupabaseClient()
     user = signup_local("chefuser", "password123", client=client)
 
@@ -108,11 +108,7 @@ def test_account_id_is_deterministic_sha256():
 
 
 def test_session_token_roundtrip_and_logout_invalidation():
-    """2026-09-01 요청 — 새로고침해도 로컬 로그인이 안 풀리게 하는 세션 토큰.
-
-    users.user_id_hash(공개적으로 추측 가능한 값)를 그대로 "로그인 유지 토큰"으로
-    쓰면 안 되는 이유(EC성 보안 문제)로 별도 무작위 토큰을 발급/검증/무효화한다.
-    """
+    """새로고침해도 로컬 로그인이 안 풀리게 하는 세션 토큰."""
     client = FakeSupabaseClient()
     user = signup_local("chefuser", "password123", client=client)
 

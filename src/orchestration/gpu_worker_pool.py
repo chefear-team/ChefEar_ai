@@ -1,41 +1,4 @@
-"""GPU 추론 요청을 처리하는 멀티프로세스 워커 풀 (2026-09-01, RunPod A40 48GB 이관 이후 도입).
-
-## 왜 스레드 락(_GPU_LOCK) 대신 별도 프로세스인가
-
-기존 `voice_io._GPU_LOCK`(`threading.Lock`)은 한 프로세스 안의 모든 세션/스레드가
-GPU 호출(STT/TTS/LLM/임베딩)을 한 번에 하나씩만 하도록 막는 방식이었다. 이 프로젝트는
-Streamlit 표준 모델대로 세션마다 스레드 하나를 쓰지만, **파이썬 스레드는 전부 같은
-GIL을 공유**한다 — 그래서 락을 여러 개로 쪼개 GPU 호출 여러 개를 "동시에" 돌게
-해봐도(2026-08-26 실험, `voice_io.py` 옛 `_GPU_LOCK` 정의부 주석 참고) GIL을 서로
-빼앗아가며 오래 붙들고 있는 바람에 상시 마이크의 오디오 드레인 스레드가 제때 못
-돌아서 "Queue overflow"가 재현됐고 다음날 되돌려졌다. 그 실험 당시 GPU는 12GB라
-VRAM 여유가 500MB 미만이었던 것도 GPU 호출 시간을 늘려(할당 재시도) GIL 경합을
-키운 요인으로 의심됐는데, A40(48GB)으로 옮긴 지금도 **GIL 자체는 VRAM과 무관하게
-그대로 존재**하므로 스레드 기반 재시도는 다시 실패할 위험이 있다.
-
-**별도 프로세스는 프로세스마다 자기만의 GIL을 갖는다** — 그래서 워커 프로세스
-개수만큼은 진짜 병렬로 GPU 추론을 처리할 수 있고, 메인(Streamlit) 프로세스의 마이크
-드레인 루프는 워커가 무슨 일을 하든 전혀 GIL을 안 뺏긴다.
-
-## 호출부가 바뀌는 방식
-
-기존에 `with _GPU_LOCK: result = some_gpu_fn(...)`으로 감싸던 자리를, 이 모듈의
-`submit_*()`가 돌려주는 `concurrent.futures.Future`를 `.result()`로 기다리는 걸로
-바꾸면 된다. 그 호출들은 이미(2026-08-23~28에 걸쳐) 전부 백그라운드
-`threading.Thread` 안에서 실행되고 있었고, 메인 스레드는 `_drain_mic_while(job)`
-등으로 그동안 마이크 큐를 계속 비우는 구조였다 — 그 스레드/드레인 구조 자체는
-전혀 안 바뀐다. "그 스레드 안에서 무엇을 기다리는지"만 (락 대신 Future로) 바뀐다.
-
-## sys.path / PYTHONPATH 주의
-
-`multiprocessing`은 CUDA와 fork가 안 맞아서(부모 프로세스의 CUDA 컨텍스트를 자식이
-그대로 물려받으며 꼬임) 반드시 `spawn`으로 워커를 새 인터프리터부터 띄운다. spawn된
-자식은 부모가 런타임에 `sys.path.insert(...)`로 얹어둔 경로(`src/app.py` 상단 참고)를
-물려받지 못한다 — 반면 `PYTHONPATH` 환경변수는 새 인터프리터가 시작할 때 자기가 직접
-읽으므로 물려받는다. 그래서 풀을 만들기 *전에* `PYTHONPATH`에 `src/`를 넣어둔다
-(아래 `_ensure_pythonpath()`). 이게 없으면 자식 프로세스가 `orchestration.gpu_worker_pool`
-자체를(pickle된 함수 참조를 역직렬화하려고) import하려다 `ModuleNotFoundError`로 죽는다.
-"""
+"""GPU 추론 요청을 처리하는 멀티프로세스 워커 풀."""
 from __future__ import annotations
 
 import multiprocessing as mp
@@ -106,13 +69,6 @@ def _init_worker() -> None:
     _load_embed_model()
     print(f"[gpu_worker_pool] 워커(pid={worker_id}) 임베딩 로딩 완료", flush=True)
 
-    # 2026-09-01 — recipe_search._all_dish_names()의 60,196건 전체 페이지네이션
-    # 스캔(콜드 12~18초, orchestration/recipe_search.py 문서 참고)이 실제 사용자
-    # 요청 첫 턴에서 발생하지 않도록 이 워커가 뜬 시점에 미리 데운다. 이 함수는
-    # client 객체 identity로 lru_cache가 걸려있어서(db.py::get_client()가 프로세스당
-    # 싱글턴), 이 워커의 get_client()로 한 번 데우면 이후 같은 워커 안에서는 항상
-    # 캐시 히트다(다른 워커는 각자 자기 프로세스에서 따로 한 번씩 데워야 함 — 아래
-    # get_pool()에서 모든 워커에 이 초기화 함수가 각각 실행되므로 자동으로 됨).
     from orchestration.db import get_client
     from orchestration.recipe_search import _all_dish_names
 
@@ -187,18 +143,6 @@ def _worker_handle_utterance(
 # 풀 싱글턴 — 프로세스(=Streamlit 서버) 전체에서 딱 하나만 존재
 # ============================================================
 
-# 워커 개수. A40(48GB) 실측 후 정할 값 — 모델 세트 하나(STT+TTS+LLM+임베딩)당 VRAM
-# 사용량을 nvidia-smi로 직접 재보고 GPU_WORKER_COUNT 환경변수로 조정할 것(재빌드 없이
-# RunPod Pod 환경변수만 바꾸면 됨). 실측 전까지는 보수적으로 3으로 시작.
-#
-# 2026-09-07 실측(RunPod 웹터미널, STT/TTS/LLM/임베딩 순차 로드) — 워커 1개(4모델
-# 전부)당 유휴 상태 VRAM 사용량은 10.4GB. 3워커 기준 약 31GB로 45GB 안에 여유
-# 있게 들어가고, 실제로 워커 3개 동시 기동(warm_pool())도 재현 테스트에서 정상
-# 성공함. 그런데도 운영 중 워커가 죽는 BrokenProcessPool이 실제로 재현됐다 —
-# 이 유휴 수치만으로는 설명 안 되는 간헐적 문제로 보임(추론 중 activation
-# 메모리 스파이크나 호스트 쪽 순간 이슈 등으로 추정, 1.5 원칙 — 확정 인과관계
-# 미검증). 원인을 못 박기 전까지는 워커가 죽어도 서비스 전체가 멈추지 않도록
-# 아래 _reset_pool()/_submit_with_recovery()로 자동 복구만 우선 넣는다.
 GPU_WORKER_COUNT = int(os.environ.get("GPU_WORKER_COUNT", "3"))
 
 _pool: ProcessPoolExecutor | None = None
@@ -232,17 +176,7 @@ def get_pool() -> ProcessPoolExecutor:
 
 
 def _reset_pool() -> None:
-    """풀을 강제로 버린다 — 다음 get_pool() 호출이 새 풀을 만들게 한다.
-
-    2026-09-07 추가 배경: 워커 하나가 죽으면(원인 불문 — VRAM 스파이크든 드라이버
-    순간 이슈든, RunPod 운영 중 실제로 재현됨) ProcessPoolExecutor 전체가
-    "broken" 상태가 되는데, 그때까지는 이 풀을 버리고 새로 만드는 코드가 아예
-    없었다. 그래서 워커 하나만 죽어도 이후 모든 STT/TTS/LLM 요청이
-    BrokenProcessPool로 영원히 실패했고, 유일한 복구 수단이 "컨테이너 통째로
-    재시작"뿐이었다. 이미 broken인 풀의 shutdown()이 실패해도(워커가 죽은
-    상태라 정상 종료 신호를 못 받을 수 있음) 그냥 무시하고 넘어간다 — 새 풀을
-    만드는 게 우선이지 옛 풀을 깨끗하게 정리하는 게 목적이 아니다.
-    """
+    """풀을 강제로 버린다 — 다음 get_pool() 호출이 새 풀을 만들게 한다."""
     global _pool
     with _pool_lock:
         old_pool, _pool = _pool, None

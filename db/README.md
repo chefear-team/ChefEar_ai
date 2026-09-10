@@ -1,46 +1,26 @@
 # db/ — Supabase 스키마
 
-## 이 폴더가 하는 일
+`supabase-py`는 DDL을 실행할 수 없으므로 SQL 파일은 Supabase 대시보드 SQL Editor에 직접 붙여넣어 실행한다. 마이그레이션 도구는 쓰지 않는다.
 
-Supabase에 수동으로 실행할 DDL(`schema.sql`) 하나만 담는다. `supabase-py`는 SELECT/INSERT/UPDATE/DELETE
-같은 데이터 조작만 가능하고 테이블 생성 문법(DDL)은 실행할 수 없어서, 이 파일은 파이썬 코드가 아니라
-사람이 Supabase 대시보드 SQL Editor에 직접 붙여넣고 실행하는 용도다. 별도 마이그레이션 도구는 안 쓴다.
+| 파일 | 용도 |
+|---|---|
+| `schema.sql` | `recipes` / `recipe_steps` / `users` 테이블, 인덱스, RLS |
+| `migrate_500_recipes_step1_truncate.sql` | 2026-09-01 500건 교체 1단계: `recipe_steps.source`에 `rule_generated` 허용 + 기존 데이터 truncate. 2단계는 `python src/orchestration/load_500_recipes.py` |
 
-## 현재 상태 (확인: 2026-08-28)
+## 테이블
 
-`schema.sql` 완성됨 — 테이블 3개(`recipes`/`recipe_steps`/`users`, 아래 참고). Supabase 프로젝트 생성 완료, `schema.sql` 실행 완료(RLS 켠 상태), `.env`에 자격증명 연결 확인 완료.
+- **`recipes`** — 레시피 1건당 1행. `source`는 `api_standard`(500건 표준) / `user_custom`(사용자 등록). `owner_id`는 등록자 id(09-01부터 신규 등록에 필수). `approved`는 신규 등록 시 'Y'로 즉시 저장되며 'N'은 09-02 이전 레거시 승인 대기 행에만 남아 있다. 공개 범위는 `approved`가 아니라 `owner_id`로 가른다(`api_standard`는 전체 공개, `user_custom`은 본인만).
+- **`recipe_steps`** — 레시피 1건당 단계별 여러 행, `(recipe_id, step_number)` 복합 PK, `on delete cascade`. `step_text`는 `[TERM:용어]` 태그를 포함한 원문. `source`는 `api_standard` / `user_custom` / `rule_generated`.
+- **`users`** — `user_id_hash`(PK, sha256) / `user_id`(표시 id) / `auth_provider`(local|google) / `google_sub` / `password_hash` / `session_token_hash` / `last_login_at`.
 
-- `recipes`: 레시피 1건당 1행. `source` 컬럼은 `api_standard`/`user_custom`만 허용(check 제약). `origin_id`는 자기참조(user_custom이 어떤 표준 레시피 기반인지). `external_id`(원본 CSV RCP_SNO), `servings`(인분수) 컬럼 포함.
-  - **`owner_id`**: 2026-09-01 로그인 재도입으로 다시 사용 중 — 신규 `user_custom`은 등록자 id 필수(`save_recipe()`가 `None`이면 저장 거부). 비로그인 신규 행은 생기지 않는다. 이 스펙 이전 레거시 `NULL` 행은 누구에게도 조회 노출하지 않고 관리자 페이지에서만 처리한다.
-  - **`approved`('Y'/'N')**: 2026-09-02부터 신규 `user_custom`은 즉시 'Y'로 저장되고, 공개 범위는 `owner_id`(본인만 조회)로 가른다. 'N'은 이 스펙 이전 레거시 승인 대기 행을 걸러내는 역할로만 남는다. `api_standard`는 적재 시점에 항상 'Y'.
-- `recipe_steps`: 레시피 1건당 여러 행(단계별). `(recipe_id, step_number)` 복합 기본키, `on delete cascade`로 레시피 삭제 시 단계도 같이 삭제됨
-- `users`(2026-08-22 추가, 2026-09-01 재도입): 로컬/구글 로그인 계정. `user_id_hash`(PK, sha256) / `user_id`(표시 id) / `auth_provider` / `google_sub` / `session_token_hash` 등. RLS는 켜져 있으나(`schema.sql` 하단), 소유자 격리는 앱 코드 필터로 하며 service_role 키는 RLS를 우회하므로 키 관리 주의.
+RLS는 켜져 있지만 소유자 격리는 앱 코드 필터로 하며, `service_role` 키는 RLS를 우회하므로 서버 `.env`에만 둔다. 관리자 성문은 DB가 아니라 로컬 `data/admin_voiceprints.json`.
 
-인덱스 3개(`dish_name`, `source`, `owner_id`) + `uq_recipes_dish_name_standard`(표준 레시피 요리명 유니크) 포함. `owner_id` 인덱스는 지금은 항상 null인 컬럼을 대상으로 하므로 사실상 안 쓰인다.
+## 현재 데이터
 
-**관리자 성문(voiceprint)은 이 DB가 아니라 로컬 파일에 저장된다** — `data/admin_voiceprints.json`(ECAPA-TDNN 임베딩, `src/orchestration/speaker_verify.py`). 관리자가 소수라 별도 테이블을 만들지 않았다.
+한국 가정식 500개(`docs/한국_가정식_500개_COOKING_STEPS_규칙기반생성_v2.csv`): `recipes` 500행, `recipe_steps` 2,950행, 용어 태그 926개. 요리명·재료·조회수는 만개의레시피 실데이터, 조리순서는 재료 기반 규칙 생성. 초기의 60,196건/357,938단계(조리순서 ChatGPT 생성)는 09-01에 전량 삭제했다.
 
-### 데이터 적재 완료 (2026-08-16)
+## 설정
 
-`src/orchestration/load_data.py`로 `recipes`(`api_standard`) 60,196건 + `recipe_steps` 357,938건 적재 완료.
-
-요리명·재료·조회수 등 메타데이터는 만개의레시피 원본 CSV(60,282건, 실물 확보 완료) 기준.
-**조리과정(`COOKING_STEPS`) 텍스트는 LLM(ChatGPT)이 작성**해서 채워 넣었다 — 원본 CSV 나머지
-필드는 실데이터고, 조리 단계 서술만 LLM 생성이라는 뜻. 내용 검토 결과 조리법 자체는 사람마다
-표현이 달라도 무방한 수준이라 실사용에 문제없는 걸로 확인됨.
-
-## 진행 방법
-
-1. Supabase 프로젝트 생성 → SQL Editor에 `schema.sql` 내용 그대로 붙여넣고 실행
-2. `.env`에 `SUPABASE_URL`/`SUPABASE_KEY` 채우기 → `src/orchestration/db.py`의 `get_client()`가
-   자동으로 mock 대신 이 진짜 DB를 씀(코드 수정 불필요)
-3. 스키마를 바꿔야 하면 이 파일을 직접 수정한 뒤 다시 SQL Editor에서 수동 실행(마이그레이션 이력
-   관리 없음 — 실행 순서를 팀이 직접 챙겨야 함)
-4. `python src/orchestration/load_data.py --csv <경로>`로 표준 레시피 CSV 적재(`--dry-run`으로 먼저
-   파싱만 검증 가능)
-
-## 필요한 것 / 막힌 것
-
-## 관련 문서
-
-`docs/ChefEar_PRD_SDD_v0.8.md` 6.7(Supabase 테이블), `docs/decisions.md` OI-08(SQL 함수 대신 Python 필터).
+1. SQL Editor에 `schema.sql` 실행
+2. `.env`에 `SUPABASE_URL` / `SUPABASE_KEY` → `src/orchestration/db.py::get_client()`가 자동으로 실제 DB 사용(없으면 mock)
+3. `migrate_500_recipes_step1_truncate.sql` 실행 후 `python src/orchestration/load_500_recipes.py`

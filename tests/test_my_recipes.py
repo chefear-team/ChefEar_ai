@@ -36,9 +36,10 @@ def test_ac01_sorted_by_created_at_newest_first():
 
 
 def test_strip_step_prefix_removes_saved_number_and_leaves_legacy_text_untouched():
-    """2026-09-02 — save_recipe()/update_recipe()가 붙이는 "N. " 순번을 수정 폼
+    """save_recipe/update_recipe가 붙이는 "N. " 순번을 수정 폼
     프리필 시 떼어내야 재저장할 때 "1. 1. ..."로 겹쳐 쌓이지 않는다(이 변경 이전에
-    저장된, 접두어 없는 레거시 행은 그대로 통과해야 함)."""
+    저장된, 접두어 없는 레거시 행은 그대로 통과해야 함).
+    """
     assert _strip_step_prefix("1. 첫 단계") == "첫 단계"
     assert _strip_step_prefix("12. 열두 번째 단계") == "열두 번째 단계"
     assert _strip_step_prefix("접두어 없는 레거시 단계") == "접두어 없는 레거시 단계"

@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TTS MOS 청취 평가</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    color-scheme: light;
+    --page:        #eef1f0;
+    --surface:     #ffffff;
+    --surface-2:   #e5ebe8;
+    --ink:         #10161a;
+    --ink-2:       #47555a;
+    --ink-muted:   #7f8d8f;
+    --grid:        #d7ded9;
+    --border:      rgba(16,22,26,0.12);
+    --border-strong: rgba(16,22,26,0.22);
+    --base:        #3d6fb0;
+    --tuned:       #c8722a;
+    --tuned2:      #1f8f74;
+    --good:        #1f8f4f;
+    --good-wash:   #e0f3e6;
+    --warn:        #c98a1f;
+    --warn-wash:   #f8edd8;
+    --critical:    #c2433f;
+    --critical-wash: #f8e1df;
+    --font-display: 'IBM Plex Sans KR', 'Malgun Gothic', 'Apple SD Gothic Neo', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', 'Consolas', ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --page:#0c1012; --surface:#161a1c; --surface-2:#1d2224; --ink:#eef2f0; --ink-2:#b7c1c0; --ink-muted:#7c8886;
+      --grid:#272d2f; --border:rgba(255,255,255,0.11); --border-strong:rgba(255,255,255,0.20);
+      --base:#6f9fdb; --tuned:#e2955c; --tuned2:#3fbd9c;
+      --good:#3fbd6f; --good-wash:#123a20; --warn:#e0ac4a; --warn-wash:#3a2c12; --critical:#e2716c; --critical-wash:#3a1917;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:#0c1012; --surface:#161a1c; --surface-2:#1d2224; --ink:#eef2f0; --ink-2:#b7c1c0; --ink-muted:#7c8886;
+    --grid:#272d2f; --border:rgba(255,255,255,0.11); --border-strong:rgba(255,255,255,0.20);
+    --base:#6f9fdb; --tuned:#e2955c; --tuned2:#3fbd9c;
+    --good:#3fbd6f; --good-wash:#123a20; --warn:#e0ac4a; --warn-wash:#3a2c12; --critical:#e2716c; --critical-wash:#3a1917;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; background:var(--page); color:var(--ink); font-family:var(--font-display); }
+  body{ line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .wrap{ max-width:720px; margin:0 auto; padding:40px 20px 80px; }
+  a{ color:var(--base); }
+
+  header{ margin-bottom:26px; }
+  .eyebrow{ font-family:var(--font-mono); font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--ink-muted); }
+  h1{ font-size:26px; margin:2px 0 0; font-weight:700; letter-spacing:-0.01em; }
+  .subtitle{ color:var(--ink-2); font-size:14.5px; margin-top:6px; max-width:60ch; }
+  .back-link{ font-family:var(--font-mono); font-size:12px; }
+
+  .card{ background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:24px; }
+  .card + .card{ margin-top:16px; }
+
+  /* ---- setup screen ---- */
+  fieldset{ border:none; padding:0; margin:0 0 20px; }
+  legend{ font-size:13px; font-weight:600; margin-bottom:10px; padding:0; }
+  .group-row{
+    display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:8px; border:1px solid var(--border);
+    margin-bottom:8px; background:var(--surface-2);
+  }
+  .group-row input[type="checkbox"]{ width:16px; height:16px; accent-color:var(--base); flex-shrink:0; }
+  .group-row label{ flex:1; font-size:14px; cursor:pointer; }
+  .group-row .n{ font-family:var(--font-mono); font-size:12px; color:var(--ink-muted); }
+  .field-row{ display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  .field-row label{ font-size:13.5px; color:var(--ink-2); min-width:140px; }
+  input[type="number"], input[type="text"]{
+    font-family:var(--font-mono); font-size:14px; padding:7px 10px; border-radius:7px;
+    border:1px solid var(--border-strong); background:var(--surface); color:var(--ink); width:110px;
+  }
+  input[type="text"]{ width:200px; }
+  .toggle-row{ display:flex; align-items:center; gap:8px; }
+  .toggle-row input{ width:16px; height:16px; accent-color:var(--base); }
+  .btn{
+    font-family:var(--font-display); font-weight:600; font-size:14.5px; padding:11px 20px; border-radius:9px;
+    border:1px solid var(--border-strong); background:var(--surface-2); color:var(--ink); cursor:pointer;
+  }
+  .btn:hover{ border-color:var(--ink-muted); }
+  .btn.primary{ background:var(--base); color:#fff; border-color:var(--base); }
+  .btn.primary:hover{ filter:brightness(1.06); }
+  .btn.ghost{ background:transparent; }
+  .btn:disabled{ opacity:0.45; cursor:not-allowed; }
+  .btn-row{ display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+  .resume-note{
+    background:var(--warn-wash); border:1px solid var(--border); border-radius:10px; padding:10px 14px;
+    font-size:13px; margin-bottom:18px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+
+  /* ---- rating screen ---- */
+  .progress-bar{ height:5px; border-radius:3px; background:var(--surface-2); overflow:hidden; margin-bottom:18px; }
+  .progress-fill{ height:100%; background:var(--base); border-radius:3px; transition:width 0.2s ease; }
+  .progress-label{ font-family:var(--font-mono); font-size:12px; color:var(--ink-muted); display:flex; justify-content:space-between; margin-bottom:6px; }
+  .set-tag{
+    display:inline-block; font-family:var(--font-mono); font-size:11.5px; font-weight:600; padding:3px 9px;
+    border-radius:999px; background:var(--surface-2); color:var(--ink-2); margin-bottom:14px; letter-spacing:0.02em;
+  }
+  .ref-text{ font-size:20px; font-weight:600; line-height:1.5; margin-bottom:4px; text-wrap:balance; }
+  .hyp-text{ font-size:13.5px; color:var(--ink-muted); margin-bottom:18px; }
+  .hyp-text b{ color:var(--ink-2); font-weight:600; }
+  audio{ width:100%; margin-bottom:22px; }
+  .score-grid{ display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-bottom:14px; }
+  .score-btn{
+    display:flex; flex-direction:column; align-items:center; gap:4px; padding:14px 6px;
+    border-radius:10px; border:1.5px solid var(--border-strong); background:var(--surface-2); cursor:pointer;
+    font-family:var(--font-display); color:var(--ink);
+  }
+  .score-btn .num{ font-family:var(--font-mono); font-size:20px; font-weight:700; }
+  .score-btn .label{ font-size:11px; color:var(--ink-muted); text-align:center; }
+  .score-btn:hover{ border-color:var(--base); }
+  .score-btn.selected{ background:var(--base); border-color:var(--base); }
+  .score-btn.selected .num, .score-btn.selected .label{ color:#fff; }
+  .kbd-hint{ font-family:var(--font-mono); font-size:11.5px; color:var(--ink-muted); text-align:center; margin-bottom:18px; }
+  .nav-row{ display:flex; justify-content:space-between; gap:10px; }
+
+  /* ---- results screen ---- */
+  table{ border-collapse:collapse; width:100%; font-size:13.5px; }
+  thead th{
+    text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-muted);
+    padding:0 8px 8px; border-bottom:1px solid var(--border-strong); font-weight:500;
+  }
+  thead th:first-child, tbody td:first-child{ text-align:left; }
+  tbody td{ padding:9px 8px; border-bottom:1px solid var(--border); font-family:var(--font-mono); font-variant-numeric:tabular-nums; text-align:right; }
+  tbody td:first-child{ font-family:var(--font-display); }
+  .mos-value{ font-weight:700; }
+
+  footer{ margin-top:24px; font-size:12px; color:var(--ink-muted); text-align:center; }
+
+  .hidden{ display:none !important; }
+  @media (prefers-reduced-motion:reduce){ .progress-fill{ transition:none; } }
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">recipe-tts · 청취 평가</div>
+    <h1>TTS MOS 청취 평가</h1>
+    <p class="subtitle">합성 음성을 직접 듣고 1~5점(ITU-T P.800 ACR 척도)으로 자연스러움·명료도를 평가합니다. 어떤 모델인지 모르는 상태로 듣도록 순서를 섞을 수 있습니다 — 결과는 평가가 끝난 뒤에만 공개됩니다. <b>ChefEar 실사용 모델(epoch-13)</b> 세트는 실제 배포 체크포인트 샘플로, STT 검증 없이 순수 청취 평가만 진행합니다.</p>
+    <p class="back-link">
+      <a href="정량지표_대시보드.html">← WER·CER·RTF 대시보드로 돌아가기</a> ·
+      <a href="음성샘플_듣기.html">실사용 모델 음성 샘플 듣기 →</a>
+    </p>
+  </header>
+
+  <!-- ============ SETUP ============ -->
+  <div id="screen-setup" class="card">
+    <div id="resume-note" class="resume-note hidden">
+      <span id="resume-text"></span>
+      <span style="display:flex; gap:8px;">
+        <button class="btn primary" id="btn-resume">이어하기</button>
+        <button class="btn ghost" id="btn-discard">삭제하고 새로 시작</button>
+      </span>
+    </div>
+
+    <fieldset>
+      <legend>평가할 세트 선택</legend>
+      <div id="group-list"></div>
+    </fieldset>
+
+    <div class="field-row">
+      <label for="cfg-count">세트당 문항 수</label>
+      <input type="number" id="cfg-count" min="1" max="30" value="10">
+      <span style="font-size:12.5px; color:var(--ink-muted);">(최대 30 — 세트별 보유 문항 수는 위 목록 참고, 그보다 적으면 전부 사용)</span>
+	  <span style="font-size:12.5px; color:var(--ink-muted);">(ex 10으로 설정 시 항목당 10개 이므로 70개 문항이 나옵니다.)</span>
+    </div>
+    <div class="field-row">
+      <label for="cfg-rater">평가자 이름 <span style="color:var(--ink-muted); font-weight:400;">(선택)</span></label>
+      <input type="text" id="cfg-rater" placeholder="예: wook">
+    </div>
+    <div class="field-row toggle-row">
+      <input type="checkbox" id="cfg-blind" checked>
+      <label for="cfg-blind" style="min-width:0;">블라인드 순서로 섞기 (모델명 숨김, 권장)</label>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn primary" id="btn-start">평가 시작</button>
+    </div>
+  </div>
+
+  <!-- ============ RATING ============ -->
+  <div id="screen-rate" class="card hidden">
+    <div class="progress-label">
+      <span id="prog-text">1 / 60</span>
+      <span id="prog-rated">평가 완료 0개</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div>
+
+    <span class="set-tag" id="set-tag">세트 A</span>
+    <div class="ref-text" id="ref-text">—</div>
+    <div class="hyp-text"><b>STT 인식:</b> <span id="hyp-text">—</span> · WER <span id="wer-text">–</span> · CER <span id="cer-text">–</span></div>
+
+    <audio id="player" controls preload="none"></audio>
+
+    <div class="score-grid" id="score-grid"></div>
+    <div class="kbd-hint">숫자키 1~5로 평가 · ← 이전 · → 건너뛰기</div>
+
+    <div class="nav-row">
+      <button class="btn ghost" id="btn-prev">← 이전</button>
+      <button class="btn ghost" id="btn-finish">지금 그만하고 결과보기</button>
+      <button class="btn" id="btn-skip">건너뛰기 →</button>
+    </div>
+  </div>
+
+  <!-- ============ RESULTS ============ -->
+  <div id="screen-results" class="card hidden">
+    <h2 style="font-size:18px; margin:0 0 4px;">결과</h2>
+    <p style="font-size:13px; color:var(--ink-muted); margin:0 0 18px;">총 <span id="res-count">0</span>문항 평가됨. 세트별 평균 MOS:</p>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>세트</th><th>N</th><th>평균 MOS</th><th>평균 WER</th><th>평균 CER</th></tr></thead>
+        <tbody id="res-tbody"></tbody>
+      </table>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="btn-export">CSV로 내보내기</button>
+      <button class="btn ghost" id="btn-continue">이어서 평가하기</button>
+      <button class="btn ghost" id="btn-restart">전체 초기화 후 새로 시작</button>
+    </div>
+  </div>
+
+  <footer>결과는 브라우저에만 저장됩니다 (localStorage) · 닫기 전에 CSV로 내보내는 것을 권장합니다</footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+var STORAGE_KEY = "tts_mos_rating_v1";
+
+var GROUPS = {
+  qwen3_base:  { label: "Qwen3-TTS · Base",        dir: "eval_qwen3_tts/audio/qwen3-tts-1.7b",   items: [{"text":"돼지고기고추장찌개 만드는 법 알려줘","hypothesis":"돼지고 기고추장찌개 만드는 법 알려줘","wer":"0.5","cer":"0.05263157894736842"},{"text":"간장쪽갈비 레시피 알려줘","hypothesis":"간장초깔비 레시피 알려줘.","wer":"0.3333333333333333","cer":"0.23076923076923078"},{"text":"참치김치찌개 어떻게 만들어?","hypothesis":"참치김치찌개 어떻게 만들어?","wer":"0.0","cer":"0"},{"text":"소불고기 레시피 알려줘","hypothesis":"소불고기 레시피 알려줘.","wer":"0.0","cer":"0.08333333333333333"},{"text":"소불고기 만드는 레시피 알려줘","hypothesis":"소불고기 만드는 레시피 알려줘.","wer":"0.0","cer":"0.0625"},{"text":"순두부찌개 만드는 법 알려줘","hypothesis":"순두부찌개 만드는 법 알려줘","wer":"0.0","cer":"0"},{"text":"돼지고기김치찌개 어떻게 만들어?","hypothesis":"돼지고기 김치찌개 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.058823529411764705"},{"text":"돼지고기고추장찌개 만드는 레시피 알려줘","hypothesis":"돼지고기 고추장찌개 만드는 레시피 알려줘","wer":"0.5","cer":"0.047619047619047616"},{"text":"잡채 어떻게 만들어?","hypothesis":"잡채 어떻게 만들어?","wer":"0.0","cer":"0"},{"text":"닭볶음탕 만드는 레시피 알려줘","hypothesis":"닭볶음탕 만드는 레시피 알려줘.","wer":"0.0","cer":"0.0625"},{"text":"소고기미역국 어떻게 만들어?","hypothesis":"소고기 미역국 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.06666666666666667"},{"text":"제육볶음 어떻게 만들어?","hypothesis":"제육볶음 어떻게 만들어?","wer":"0.0","cer":"0"},{"text":"소고기무국 레시피 알려줘","hypothesis":"소고기 먹음 레시피 알려줘.","wer":"0.6666666666666666","cer":"0.3076923076923077"},{"text":"된장찌개 레시피 알려줘","hypothesis":"된장찌개 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"고등어무조림 어떻게 만들어?","hypothesis":"고등어 무조림 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.06666666666666667"},{"text":"부대찌개 만드는 레시피 알려줘","hypothesis":"부대찌개 만드는 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"잔멸치볶음 만드는 레시피 알려줘","hypothesis":"잔멸치볶음 만드는 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"잔멸치볶음 레시피 알려줘","hypothesis":"잔멸치 볶음 레시피 알려줘?","wer":"0.6666666666666666","cer":"0.15384615384615385"},{"text":"떡볶이 만드는 레시피 알려줘","hypothesis":"떡볶이 만드는 레시피 알려줘.","wer":"0.0","cer":"0.06666666666666667"},{"text":"제육볶음 만드는 법 알려줘","hypothesis":"제육볶음 만드는 법 알려줘","wer":"0.0","cer":"0"},{"text":"간장쪽갈비 만드는 법 알려줘","hypothesis":"간장 조갈비 만드는 법 알려줘?","wer":"0.5","cer":"0.2"},{"text":"고등어무조림 만드는 레시피 알려줘","hypothesis":"고등어무조림 만드는 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"안동찜닭 어떻게 만들어?","hypothesis":"안동찜다고 어떻게 만들어","wer":"0.3333333333333333","cer":"0.23076923076923078"},{"text":"잔치국수양념장 어떻게 만들어?","hypothesis":"잔치국수 양념장 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.0625"},{"text":"참치김치찌개 레시피 알려줘","hypothesis":"참치 김치찌개 레시피 알려줘.","wer":"0.6666666666666666","cer":"0.14285714285714285"},{"text":"떡볶이 만드는 법 알려줘","hypothesis":"떡볶이 만드는 법 알려줘.","wer":"0.0","cer":"0.07692307692307693"},{"text":"잔치국수양념장 만드는 레시피 알려줘","hypothesis":"잔치국수 양념장 만드는 레시피 알려줘.","wer":"0.5","cer":"0.10526315789473684"},{"text":"콩나물무침 만드는 레시피 알려줘","hypothesis":"콩나물 무침 만드는 레시피 알려줘","wer":"0.5","cer":"0.058823529411764705"},{"text":"잡채 레시피 알려줘","hypothesis":"잡채 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"소고기무국 만드는 레시피 알려줘","hypothesis":"푸! 소고기무국 만드는 레시피 알려줘!","wer":"0.25","cer":"0.23529411764705882"}] },
+  qwen3_full:  { label: "Qwen3-TTS · Full FT",      dir: "train_tts_qwen3/audio/full",             items: [{"text":"돼지고기고추장찌개 만드는 법 알려줘","hypothesis":"돼지고기 고추장찌개 만드는 법 알려줘.","wer":"0.5","cer":"0.10526315789473684"},{"text":"간장쪽갈비 레시피 알려줘","hypothesis":"간장 쪽갈비 레시피 알려줘","wer":"0.6666666666666666","cer":"0.07692307692307693"},{"text":"참치김치찌개 어떻게 만들어?","hypothesis":"참치 김치찌개 어떻게 만들어","wer":"0.6666666666666666","cer":"0.13333333333333333"},{"text":"소불고기 레시피 알려줘","hypothesis":"소불고기 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"소불고기 만드는 레시피 알려줘","hypothesis":"소불고기만 되는 레시피 알려줘.","wer":"0.5","cer":"0.25"},{"text":"순두부찌개 만드는 법 알려줘","hypothesis":"순두부찌개 만드는 법 알려주세요.","wer":"0.25","cer":"0.26666666666666666"},{"text":"돼지고기김치찌개 어떻게 만들어?","hypothesis":"돼지고기 김치찌개 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.058823529411764705"},{"text":"돼지고기고추장찌개 만드는 레시피 알려줘","hypothesis":"돼지고기 고추장찌개 만드는 레시피야.","wer":"1.0","cer":"0.23809523809523808"},{"text":"잡채 어떻게 만들어?","hypothesis":"자체 어떻게 만들어","wer":"0.3333333333333333","cer":"0.2727272727272727"},{"text":"닭볶음탕 만드는 레시피 알려줘","hypothesis":"닭볶음탕 만드는 레시피 알료정","wer":"0.25","cer":"0.125"},{"text":"소고기미역국 어떻게 만들어?","hypothesis":"소고기 미역국 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.06666666666666667"},{"text":"제육볶음 어떻게 만들어?","hypothesis":"제 욕을 얻자.","wer":"1.0","cer":"0.7692307692307693"},{"text":"소고기무국 레시피 알려줘","hypothesis":"소고기 무국 레시피 알려줘!","wer":"0.6666666666666666","cer":"0.15384615384615385"},{"text":"된장찌개 레시피 알려줘","hypothesis":"된장찌개 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"고등어무조림 어떻게 만들어?","hypothesis":"고데가 무쳐리모 어떻게만들어?","wer":"1.0","cer":"0.4666666666666667"},{"text":"부대찌개 만드는 레시피 알려줘","hypothesis":"구독, 찌개 만드는 레시피 알려줘!","wer":"0.5","cer":"0.3125"},{"text":"잔멸치볶음 만드는 레시피 알려줘","hypothesis":"잔을 지고 끝 만드는 레시피 알려줘","wer":"0.75","cer":"0.35294117647058826"},{"text":"잔멸치볶음 레시피 알려줘","hypothesis":"장멸 지목금 레시피 알려줘","wer":"0.6666666666666666","cer":"0.38461538461538464"},{"text":"떡볶이 만드는 레시피 알려줘","hypothesis":"떡볶이 만드는 레시피 알아줘","wer":"0.25","cer":"0.06666666666666667"},{"text":"제육볶음 만드는 법 알려줘","hypothesis":"제육볶음 만드는 법 알려줘.","wer":"0.0","cer":"0.07142857142857142"},{"text":"간장쪽갈비 만드는 법 알려줘","hypothesis":"간장초깔비 만드는 법 알려줘","wer":"0.25","cer":"0.13333333333333333"},{"text":"고등어무조림 만드는 레시피 알려줘","hypothesis":"고등함조를 만드는 레시피 알려줘.","wer":"0.25","cer":"0.2222222222222222"},{"text":"안동찜닭 어떻게 만들어?","hypothesis":"안동짐다 이거 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.38461538461538464"},{"text":"잔치국수양념장 어떻게 만들어?","hypothesis":"잔치국수양념장 어떻게 만들어?","wer":"0.0","cer":"0"},{"text":"참치김치찌개 레시피 알려줘","hypothesis":"참찌김찌개 레시피 알려줘","wer":"0.3333333333333333","cer":"0.14285714285714285"},{"text":"떡볶이 만드는 법 알려줘","hypothesis":"떡볶이 만드는 법 알려줘.","wer":"0.0","cer":"0.07692307692307693"},{"text":"잔치국수양념장 만드는 레시피 알려줘","hypothesis":"잔치국수양념장 만드는 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"콩나물무침 만드는 레시피 알려줘","hypothesis":"콩 콩 나무야 콩 콩 나무야 콩 나물 못찜 만드는 레시피 알려줘","wer":"2.25","cer":"1.1764705882352942"},{"text":"잡채 레시피 알려줘","hypothesis":"자체 레시피 알려줘","wer":"0.3333333333333333","cer":"0.2"},{"text":"소고기무국 만드는 레시피 알려줘","hypothesis":"소고기무국 만드는 레시피 알려줘.","wer":"0.0","cer":"0.058823529411764705"}] },
+  qwen3_qlora: { label: "Qwen3-TTS · QLoRA FT",     dir: "train_tts_qwen3/audio/qlora",            items: [{"text":"돼지고기고추장찌개 만드는 법 알려줘","hypothesis":"돼지고기고추장찌개 만드는 법 알려줘.","wer":"0.0","cer":"0.05263157894736842"},{"text":"간장쪽갈비 레시피 알려줘","hypothesis":"간장 쪽 갈비 레시피 알려주세요.","wer":"1.3333333333333333","cer":"0.46153846153846156"},{"text":"참치김치찌개 어떻게 만들어?","hypothesis":"참치김치찌개 어떻게 만들어?","wer":"0.0","cer":"0"},{"text":"소불고기 레시피 알려줘","hypothesis":"소불고기 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"소불고기 만드는 레시피 알려줘","hypothesis":"소불고기 만드는 레시피 알려줘.","wer":"0.0","cer":"0.0625"},{"text":"순두부찌개 만드는 법 알려줘","hypothesis":"순두부찌개 만드는 법 알려줘.","wer":"0.0","cer":"0.06666666666666667"},{"text":"돼지고기김치찌개 어떻게 만들어?","hypothesis":"돼지고기 김치찌개 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.058823529411764705"},{"text":"돼지고기고추장찌개 만드는 레시피 알려줘","hypothesis":"돼지고기고추장찌개 만드는 레시피 알려줘.","wer":"0.0","cer":"0.047619047619047616"},{"text":"잡채 어떻게 만들어?","hypothesis":"잡채 어떻게 만들어?","wer":"0.0","cer":"0"},{"text":"닭볶음탕 만드는 레시피 알려줘","hypothesis":"닭볶음탕 만드는 레시피 알려줘.","wer":"0.0","cer":"0.0625"},{"text":"소고기미역국 어떻게 만들어?","hypothesis":"소고기 미역국 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.06666666666666667"},{"text":"제육볶음 어떻게 만들어?","hypothesis":"제육볶음 어떻게 만들어?","wer":"0.0","cer":"0"},{"text":"소고기무국 레시피 알려줘","hypothesis":"소고기무국 레시피 알려줘.","wer":"0.0","cer":"0.07692307692307693"},{"text":"된장찌개 레시피 알려줘","hypothesis":"된장찌개 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"고등어무조림 어떻게 만들어?","hypothesis":"고등어 무조림 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.06666666666666667"},{"text":"부대찌개 만드는 레시피 알려줘","hypothesis":"부대찌개 만드는 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"잔멸치볶음 만드는 레시피 알려줘","hypothesis":"잔멸치 볶음 만드는 레시피 알려줘","wer":"0.5","cer":"0.058823529411764705"},{"text":"잔멸치볶음 레시피 알려줘","hypothesis":"잔멸치볶음 레시피 알려줘","wer":"0.0","cer":"0"},{"text":"떡볶이 만드는 레시피 알려줘","hypothesis":"떡볶이 만드는 레시피 알려줘.","wer":"0.0","cer":"0.06666666666666667"},{"text":"제육볶음 만드는 법 알려줘","hypothesis":"제육볶음 만드는 법 알려져","wer":"0.25","cer":"0.07142857142857142"},{"text":"간장쪽갈비 만드는 법 알려줘","hypothesis":"간장 쪽 갈비 만드는 법 알려줘.","wer":"0.75","cer":"0.2"},{"text":"고등어무조림 만드는 레시피 알려줘","hypothesis":"고등 어묵조림 만드는 레시피 알려줘.","wer":"0.5","cer":"0.16666666666666666"},{"text":"안동찜닭 어떻게 만들어?","hypothesis":"안동침딸 어떻게 만들어?","wer":"0.3333333333333333","cer":"0.15384615384615385"},{"text":"잔치국수양념장 어떻게 만들어?","hypothesis":"잔치 국수의학 염장 어떻게 만들어?","wer":"1.0","cer":"0.3125"},{"text":"참치김치찌개 레시피 알려줘","hypothesis":"참치 김치찌개 레시피 알려줘.","wer":"0.6666666666666666","cer":"0.14285714285714285"},{"text":"떡볶이 만드는 법 알려줘","hypothesis":"떡볶이 만드는 법 알려줘.","wer":"0.0","cer":"0.07692307692307693"},{"text":"잔치국수양념장 만드는 레시피 알려줘","hypothesis":"잔치국수양념장 만드는 레시피 알려줘.","wer":"0.0","cer":"0.05263157894736842"},{"text":"콩나물무침 만드는 레시피 알려줘","hypothesis":"콩나물 무침 만드는 레시피 알려줘","wer":"0.5","cer":"0.058823529411764705"},{"text":"잡채 레시피 알려줘","hypothesis":"잡채 레시피 알려주세요.","wer":"0.3333333333333333","cer":"0.4"},{"text":"소고기무국 만드는 레시피 알려줘","hypothesis":"소고기무국 만드는 레시피 알려줘.","wer":"0.0","cer":"0.058823529411764705"}] },
+  cb_lora:     { label: "Chatterbox · LoRA FT",     dir: "train_tts_chatterbox/audio/lora",        items: [{"text":"돼지고기고추장찌개 만드는 법 알려줘","hypothesis":"고데이워치 같다. 날 쓴 게 차가 좋나요.","wer":"1.75","cer":"1.0526315789473684"},{"text":"간장쪽갈비 레시피 알려줘","hypothesis":"동단싸워, 주메기는 살았다.","wer":"1.0","cer":"1"},{"text":"참치김치찌개 어떻게 만들어?","hypothesis":"좋은데 나 엄마 좋지?","wer":"1.3333333333333333","cer":"0.8"},{"text":"소불고기 레시피 알려줘","hypothesis":"동만팀, 종만팀, 종만팀","wer":"1.0","cer":"0.9166666666666666"},{"text":"소불고기 만드는 레시피 알려줘","hypothesis":"고토바디 데","wer":"1.0","cer":"0.875"},{"text":"순두부찌개 만드는 법 알려줘","hypothesis":"밭에서 제형 한까까깝다","wer":"1.0","cer":"0.8666666666666667"},{"text":"돼지고기김치찌개 어떻게 만들어?","hypothesis":"보드 댄가까지 저 잰스입니다.","wer":"1.3333333333333333","cer":"0.9411764705882353"},{"text":"돼지고기고추장찌개 만드는 레시피 알려줘","hypothesis":"고소야 일을 되게 타고 이제 가겠다, 운 가겠다.","wer":"2.0","cer":"1.1428571428571428"},{"text":"잡채 어떻게 만들어?","hypothesis":"도와라! 아이선 케넥!","wer":"1.0","cer":"1"},{"text":"닭볶음탕 만드는 레시피 알려줘","hypothesis":"됐다. 닫지 마, 가출 본천 닫다.","wer":"1.5","cer":"1.0625"},{"text":"소고기미역국 어떻게 만들어?","hypothesis":"스루네 오바하샤","wer":"1.0","cer":"0.9333333333333333"},{"text":"제육볶음 어떻게 만들어?","hypothesis":"견택해요. 입만 해도","wer":"1.0","cer":"0.9230769230769231"},{"text":"소고기무국 레시피 알려줘","hypothesis":"고타전이에요. 어, 나는 대단한이에요.","wer":"1.3333333333333333","cer":"1.4615384615384615"},{"text":"된장찌개 레시피 알려줘","hypothesis":"독립주로 컸어요. 호캐세지 스카진다.","wer":"1.3333333333333333","cer":"1.5"},{"text":"고등어무조림 어떻게 만들어?","hypothesis":"슈어 버터 게이들, 산안!","wer":"1.3333333333333333","cer":"0.8666666666666667"},{"text":"부대찌개 만드는 레시피 알려줘","hypothesis":"논의 말날, 직린의 맘은 엄마들었다.","wer":"1.25","cer":"1.125"},{"text":"잔멸치볶음 만드는 레시피 알려줘","hypothesis":"꾸돈해야 찬하게 던졌다 사랑댓","wer":"1.0","cer":"0.8235294117647058"},{"text":"잔멸치볶음 레시피 알려줘","hypothesis":"고통미대 직력사여","wer":"1.0","cer":"0.9230769230769231"},{"text":"떡볶이 만드는 레시피 알려줘","hypothesis":"동물 바다 슬을 자가에 넘는 나","wer":"1.5","cer":"1"},{"text":"제육볶음 만드는 법 알려줘","hypothesis":"고통뿌들지 마, 시골 됐어요.","wer":"1.0","cer":"1"},{"text":"간장쪽갈비 만드는 법 알려줘","hypothesis":"더 고퇴했을까 제아 안 디둘","wer":"1.25","cer":"0.9333333333333333"},{"text":"고등어무조림 만드는 레시피 알려줘","hypothesis":"고통을 대해 이대하게 되기 안한다.","wer":"1.25","cer":"0.8888888888888888"},{"text":"안동찜닭 어떻게 만들어?","hypothesis":"가마들 비언니가","wer":"1.0","cer":"0.9230769230769231"},{"text":"잔치국수양념장 어떻게 만들어?","hypothesis":"좋아요와 구독 부탁드려요!","wer":"1.0","cer":"0.9375"},{"text":"참치김치찌개 레시피 알려줘","hypothesis":"동반기 때 정말대로 돼야 아니라.","wer":"1.6666666666666667","cer":"1.2142857142857142"},{"text":"떡볶이 만드는 법 알려줘","hypothesis":"고서태 서체 창간하다","wer":"1.0","cer":"0.8461538461538461"},{"text":"잔치국수양념장 만드는 레시피 알려줘","hypothesis":"뵈쓰린들 아나","wer":"1.0","cer":"0.9473684210526315"},{"text":"콩나물무침 만드는 레시피 알려줘","hypothesis":"꿀을 채 서주가 괜찮네요.","wer":"1.0","cer":"0.8823529411764706"},{"text":"잡채 레시피 알려줘","hypothesis":"동립은 알 수요.","wer":"1.0","cer":"0.9"},{"text":"소고기무국 만드는 레시피 알려줘","hypothesis":"고둔에 잔을 버저박혔습니다.","wer":"1.0","cer":"0.8823529411764706"}] },
+  cb_full:     { label: "Chatterbox · Full FT",     dir: "train_tts_chatterbox/audio/full",        items: [{"text":"돼지고기고추장찌개 만드는 법 알려줘","hypothesis":"아니라면 호샘이겠다.","wer":"1.0","cer":"0.9473684210526315"},{"text":"간장쪽갈비 레시피 알려줘","hypothesis":"아니 썼다.","wer":"1.0","cer":"0.9230769230769231"},{"text":"참치김치찌개 어떻게 만들어?","hypothesis":"암튼 옐라, 이노?","wer":"1.0","cer":"0.8"},{"text":"소불고기 레시피 알려줘","hypothesis":"안 돼야 돼. 단데이.","wer":"1.3333333333333333","cer":"0.9166666666666666"},{"text":"소불고기 만드는 레시피 알려줘","hypothesis":"갓마들, 재미있게 고요.","wer":"1.0","cer":"0.875"},{"text":"순두부찌개 만드는 법 알려줘","hypothesis":"한인문이다","wer":"1.0","cer":"1"},{"text":"돼지고기김치찌개 어떻게 만들어?","hypothesis":"한 끄는 두 맥이넴, 한 이들어.","wer":"2.0","cer":"0.8823529411764706"},{"text":"돼지고기고추장찌개 만드는 레시피 알려줘","hypothesis":"가슴 바체늄을 캐스 어종 캐치를 잤다.","wer":"1.5","cer":"0.9047619047619048"},{"text":"잡채 어떻게 만들어?","hypothesis":"한때 다 이봐!","wer":"1.0","cer":"0.8181818181818182"},{"text":"닭볶음탕 만드는 레시피 알려줘","hypothesis":"한인원이 미니사에","wer":"1.0","cer":"0.9375"},{"text":"소고기미역국 어떻게 만들어?","hypothesis":"아침에 질주겠지만","wer":"1.0","cer":"0.8666666666666667"},{"text":"제육볶음 어떻게 만들어?","hypothesis":"안나치곤 있다","wer":"1.0","cer":"0.9230769230769231"},{"text":"소고기무국 레시피 알려줘","hypothesis":"I'll so to make you that you that.","wer":"2.6666666666666665","cer":"2.4615384615384617"},{"text":"된장찌개 레시피 알려줘","hypothesis":"아다다, 다주같이요.","wer":"1.0","cer":"0.9166666666666666"},{"text":"고등어무조림 어떻게 만들어?","hypothesis":"아야고린데요.","wer":"1.0","cer":"1"},{"text":"부대찌개 만드는 레시피 알려줘","hypothesis":"K7, 바퀴, 계엄어져요.","wer":"1.0","cer":"0.875"},{"text":"잔멸치볶음 만드는 레시피 알려줘","hypothesis":"안낸수룩해요. 우츄새르입니다.","wer":"1.0","cer":"1"},{"text":"잔멸치볶음 레시피 알려줘","hypothesis":"SMA 중이다.","wer":"1.0","cer":"0.9230769230769231"},{"text":"떡볶이 만드는 레시피 알려줘","hypothesis":"케믄스, 탄이 저차예요.","wer":"1.0","cer":"0.9333333333333333"},{"text":"제육볶음 만드는 법 알려줘","hypothesis":"한속했다.","wer":"1.0","cer":"1"},{"text":"간장쪽갈비 만드는 법 알려줘","hypothesis":"안친뚜패어, 축히 뵙다.","wer":"1.0","cer":"0.9333333333333333"},{"text":"고등어무조림 만드는 레시피 알려줘","hypothesis":"아니요, 설토글세요. 입해주시겠지 않나?","wer":"1.0","cer":"1.0555555555555556"},{"text":"안동찜닭 어떻게 만들어?","hypothesis":"할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버지 할아버","wer":"29.666666666666668","cer":"33.92307692307692"},{"text":"잔치국수양념장 어떻게 만들어?","hypothesis":"I think you'd imagine, huh?","wer":"1.6666666666666667","cer":"1.5"},{"text":"참치김치찌개 레시피 알려줘","hypothesis":"한 달 뒤에 하실 것","wer":"1.6666666666666667","cer":"0.8571428571428571"},{"text":"떡볶이 만드는 법 알려줘","hypothesis":"알게 배추러야","wer":"1.0","cer":"0.9230769230769231"},{"text":"잔치국수양념장 만드는 레시피 알려줘","hypothesis":"캠닥엘 단박엘 조을 가나갔다.","wer":"1.0","cer":"0.8947368421052632"},{"text":"콩나물무침 만드는 레시피 알려줘","hypothesis":"안녕도다. 도친는 여다.","wer":"1.0","cer":"0.8235294117647058"},{"text":"잡채 레시피 알려줘","hypothesis":"하는 컵니다.","wer":"1.0","cer":"0.9"},{"text":"소고기무국 만드는 레시피 알려줘","hypothesis":"아이오스미데에 주주겠다.","wer":"1.0","cer":"0.9411764705882353"}] },
+  vits_157:    { label: "vits-kss · epoch 157",     dir: "eval_tts_comparison/audio/vits-kss",     items: [{"text":"돼지고기고추장찌개 만드는 법 알려줘","hypothesis":"돼지고기로 칠장기게 만드는 더 다여야죠.","wer":"1.0","cer":"0.5789473684210527"},{"text":"간장쪽갈비 레시피 알려줘","hypothesis":"반잔죽 끄은 뒤 4시비 아이예요.","wer":"1.6666666666666667","cer":"1.1538461538461537"},{"text":"참치김치찌개 어떻게 만들어?","hypothesis":"천직인지찌개 어떻게 만들어?","wer":"0.3333333333333333","cer":"0.26666666666666666"},{"text":"소불고기 레시피 알려줘","hypothesis":"저 불고기 내십기 아이예요.","wer":"1.3333333333333333","cer":"0.8333333333333334"},{"text":"소불고기 만드는 레시피 알려줘","hypothesis":"소고기 만드는 맛있게 아예 로","wer":"1.0","cer":"0.5"},{"text":"순두부찌개 만드는 법 알려줘","hypothesis":"숨들고 찔에 만드는 버라이 여회도.","wer":"1.0","cer":"0.8666666666666667"},{"text":"돼지고기김치찌개 어떻게 만들어?","hypothesis":"돼지고기 끼니찌개 어떻게 만들어?","wer":"0.6666666666666666","cer":"0.17647058823529413"},{"text":"돼지고기고추장찌개 만드는 레시피 알려줘","hypothesis":"돼지고기로 실전 기대만 되는 메시피 아열죠.","wer":"1.5","cer":"0.6666666666666666"},{"text":"잡채 어떻게 만들어?","hypothesis":"자퀴 어떻게 만들어?","wer":"0.3333333333333333","cer":"0.18181818181818182"},{"text":"닭볶음탕 만드는 레시피 알려줘","hypothesis":"달풍닭 만드는 메시피 아이언이요.","wer":"0.75","cer":"0.6875"},{"text":"소고기미역국 어떻게 만들어?","hypothesis":"소로빈이었고 버터 티만 대로","wer":"1.3333333333333333","cer":"0.8"},{"text":"제육볶음 어떻게 만들어?","hypothesis":"제육포근 어떻게 만들어?","wer":"0.3333333333333333","cer":"0.15384615384615385"},{"text":"소고기무국 레시피 알려줘","hypothesis":"소고기 묵음 4식패 알려로.","wer":"1.3333333333333333","cer":"0.6153846153846154"},{"text":"된장찌개 레시피 알려줘","hypothesis":"맨잔지 길 렛시 카이오이도","wer":"1.3333333333333333","cer":"1"},{"text":"고등어무조림 어떻게 만들어?","hypothesis":"고뜨무초림 어떻게 만들어어?","wer":"0.6666666666666666","cer":"0.26666666666666666"},{"text":"부대찌개 만드는 레시피 알려줘","hypothesis":"부대찌개 만드는 메시티 아이였죠.","wer":"0.5","cer":"0.4375"},{"text":"잔멸치볶음 만드는 레시피 알려줘","hypothesis":"잔무치폭업 만드는 뇌식대하여 조.","wer":"0.75","cer":"0.6470588235294118"},{"text":"잔멸치볶음 레시피 알려줘","hypothesis":"잔들치 도봉 내식대하여에도","wer":"1.0","cer":"0.8461538461538461"},{"text":"떡볶이 만드는 레시피 알려줘","hypothesis":"또 보디 만드는 예식 다이액도","wer":"1.0","cer":"0.7333333333333333"},{"text":"제육볶음 만드는 법 알려줘","hypothesis":"제육부분 만드는 더 가야죠.","wer":"0.75","cer":"0.5"},{"text":"간장쪽갈비 만드는 법 알려줘","hypothesis":"간란두별이 만드는 법아예죠.","wer":"0.75","cer":"0.5333333333333333"},{"text":"고등어무조림 만드는 레시피 알려줘","hypothesis":"고등 머무조림 만드는 4식피 아이혈조.","wer":"1.0","cer":"0.5"},{"text":"안동찜닭 어떻게 만들어?","hypothesis":"반본부악 어떻게 만들어?","wer":"0.3333333333333333","cer":"0.3076923076923077"},{"text":"잔치국수양념장 어떻게 만들어?","hypothesis":"잔치구 시양연강 어떻게 만드요?","wer":"1.0","cer":"0.4375"},{"text":"참치김치찌개 레시피 알려줘","hypothesis":"천필인식질의 레시피 아이어도","wer":"0.6666666666666666","cer":"0.7142857142857143"},{"text":"떡볶이 만드는 법 알려줘","hypothesis":"떡고기 만드는 법 아니에요.","wer":"0.5","cer":"0.5384615384615384"},{"text":"잔치국수양념장 만드는 레시피 알려줘","hypothesis":"잔치고시하는다 만드는 메시크 아이어로","wer":"0.75","cer":"0.5789473684210527"},{"text":"콩나물무침 만드는 레시피 알려줘","hypothesis":"동남물 무치 만드는 예시피아 이어죠.","wer":"1.0","cer":"0.5882352941176471"},{"text":"잡채 레시피 알려줘","hypothesis":"작제 내 CPI 이어져.","wer":"1.3333333333333333","cer":"1.1"},{"text":"소고기무국 만드는 레시피 알려줘","hypothesis":"소고기 무고 만드는 예식을 알려줘.","wer":"0.75","cer":"0.35294117647058826"}] },
+  chefear_epoch13: { label: "ChefEar 실사용 모델 (epoch-13)", dir: "chefear_test_audio", items: [
+    {"file":"a1_닭볶음탕.wav","text":"닭볶음탕"},
+    {"file":"a2_부대찌개.wav","text":"부대찌개"},
+    {"file":"a3_잡채.wav","text":"잡채"},
+    {"file":"a4_떡볶이.wav","text":"떡볶이"},
+    {"file":"a5_소고기미역국.wav","text":"소고기미역국"},
+    {"file":"a6_돼지고기김치찌개.wav","text":"돼지고기김치찌개"},
+    {"file":"a7_안동찜닭.wav","text":"안동찜닭"},
+    {"file":"a8_제육볶음.wav","text":"제육볶음"},
+    {"file":"a9_된장찌개.wav","text":"된장찌개"},
+    {"file":"a10_순두부찌개.wav","text":"순두부찌개"},
+    {"file":"_cycle_out_dwenjang_jjigae.wav","text":"된장찌개 (cycle 2회차 출력)"}
+  ] }
+};
+
+var ACR = [
+  { n:1, label:"매우 나쁨" },
+  { n:2, label:"나쁨" },
+  { n:3, label:"보통" },
+  { n:4, label:"좋음" },
+  { n:5, label:"매우 좋음" }
+];
+
+var state = null; // { queue:[{group,idx}], anonMap:{group:letter}, ratings:{"group_idx":{score,ratedAt}}, cursor, rater, groupsUsed }
+
+function el(id){ return document.getElementById(id); }
+function show(id){ el(id).classList.remove('hidden'); }
+function hide(id){ el(id).classList.add('hidden'); }
+
+function loadSaved(){
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch(e){ return null; }
+}
+function persist(){
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
+}
+
+// ---- setup screen ----
+function renderGroupList(){
+  var wrap = el('group-list');
+  wrap.innerHTML = '';
+  Object.keys(GROUPS).forEach(function(key){
+    var g = GROUPS[key];
+    var row = document.createElement('div');
+    row.className = 'group-row';
+    row.innerHTML =
+      '<input type="checkbox" id="chk-' + key + '" checked>' +
+      '<label for="chk-' + key + '">' + g.label + '</label>' +
+      '<span class="n">' + g.items.length + '개 보유</span>';
+    wrap.appendChild(row);
+  });
+}
+
+function checkResume(){
+  var saved = loadSaved();
+  if (saved && saved.queue && saved.queue.length){
+    var ratedCount = Object.keys(saved.ratings || {}).length;
+    el('resume-text').textContent = '저장된 세션이 있습니다 (' + ratedCount + ' / ' + saved.queue.length + '개 평가됨)';
+    show('resume-note');
+    el('btn-resume').onclick = function(){
+      state = saved;
+      state.cursor = firstUnratedIndex(state);
+      startRatingUI();
+    };
+    el('btn-discard').onclick = function(){
+      localStorage.removeItem(STORAGE_KEY);
+      hide('resume-note');
+    };
+  }
+}
+
+function firstUnratedIndex(s){
+  for (var i = 0; i < s.queue.length; i++){
+    var q = s.queue[i];
+    if (!s.ratings[q.group + '_' + q.idx]) return i;
+  }
+  return s.queue.length - 1;
+}
+
+function shuffle(arr){
+  for (var i = arr.length - 1; i > 0; i--){
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+  }
+  return arr;
+}
+
+function buildQueue(){
+  var selectedKeys = Object.keys(GROUPS).filter(function(key){
+    return el('chk-' + key).checked;
+  });
+  if (selectedKeys.length === 0){ alert('세트를 하나 이상 선택해주세요.'); return null; }
+
+  var count = Math.max(1, Math.min(30, parseInt(el('cfg-count').value, 10) || 10));
+  var blind = el('cfg-blind').checked;
+  var rater = el('cfg-rater').value.trim();
+
+  var letters = 'ABCDEFGHIJ'.split('');
+  if (blind) shuffle(letters);
+  var anonMap = {};
+  selectedKeys.forEach(function(key, i){ anonMap[key] = letters[i % letters.length]; });
+
+  var queue = [];
+  selectedKeys.forEach(function(key){
+    for (var i = 0; i < Math.min(count, GROUPS[key].items.length); i++){
+      queue.push({ group:key, idx:i });
+    }
+  });
+  if (blind) shuffle(queue);
+
+  return { queue:queue, anonMap:anonMap, ratings:{}, cursor:0, rater:rater, blind:blind };
+}
+
+el('btn-start').addEventListener('click', function(){
+  var s = buildQueue();
+  if (!s) return;
+  state = s;
+  persist();
+  startRatingUI();
+});
+
+// ---- rating screen ----
+function startRatingUI(){
+  hide('screen-setup'); hide('screen-results'); show('screen-rate');
+  renderScoreGrid();
+  renderCurrent();
+}
+
+function renderScoreGrid(){
+  var wrap = el('score-grid');
+  wrap.innerHTML = '';
+  ACR.forEach(function(s){
+    var btn = document.createElement('button');
+    btn.className = 'score-btn';
+    btn.dataset.score = s.n;
+    btn.innerHTML = '<span class="num">' + s.n + '</span><span class="label">' + s.label + '</span>';
+    btn.addEventListener('click', function(){ rate(s.n); });
+    wrap.appendChild(btn);
+  });
+}
+
+function currentItem(){
+  var q = state.queue[state.cursor];
+  var g = GROUPS[q.group];
+  return { q:q, group:g, sample:g.items[q.idx] };
+}
+
+function renderCurrent(){
+  var total = state.queue.length;
+  el('prog-text').textContent = (state.cursor + 1) + ' / ' + total;
+  var ratedCount = Object.keys(state.ratings).length;
+  el('prog-rated').textContent = '평가 완료 ' + ratedCount + '개';
+  el('prog-fill').style.width = (((state.cursor) / Math.max(1,total-1)) * 100).toFixed(1) + '%';
+
+  var cur = currentItem();
+  el('set-tag').textContent = '세트 ' + state.anonMap[cur.q.group];
+  el('ref-text').textContent = cur.sample.text;
+  var hasStt = cur.sample.wer !== undefined && cur.sample.wer !== null;
+  el('hyp-text').textContent = hasStt ? (cur.sample.hypothesis || '(인식 실패)') : '측정 안 함 — 직접 듣고 평가';
+  el('wer-text').textContent = hasStt ? (+cur.sample.wer).toFixed(2) : '—';
+  el('cer-text').textContent = hasStt ? (+cur.sample.cer).toFixed(2) : '—';
+
+  var player = el('player');
+  player.src = cur.group.dir + '/' + (cur.sample.file || (cur.q.idx + '.wav'));
+  player.load();
+
+  var key = cur.q.group + '_' + cur.q.idx;
+  var existing = state.ratings[key];
+  document.querySelectorAll('.score-btn').forEach(function(btn){
+    btn.classList.toggle('selected', existing && +btn.dataset.score === existing.score);
+  });
+
+  el('btn-prev').disabled = state.cursor === 0;
+}
+
+function rate(score){
+  var cur = currentItem();
+  var key = cur.q.group + '_' + cur.q.idx;
+  state.ratings[key] = { score:score, ratedAt: new Date().toISOString() };
+  persist();
+  document.querySelectorAll('.score-btn').forEach(function(btn){
+    btn.classList.toggle('selected', +btn.dataset.score === score);
+  });
+  setTimeout(function(){
+    if (state.cursor < state.queue.length - 1){
+      state.cursor++;
+      persist();
+      renderCurrent();
+    } else {
+      renderResults();
+    }
+  }, 180);
+}
+
+el('btn-skip').addEventListener('click', function(){
+  if (state.cursor < state.queue.length - 1){ state.cursor++; persist(); renderCurrent(); }
+  else renderResults();
+});
+el('btn-prev').addEventListener('click', function(){
+  if (state.cursor > 0){ state.cursor--; persist(); renderCurrent(); }
+});
+el('btn-finish').addEventListener('click', renderResults);
+
+document.addEventListener('keydown', function(e){
+  if (el('screen-rate').classList.contains('hidden')) return;
+  if (e.key >= '1' && e.key <= '5'){ rate(+e.key); }
+  else if (e.key === 'ArrowRight'){ el('btn-skip').click(); }
+  else if (e.key === 'ArrowLeft'){ el('btn-prev').click(); }
+});
+
+// ---- results screen ----
+function renderResults(){
+  hide('screen-setup'); hide('screen-rate'); show('screen-results');
+
+  var byGroup = {};
+  state.queue.forEach(function(q){
+    var key = q.group + '_' + q.idx;
+    var r = state.ratings[key];
+    if (!r) return;
+    byGroup[q.group] = byGroup[q.group] || [];
+    byGroup[q.group].push({ score:r.score, wer:+GROUPS[q.group].items[q.idx].wer, cer:+GROUPS[q.group].items[q.idx].cer });
+  });
+
+  var total = 0;
+  var tbody = el('res-tbody');
+  tbody.innerHTML = '';
+  Object.keys(GROUPS).forEach(function(key){
+    var rows = byGroup[key];
+    if (!rows || !rows.length) return;
+    total += rows.length;
+    var avg = function(f){ return rows.reduce(function(a,r){return a+f(r);},0) / rows.length; };
+    var fmtOrDash = function(v){ return isNaN(v) ? '—' : v.toFixed(2); };
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + GROUPS[key].label + '</td>' +
+      '<td>' + rows.length + '</td>' +
+      '<td class="mos-value">' + avg(function(r){return r.score;}).toFixed(2) + '</td>' +
+      '<td>' + fmtOrDash(avg(function(r){return r.wer;})) + '</td>' +
+      '<td>' + fmtOrDash(avg(function(r){return r.cer;})) + '</td>';
+    tbody.appendChild(tr);
+  });
+  el('res-count').textContent = total;
+}
+
+el('btn-continue').addEventListener('click', function(){
+  state.cursor = firstUnratedIndex(state);
+  startRatingUI();
+});
+el('btn-restart').addEventListener('click', function(){
+  if (!confirm('저장된 평가 결과를 모두 삭제하고 새로 시작할까요?')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  state = null;
+  hide('screen-rate'); hide('screen-results'); show('screen-setup');
+  hide('resume-note');
+});
+
+el('btn-export').addEventListener('click', function(){
+  var rows = [['group_label','set_tag','sample_index','text','hypothesis','wer','cer','mos_score','rater','rated_at']];
+  state.queue.forEach(function(q){
+    var key = q.group + '_' + q.idx;
+    var r = state.ratings[key];
+    if (!r) return;
+    var g = GROUPS[q.group];
+    var s = g.items[q.idx];
+    rows.push([g.label, state.anonMap[q.group], q.idx, s.text, s.hypothesis, s.wer, s.cer, r.score, state.rater || '', r.ratedAt]);
+  });
+  var csv = rows.map(function(row){
+    return row.map(function(v){
+      var str = String(v == null ? '' : v).replace(/"/g,'""');
+      return /[",\n]/.test(str) ? '"' + str + '"' : str;
+    }).join(',');
+  }).join('\r\n');
+  var blob = new Blob(["﻿" + csv], { type:'text/csv;charset=utf-8;' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'mos_ratings_' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+renderGroupList();
+checkResume();
+})();
+</script>
+</body>
+</html>

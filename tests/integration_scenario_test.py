@@ -1,18 +1,4 @@
-"""ChefEar 오케스트레이션 통합테스트 — tests/integration_test.md 시나리오 A~D 자동 실행.
-
-수동 체크리스트(tests/integration_test.md)에 적힌 handle_utterance() 호출들을 그대로
-코드로 옮겨서 순차 실행하고, 문서의 THEN(기대값)과 실제 결과를 비교해 PASS/FAIL을
-출력한다. pytest가 아니라 사람이 결과를 보고 tests/integration_test.md의 체크박스를
-채우는 데 참고하는 읽기 전용 진단 스크립트다 — 실제 DB 데이터에 따라 결과가 달라질 수
-있어서(예: 표준 데이터에 "바지락된장찌개"가 정확히 그 이름으로 있는지) FAIL이 떠도
-자동으로 "버그"라고 단정하지 않고 detail을 보고 사람이 판단한다.
-
-실행 전 준비: .env에 SUPABASE_URL/SUPABASE_KEY 필요(실제 DB 연결, allow_mock=False).
-
-실행:
-    uv run --with sentence-transformers==5.6.1 --with supabase==2.31.0 --python 3.12 \\
-        python tests/integration_scenario_test.py
-"""
+"""ChefEar 오케스트레이션 통합테스트 — 시나리오 A~D(조회·진행·등록·조회 실패)와 반복 질의를 순차 실행(실제 DB 필요)."""
 
 import sys
 from pathlib import Path
@@ -75,12 +61,6 @@ def run_scenario_a(handle_utterance, get_current_step, client):
         check("A-6 예외 없이 진행", False, f"{count}회째 예외 발생: {e}")
 
 
-# 2026-08-27 — 시나리오 B/C(진행 중 재료 대체)는 재료대체 기능 자체가 삭제되면서
-# (remove_ingredient_substitution.md) 없앴다. handle_utterance()가 더 이상
-# requested_ingredient 인자를 받지 않고, classify_intent()도 "재료대체"를 절대
-# 돌려주지 않는다.
-
-
 def run_scenario_d(handle_utterance, client):
     print("\n=== 시나리오 D — 표준 데이터 밖 요리 → 신규 등록 유도 ===")
     session = {}
@@ -139,7 +119,7 @@ def main():
         if not ok:
             print(f"  FAIL: {label}")
 
-    print("\n결과를 tests/integration_test.md의 해당 체크박스에 옮겨 적으세요.")
+    print("\nFAIL이 있으면 해당 시나리오의 handle_utterance() 응답을 확인하세요.")
 
 
 if __name__ == "__main__":

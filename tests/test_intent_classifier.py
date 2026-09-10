@@ -23,12 +23,6 @@ def test_ec04_empty_utterance_skips_classification():
     }
 
 
-# 2026-08-27 — 재료대체 기능 자체를 삭제했다(remove_ingredient_substitution.md).
-# "재료대체"가 VALID_INTENTS에서 완전히 빠져서 기준예문.csv에 그 카테고리 행이
-# 있어도 _load_examples()가 걸러내므로, "바지락 넣어도 돼?" 같은 발화는 구조적으로
-# 다시는 "재료대체"로 분류될 수 없다 — 아래 두 테스트는 항상 일반
-# 미분류(FALLBACK_UNCLASSIFIED)로 떨어진다는 걸 확인한다 — context_recipe_id 유무와
-# 무관하게 동일하다(예전엔 있고 없고에 따라 다른 메시지가 나갔음).
 def test_ec05_substitution_intent_without_context_falls_to_unclassified():
     result = classify_intent("바지락 넣어도 돼?", context_recipe_id=None)
     assert result["intent"] == "미분류"
@@ -41,14 +35,6 @@ def test_ec05_substitution_intent_with_context_also_falls_to_unclassified():
     assert result["fallback_message"] == FALLBACK_UNCLASSIFIED
 
 
-# 2026-08-26 요청 — 조리 3단계("돼지고기와 새우젓을 손질해주세요") 중에 "돼지고기과?"라고만
-# 말했더니 "돼지고기"를 새 요리명으로 보고 완전히 새로운 조회가 시작돼 조리가 처음부터
-# 리셋된 실측 리포트. 처음엔 "한 단어짜리 발화만" 막았는데, 재요청으로 원칙이 바뀌었다:
-# "레시피 전환이 되면 안 된다, 절대로" — 조리 중엔("이미 어떤 레시피를 진행 중" =
-# context_recipe_id 있음) "조회"가 아무리 명확한 문장이어도("된장찌개로 바꿔줘") 무조건
-# 막는다. 다른 레시피를 원하면 "처음"으로 돌아가 초기 화면에서 다시 검색해야 한다 —
-# 그게 유일한 전환 경로다(reset_to_start()/is_home_word()는 이 함수를 안 거치는
-# 별개 경로라 여전히 정상 동작함).
 def test_dish_lookup_mid_cooking_is_always_ignored_even_bare_name():
     result = classify_intent("돼지고기", context_recipe_id="recipe-123")
     assert result["intent"] == "미분류"
@@ -71,8 +57,6 @@ def test_ec03_ambiguous_resume_phrase_prioritized_as_progress():
     assert result["intent"] == "진행"
 
 
-# 2026-08-26 요청 — "등록"은 조리 중(context_recipe_id 있음)엔 무시하고, 아직
-# 레시피를 안 고른 첫 화면(context_recipe_id 없음)에서만 인정한다.
 def test_register_intent_with_context_is_ignored_mid_cooking():
     result = classify_intent("이 레시피 등록해줘", context_recipe_id="recipe-123")
     assert result["intent"] == "미분류"
