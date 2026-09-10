@@ -1,36 +1,4 @@
-"""요리명별_조리과정 CSV -> Supabase recipes/recipe_steps 적재 (PRD 6.1, 6.2, 6.7).
-
-## 이 스크립트가 하는 일 (전체 그림)
-
-원본 CSV 한 줄은 이런 컬럼들을 갖고 있다: 요리명(CKG_NM), 재료(CKG_MTRL_CN),
-조회수(INQ_CNT), 조리순서(COOKING_STEPS, "1. ...\\n2. ..." 형태의 긴 문자열),
-등록일(FIRST_REG_DT) 등등. 이걸 우리 DB의 두 테이블로 옮겨야 한다.
-  - recipes      : 요리 하나당 한 행 (요리명, 재료, 조회수, ...)
-  - recipe_steps : 요리 하나에 여러 행 (1단계 텍스트, 2단계 텍스트, ...)
-
-그래서 흐름은 "① CSV를 읽어서 표준 레시피만 골라내고 -> ② recipes에 넣고
-그 결과로 받은 recipe_id를 기억해뒀다가 -> ③ 그 recipe_id를 이용해
-recipe_steps에 단계별로 넣는다" 순서로 짜여 있다(run() 함수의 [1/4]~[4/4]
-출력이 이 순서를 그대로 보여준다).
-
-표준 레시피 선정 규칙(6.1): 같은 요리명(CKG_NM)이 CSV에 여러 번 나오면
-조회수(INQ_CNT)가 제일 높은 행 하나만 채택한다 — 예를 들어 "된장찌개"라는
-이름의 레시피가 여러 사람이 올린 게 섞여 있으면, 그중 제일 조회수 높은
-것만 "표준"으로 쓴다는 뜻. source 컬럼은 항상 api_standard로 채운다
-(사용자가 나중에 직접 등록하는 user_custom과 구분하기 위해).
-
-사용법:
-    python src/orchestration/load_data.py --csv <CSV 경로>
-    python src/orchestration/load_data.py --csv <CSV 경로> --dry-run   # DB 연결 없이 파싱만 검증
-
-CSV_NM/CKG_MTRL_CN/COOKING_STEPS 3개 컬럼만 있는 축약 CSV(예: 전처리 완료본으로
-INQ_CNT/FIRST_REG_DT가 빠진 파일)도 그대로 넣을 수 있다 — 없는 컬럼은 그냥
-DB 기본값(view_count=0, created_at=now())으로 채워진다(select_standard_rows,
-build_recipe_payload 참고). 재실행 시 기존 api_standard 레코드를 먼저 삭제하고
-다시 넣으므로([2/4] 단계), 이 스크립트를 다시 돌리는 것 자체가 "기존 표준
-데이터 삭제 + 새 CSV 적재"다 — user_custom(사용자가 직접 등록한 레시피)은
-건드리지 않는다.
-"""
+"""요리명별_조리과정 CSV -> Supabase recipes/recipe_steps 적재 (PRD 6.1, 6.2, 6.7)."""
 from __future__ import annotations
 
 import argparse
@@ -99,20 +67,7 @@ def parse_steps(raw: str) -> list[str]:
 
 
 def select_standard_rows(csv_path: Path) -> dict[str, dict]:
-    """6.1 규칙: 동일 CKG_NM 다건 시 INQ_CNT 1위 채택 (동률이면 먼저 나온 행 유지).
-
-    winners 딕셔너리의 키는 요리명, 값은 "지금까지 본 것 중 조회수가 제일
-    높았던 행"이다. CSV를 한 줄씩 읽으면서, 이미 같은 요리명을 본 적 있으면
-    조회수를 비교해서 더 높을 때만 교체한다 — 이게 바로 "동일 요리명 다건 시
-    조회수 1위 채택"을 코드로 옮긴 것이다. 전체 CSV를 다 읽고 나면 winners에는
-    요리명마다 딱 하나, 제일 조회수 높은 행만 남는다.
-
-    INQ_CNT 컬럼이 아예 없는 CSV(예: 요리명별_조리과정_전처리완료_2.csv처럼
-    이미 표준선정이 끝난 상태로 CKG_NM/CKG_MTRL_CN/COOKING_STEPS 3개 컬럼만
-    남긴 축약 파일)도 그대로 지원한다 — row.get()으로 없으면 0 취급한다. 이런
-    파일은 애초에 요리명 중복이 없는 전제라(이미 한 번 골라진 상태), 조회수를
-    전부 0으로 봐도 최종 결과(요리명당 1행)는 똑같다.
-    """
+    """6.1 규칙: 동일 CKG_NM 다건 시 INQ_CNT 1위 채택 (동률이면 먼저 나온 행 유지)."""
     winners: dict[str, dict] = {}
     with csv_path.open(encoding="utf-8-sig") as f:  # utf-8-sig: 엑셀이 저장한 BOM(파일 맨 앞의 보이지 않는 표시)을 자동으로 무시
         reader = csv.DictReader(f)  # 첫 줄을 헤더로 보고, 이후 각 줄을 {컬럼명: 값} 딕셔너리로 돌려줌

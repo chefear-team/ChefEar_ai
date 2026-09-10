@@ -11,7 +11,7 @@ KSS(Korean Single Speaker Speech Dataset)는 CC BY-NC-SA 4.0(저작자표시-비
 - 데이터셋: KSS — 전문 성우 1인이 낭독한 한국어 음성, 총 12,854건(음성 파일 + 대본 쌍,
   `data/kss/metadata.csv` 기준)
 - 라이선스: CC BY-NC-SA 4.0 — 비상업적 이용만 허용, 동일 조건 변경허락, 저작자 표시 필요
-- 상업적 이용 여부: 없음 — 서비스 배포도 학습 과제 범위(HF Spaces CPU Basic 무료 티어)
+- 상업적 이용 여부: 없음 — 서비스 배포도 학습 과제 범위(팀 GPU 서버, 비상업)
 - 사용 목적: TTS(Qwen3-TTS) 파인튜닝 원본 음성 + STT 파인튜닝용 학습데이터(KSS 원문 음성 +
   파인튜닝된 TTS가 만든 합성 음성)
 - 팀원 동의서 필요 여부: 불필요 — 팀원 본인 목소리를 녹음/사용하지 않음
@@ -24,4 +24,4 @@ KSS(Korean Single Speaker Speech Dataset)는 CC BY-NC-SA 4.0(저작자표시-비
 
 ## 관련 문서
 
-`docs/ChefEar_팀_진행_가이드_v2.md` 7.1(음성 학습 데이터), `../README.md`(이 폴더 개요)
+`docs/ChefEar_팀_진행_가이드_v3.md` 6장(음성 학습 데이터), `../README.md`(이 폴더 개요)

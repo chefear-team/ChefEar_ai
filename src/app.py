@@ -1,24 +1,7 @@
-"""ChefEar 실제 서비스 엔트리포인트 (HF Spaces 배포 대상, `docs/specs/app_e2e.md`).
+"""ChefEar 서비스 엔트리포인트 — `streamlit run src/app.py`.
 
-마이크 입력 -> STT(`stt.infer.stt_transcribe`) -> 오케스트레이션(`orchestration.pipeline.
-handle_utterance`) -> TTS(`tts.infer.tts_synthesize`) 재생까지 한 화면 루프로 엮는다.
-화면 컴포넌트(CSS/아이콘/카드 등)는 `ui/theme.py`를 그대로 재사용한다(PRD 3.3 "핵심 기능
-완료 후 여유 시간에 다듬는다" — 화면 디자인은 새로 만들지 않음, Out of Scope).
-
-`ui/streamlit_screens/*.py`(mock 프로토타입)는 그대로 재사용하지 않는다 — 그 화면들은
-버튼마다 시나리오를 하드코딩해서 요리명/재료명 추출 문제를 우회했는데(예: "바지락 넣어도
-돼?" 버튼이 requested_ingredient=["바지락"]을 코드에 미리 박아둠), 실제 자유발화는 그
-우회가 불가능하다. 그래서 이 파일은 화면 흐름을 직접 다시 짜되, 시각 컴포넌트만 theme.py에서
-가져다 쓴다.
-
-2026-08-22: 화면 컴포넌트화 — 세션 상태/STT-TTS 연결/발화 디스패처/화면 함수들을
-`src/ui/`(session.py, voice_io.py, recipe_view.py, dispatch.py, screens/*.py)로 옮기고
-이 파일은 그것들을 조립하는 엔트리포인트만 남겼다. 주의: 이 `ui` 패키지(`src/ui/`, `src`가
-sys.path에 있어서 `ui.session`처럼 import됨)는 아래에서 `sys.path.insert(0, .../"ui")`로
-따로 얹는 최상위 `ui/`(theme.py 등, `from theme import ...`로 씀) 폴더와 이름은 같지만
-서로 다른 경로다 — 각 화면 모듈의 상단 주석에도 같은 안내가 있다.
-
-실행: streamlit run src/app.py
+상시 마이크 입력 → STT → 오케스트레이션(의도분류·레시피 조회·등록) → TTS 재생을 한 화면
+루프로 엮고, 화면 컴포넌트(`src/ui/`)와 공용 스타일(`ui/theme.py`)을 조립한다.
 """
 from __future__ import annotations
 
@@ -99,23 +82,14 @@ _ADMIN_PAGE = None
 
 def _access_gate_ok() -> bool:
     """랜딩페이지(https://chefear-landingpage.vercel.app) 버튼을 거쳐 ?key=<토큰>이
-    붙은 URL로 들어왔는지 확인한다(2026-08-26 요청 — Cloudflare Tunnel로 chefear.store를
+    붙은 URL로 들어왔는지 확인한다( Cloudflare Tunnel로 chefear.store를
     공개해둔 상태에서, 랜딩페이지 버튼을 거치지 않은 직접 URL 접근을 "토큰 붙은 URL"
-    방식으로 약하게 막음. 완전한 보안 아님 — 대화 배경은 render_access_blocked() 문서
+    방식으로 약하게 막음. 완전한 보안 아님 — 대화 배경은 render_access_blocked 문서
     참고).
-
-    .env에 ACCESS_GATE_TOKEN이 비어 있으면 게이트 자체를 끈다(로컬 개발/토큰 미설정
-    배포가 이것 때문에 막히지 않게 fail-open — orchestration/db.py::get_client()가
-    Supabase 자격증명 미설정 시 mock으로 폴백하는 것과 같은 정신). 값이 설정된
-    배포에서만 실제로 검사한다.
     """
     expected = os.environ.get("ACCESS_GATE_TOKEN", "").strip()
     if not expected:
         return True
-    # 2026-08-28 — 한 번 ?key=로 통과한 세션은 계속 통과로 본다. st.switch_page()로
-    # 관리자 페이지에 갔다 오면(음성 트리거/← 메인으로) URL의 ?key=가 떨어져 나가서,
-    # 이 가드가 없으면 돌아온 메인 화면이 소개페이지 안내로 막히는 게 실측 확인됐다.
-    # ?key= 게이트 자체가 "약한 접근 제한"이라, 세션 지속은 보안 성격을 안 바꾼다.
     if st.query_params.get("key") == expected:
         st.session_state["_access_ok"] = True
         return True
@@ -151,33 +125,7 @@ def _enroll_gate_ok() -> bool:
 
 
 def _start_model_warmup() -> None:
-    """gpu_worker_pool의 GPU 워커 프로세스들을 백그라운드 스레드에서 미리 띄워둔다.
-
-    2026-08-25 재작성(원래는 `_warm_up_models()`라는 이름으로 main() 안에서 동기/블로킹으로
-    세 모델을 다 로드한 뒤에야 화면(마이크 포함)을 그렸다 — "마이크 붙는 속도가 느리다"는
-    지적으로 재구성). 상시 마이크(webrtc_streamer())도 이 함수 *뒤에* 있는 화면 렌더링
-    단계에서만 처음 호출되므로, 이 함수를 백그라운드 스레드로 빼두면 모델(콜드 스타트 시
-    최대 30초+, LLM 최초 다운로드 시엔 수 분) 로딩이 다 끝나기 전에도 마이크의 WebRTC
-    협상(SDP offer/answer, ICE)이 먼저 시작될 수 있다.
-
-    2026-09-01 — STT/TTS/LLM/임베딩 모델을 이 프로세스(Streamlit 서버) 안에 직접
-    로드하던 걸 gpu_worker_pool.warm_pool()로 바꿨다. 실제 추론은 이제 전부 그 풀의
-    별도 워커 프로세스에서 일어나므로, 이 메인 프로세스가 자기 것도 따로 로드해두는
-    건 아무 데도 안 쓰이는 GPU 메모리 낭비일 뿐이다(gpu_worker_pool.py의 _init_worker()가
-    STT -> TTS -> LLM -> 임베딩 -> 요리명 캐시 순서로 각 워커 안에서 데운다 — 옛
-    순서 조정 이유(TTS를 STT 바로 뒤로 당겨 첫 발화 전에 데움 등)를 그대로 이어받음).
-    세션당 한 번만 스레드를 띄운다(`_warmup_thread_started` 플래그로 중복 시작 방지) —
-    warm_pool() 자신도 이미 풀이 있으면 즉시 반환하는 이중 확인 락 구조라 여러 세션이
-    거의 동시에 이 스레드를 띄워도 실제 풀 생성/워밍업은 한 번만 일어난다.
-
-    st.spinner()/st.warning() 같은 st.* API는 ScriptRunContext가 있는 메인 스레드에서만
-    안전해서(voice_io.py의 `_synthesize_and_cache()` 등 다른 백그라운드 스레드들과 같은
-    이유) 이 함수는 그런 호출을 전혀 안 한다 — 로딩 실패는 print()로만 남기고 조용히
-    넘어간다(EC-05 원칙과 같은 정신 — 실패해도 서비스는 계속 뜨고, 실제 그 모델이 필요한
-    시점에 각 호출부(speak()/stt_transcribe() 등)가 이미 자기 실패 처리를 하고 있다).
-    트레이드오프: 로딩 중이라는 "STT/LLM/TTS 모델 준비 중..." 스피너 문구가 이제 화면에
-    안 뜬다 — 대신 화면들이 이미 갖고 있는 "마이크 연결 중..." 표시가 그 자리를 대신한다.
-    """
+    """gpu_worker_pool의 GPU 워커 프로세스들을 백그라운드 스레드에서 미리 띄워둔다."""
     if st.session_state.get("_warmup_thread_started"):
         return
     st.session_state["_warmup_thread_started"] = True
@@ -193,8 +141,6 @@ def _start_model_warmup() -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
-# 2026-08-28 — ?debug_screen 쿼리파라미터 경로와 디버그 패널의 "화면 점프" 버튼이
-# 공유하는 가짜 세션 상태 채우기(중복 제거). CHEFEAR_DEBUG일 때만 도달한다.
 _DEBUG_FAKE_RECIPE_ID = "00000000-0000-0000-0000-000000000001"
 
 
@@ -249,23 +195,12 @@ _DEBUG_JUMP_SCREENS = (
 
 
 def main() -> None:
-    # 2026-08-27 — st.set_page_config()는 st.navigation()으로 멀티페이지 구조가 되면서
-    # 스크립트 진입점(`if __name__ == "__main__":` 블록)으로 옮겼다 — Streamlit은 이
-    # 호출이 스크립트당(페이지별이 아니라) 딱 한 번, 다른 st.* 호출보다 먼저 와야 한다.
 
-    # 2026-08-26 요청 — 랜딩페이지 버튼을 거치지 않은 직접 URL 접근 차단(토큰 붙은 URL
-    # 방식, _access_gate_ok()/render_access_blocked() 문서 참고). init_state()보다
-    # 먼저 검사해서, 막힌 방문자는 세션 초기화/모델 워밍업/DB 연결을 전혀 안 타고
-    # 곧장 안내 화면만 보고 끝난다.
     if not _access_gate_ok():
         inject_css()
         render_access_blocked()
         st.stop()
 
-    # 2026-08-28 — 음성 트리거("관리자 페이지 접근할게요", dispatch._is_admin_trigger())로
-    # 세운 플래그. 이 rerun에서 __main__이 관리자 st.Page를 nav에 등록했을 테니, 여기서
-    # 그 페이지로 전환한다(옵션 A — 이동만, 실제 인증은 도착 화면 챌린지). 인증까지
-    # 끝났으면 반복 전환 안 함.
     if (
         st.session_state.get("_admin_via_voice")
         and not st.session_state.get("_admin_verified")
@@ -274,50 +209,18 @@ def main() -> None:
         st.switch_page(_ADMIN_PAGE)
 
     init_state()
-    # 2026-09-01 — 구글 로그인 재도입(docs/specs/user_accounts_google_login.md).
-    # st.login() 리다이렉트로 막 돌아온 rerun인지를 매번 확인해서, 그런 경우에만
-    # DB 조회/insert(login_or_create_google)를 한 번 수행하고 세션에 반영한다.
     handle_google_login_if_returned()
-    # 2026-09-01 — 일반(로컬) 로그인은 구글과 달리 지속 쿠키가 없어서 새로고침하면
-    # current_user가 그냥 사라졌다(사용자 리포트). st.query_params에 심어둔 세션
-    # 유지 토큰으로 복원한다(ui/session.py::restore_local_session() 문서 참고).
     restore_local_session()
 
-    # 2026-08-28 — 디버그 진입로(?debug_screen / ?debug_panel)는 .env의 CHEFEAR_DEBUG가
-    # 설정된 경우에만 활성화한다. 예전엔 프로덕션에서도 항상 켜져 있어서(접근 게이트만
-    # 통과하면) 임의 화면 점프 + 가짜 recipe_view 주입이 가능했다(리뷰 지적). 배포
-    # .env엔 이 변수를 넣지 않는다 — 로컬 개발/QA에서만 켠다.
     _debug_enabled = bool(os.environ.get("CHEFEAR_DEBUG"))
 
-    # 2026-08-25 임시 디버그 진입로 — 화면 전환 잔상을 음성 없이(버튼/URL만으로) 재현해
-    # 보기 위해 넣음. URL에 ?debug_screen=cooking_complete 같은 쿼리 파라미터를 붙이면
-    # start/recipe_confirm(음성 전용, 버튼도 텍스트 입력도 없어서 우회 불가)을 건너뛰고
-    # 바로 그 화면으로 점프한다 — cooking_complete로 렌더링되는 데 필요한 최소한의
-    # recipe_view/pipeline_session만 가짜로 채운다.
     _debug_screen = st.query_params.get("debug_screen") if _debug_enabled else None
-    # 2026-08-26 — /code-review 발견: SCREENS에 없는 값(오타 등)을 검증 없이 그대로
-    # session_state.screen에 넣으면, 아래 SCREENS[screen]() 호출이 KeyError로 죽는다.
-    # 게다가 바로 다음 줄에서 _debug_jumped를 이미 True로 찍어놔서, 다음 rerun부터는
-    # 이 if 블록 자체를 다시 안 타 — 잘못된 screen 값이 세션에 영구히 박힌 채 매번
-    # KeyError로 죽는 상태에 갇힌다(브라우저 탭을 새로 열어야만 벗어날 수 있었음).
-    # SCREENS에 있는 값일 때만 점프하도록 막는다.
     if _debug_screen and _debug_screen not in SCREENS and not st.session_state.get("_debug_jumped"):
         print(f"[app] 잘못된 ?debug_screen={_debug_screen!r} 무시(SCREENS에 없음)", flush=True)
     elif _debug_screen and not st.session_state.get("_debug_jumped"):
         st.session_state["_debug_jumped"] = True
         _debug_fill_fake_state(_debug_screen)
 
-    # 2026-08-25 임시 디버그 음성 패널 — 처음엔 ?debug_voice=<파일명>을 URL에 붙이는
-    # 방식으로 만들었는데, 페이지를 새로고침(URL 이동)할 때마다 마이크(WebRTC) 협상
-    # 초기 몇 초 구간과 겹쳐서 웹소켓이 끊기는 문제가 실측 확인됐다(연결 이미 안정된
-    # 뒤에도 화면이 브랜드 로고만 뜨고 빈 채로 멈춤, 콘솔에 "Cannot send rerun
-    # backMessage when disconnected from server" 반복) — 새로고침 자체가 원인이라
-    # ?debug_panel=1로 페이지 안에 버튼만 한 번 띄우고, 이후 주입은 그 버튼 클릭(=
-    # 새로고침 없는 일반 rerun)으로만 하도록 바꿨다. ui/assets/_mic_debug_dumps/에
-    # 발화 내용 그대로 이름 붙인 녹음 파일을 두면 그 파일명이 버튼 라벨이 된다 —
-    # 실제 stt_transcribe()에 태워서 나온 텍스트를 이번 턴의 발화로 취급한다(마이크만
-    # 안 쓸 뿐 STT/의도분류/화면전환까지 실제 파이프라인 그대로 탄다). 검증 끝나면
-    # _debug_screen과 함께 지울 것.
     if _debug_enabled and st.query_params.get("debug_panel") == "1":
         _dump_dir = Path(__file__).resolve().parent.parent / "ui" / "assets" / "_mic_debug_dumps"
         _files = sorted(_dump_dir.glob("*.m4a")) if _dump_dir.exists() else []
@@ -342,23 +245,10 @@ def main() -> None:
                         print(f"[DEBUG_JUMP] -> {_scr}", flush=True)
                         st.rerun()
 
-    # voice_io.prefetch_remaining_steps_audio()의 백그라운드 스레드가 참조하는
-    # "지금 활성 레시피" 표시를 매 rerun마다 최신 상태로 맞춘다(2026-08-22 요청) — 사용자가
-    # 처음 화면으로 돌아가 pipeline_session이 리셋되면, 이 값도 즉시 바뀌어서 버려진
-    # 레시피의 백그라운드 합성이 다음 단계 진입 전에 스스로 멈춘다.
     st.session_state._active_recipe_box["recipe_id"] = st.session_state.pipeline_session.get("current_recipe_id")
     _start_model_warmup()
     inject_css()
-    # 2026-08-27 — 일반 사용자 로그인/회원가입/마이레시피를 전부 없앴다가, 2026-09-01
-    # 로그인/회원가입(user_accounts_google_login.md)에 이어 마이레시피(my_recipes.md)도
-    # 재도입했다. 관리자 접근은 이 버튼과 무관하게 별도 게이트(admin_recipe_approval.md)로
-    # 그대로 유지.
     _current_user = st.session_state.get("current_user")
-    # 2026-09-01 재요청 — 로고 옆 계정 버튼(로그인 아이콘/내 아이디)을 "start" 화면
-    # 에서만 보이게 한다. 조리 진행 중이나 등록/조회 도중에 실수로 눌러 마이레시피로
-    # 새 화면이 훅 넘어가는 걸 막기 위함 — 로그인 화면은 원래도 이 버튼이 필요 없다는
-    # 이전 요청(바로 위 이력)과 결과가 같아 별도 예외 처리 없이 이 조건 하나로 같이
-    # 커버된다(login도 "start"가 아니므로 자연히 안 보임).
     if st.session_state.screen == "start":
         _brand_clicked = render_brand(show_login=True, username=_current_user.username if _current_user else None)
     else:
@@ -373,64 +263,11 @@ def main() -> None:
         else:
             goto("login")
 
-    # 2026-08-24 — "화면 전체를 st.empty() 슬롯 하나로 감싸서 매번 통째로 교체" 시도는
-    # 되돌림(실측: "된장찌개 레시피 알려줘" 인식 후 무반응/회색 화면으로 멈추는 새 증상
-    # 재현). 상시 마이크(webrtc_streamer, _run_mic_loop() 내부)가 이 SCREENS[...]() 호출
-    # 트리 안에서 그려지는데, 그 부모 컨테이너가 매 rerun마다 새로 생성되는 st.empty()로
-    # 바뀌면서 프론트엔드 쪽 컴포넌트 정체성(=WebRTC 연결)이 흔들린 것으로 보인다 —
-    # 잔상보다 마이크 연결이 더 심각한 문제라 이 방향은 포기.
 
-    # 2026-08-24 — "화면 전환 잔상"(예: register_intro에서 "처음으로" 발화 후 시작
-    # 화면과 겹쳐 보임, 여러 화면을 거칠수록 계속 쌓이는 전반적인 문제) 리포트 조사 결과,
-    # 이 프로젝트만의 버그가 아니라 Streamlit 자체의 확인된 미해결 버그였다(GitHub
-    # streamlit/streamlit#8360 "Stale widgets fill screen after script reruns", P2로
-    # Streamlit 팀이 직접 확인). 원인: 스크립트 재실행이 직전 실행보다 이 위치(BlockNode)의
-    # 엘리먼트 개수가 "줄어들면", 프론트엔드가 위젯 ID를 재사용하면서 React key가
-    # 충돌하고(`Block.tsx`의 getElementWidgetID 기반 key 할당 방식이 원인), 그 결과 직전
-    # 실행의 "남는" 엘리먼트가 안 지워지고 화면에 그대로 남는다.
-    #
-    # 첫 시도(고정 개수 st.empty() 패딩)는 실측으로 효과가 없었다 — SCREENS[...]() 뒤에
-    # 매번 같은 개수(60개)를 더해봐야, 화면마다 원래 그리는 엘리먼트 개수 자체가 다르므로
-    # (예: no_match는 채팅 카드+캡션+버튼 2개+입력칸, start는 제목+마이크뿐) 두 화면
-    # 총합의 "차이"는 그대로 남는다 — 상수를 양쪽에 똑같이 더해도 그 차이가 없어지지
-    # 않는다("된장찌개" -> "처음" 재현으로 실측 확인, no_match 잔상 그대로 남음).
-    #
-    # 대신 화면마다 다른 key의 st.container()로 감싼다 — 화면이 바뀌면 완전히 다른
-    # key(다른 프론트엔드 엘리먼트 트리 네임스페이스)가 되므로, 애초에 이전 화면 위젯과
-    # 같은 자리를 두고 ID를 재사용/충돌시킬 일 자체가 없어진다(위 "엘리먼트 개수가
-    # 줄어드는" 조건 자체를 회피).
-    #
-    # 2026-08-25 실측 리포트 — 처음엔 "상시 마이크는 이 컨테이너 밖에서 그려지니 무관하다"고
-    # 적어뒀는데 틀렸다. 실제로는 각 screen_*() 함수가 자기 본문 끝에서 listen()을 직접
-    # 불렀고, 그 listen()이(= webrtc_streamer()가) 바로 이 컨테이너 *안에서* 그려지고
-    # 있었다 — 그래서 화면이 바뀔 때마다(=컨테이너 key가 바뀔 때마다) 마이크 컴포넌트까지
-    # 통째로 재마운트되면서 매번 새로 연결됐다(WRTCDBG 로그로 chefear_mic_0 -> _7까지
-    # 세대가 계속 올라가는 것 확인, "Queue overflow" 반복 + 그 직후 발화가 씹히는 리포트로
-    # 이어짐). 그래서 listen()/listen_background_only() 호출 자체를 각 screen_*() 함수
-    # 밖으로 빼서, 이 컨테이너가 닫힌 *뒤에* 화면과 무관하게 항상 같은 자리에서 부르도록
-    # 옮겼다(각 screen_*() 함수 상단 주석 참고) — 이제서야 진짜로 이 컨테이너 변경과
-    # 무관해졌다.
     screen = st.session_state.screen
-    # 2026-08-28 — 화면 전환 잔상(#8360)의 근본 대응: SCREENS[screen]()를 재사용
-    # st.empty() 슬롯 하나에 넣는다. st.empty()는 자식이 항상 정확히 1개라(화면이
-    # 바뀌면 그 1개가 통째로 교체됨) "이 위치의 엘리먼트 개수가 줄어들면 잔상"이라는
-    # #8360 트리거 조건 자체를 회피한다 — 그동안 render_screen_cleanup()의 마커/구조
-    # 규칙으로 하던 whack-a-mole(_STALE_CONTENT_MARKERS / _SINGLE_OWNER_WIDGET_KEYS /
-    # *_card 컨테이너)을 대체한다. 2026-08-24에 한 번 시도했다 되돌렸으나(그땐 마이크
-    # webrtc_streamer()가 SCREENS() 트리 안에서 그려져 st.empty() 교체마다 재마운트됨),
-    # 2026-08-25에 listen() 호출을 이 트리 *밖*(아래 _next_text)으로 뺐으므로 그 블로커는
-    # 없다. 안쪽 st.container(key=f"screen_{screen}")는 CSS/render_screen_cleanup이 쓰는
-    # st-key-screen_<X> 클래스를 위해 유지한다.
     _screen_slot = st.empty()
     with _screen_slot.container(key=f"screen_{screen}"):
         SCREENS[screen]()
-        # 2026-08-28 — st.empty() 스왑으로도 "맨 마지막 버튼 1~2개"가 도착 화면 컨테이너의
-        # 직계 자식으로 orphan되는 게 라이브 재현됐다(register_steps -> complete에서
-        # "단계 추가"/"네, 저장할게요"가 번갈아 남음). #8360은 "이 BlockNode의 자식 수가
-        # 줄어들 때" 남는 엘리먼트가 안 지워지는 버그다 — 그래서 화면 본문 뒤에 항상
-        # 넉넉한 빈 슬롯을 붙여두면, 자식 수가 줄어도 "남는" 건 이 빈 슬롯들(보이지 않음)
-        # 이 되고 실제 버튼은 그 앞이라 안 남는다. 화면마다 본문 길이가 달라도 이 꼬리
-        # 패딩이 충분히 크면 두 화면의 "차이"가 전부 패딩 구간 안에서 흡수된다.
         for _ in range(_SCREEN_TRAILING_PAD):
             st.empty()
 
@@ -473,78 +310,26 @@ def main() -> None:
         if text:
             handle_register_dish_name(text)
     elif screen == "register_ingredients":
-        # 2026-08-26 재요청 — 민감/집중 입력 화면이라 음성 오인식으로 갑자기 화면이
-        # 바뀌는 걸 원치 않아서 "처음"/"취소"까지 포함해 음성에 완전히 반응 안 하게 했다.
-        # 2026-08-28 요청 — 그동안은 listen()을 일반 모드로 불러서 마이크로 계속 듣고
-        # STT까지 돌린 뒤 반환값만 버렸는데(GPU 낭비 + "Queue overflow"), 이 화면은
-        # 애초에 음성으로 처리할 게 없다. listen_for_speech=False로 webrtc 연결(상시
-        # 마이크)은 그대로 살려두되(마이크 재협상은 절대 유발하지 않음) VAD/STT 루프만
-        # 건너뛴다 — 프레임은 계속 드레인해서 큐는 안 넘친다.
         listen("register_ingredients", listen_for_speech=False, show_text_fallback=False)
     elif screen == "register_steps":
-        # 2026-08-27 재요청 — register_ingredients와 같은 이유로 "처음"/"취소"까지
-        # 포함해서 완전히 무시하도록 통일(기존엔 listen_background_only()로 그 두
-        # 단어만 반응했음). listen()은 그대로 불러서 마이크 연결은 살려두고(안 그러면
-        # orphan-reset, register_ingredients 위 주석 참고) 반환값만 버린다.
         listen("register_steps", show_text_fallback=False)
     elif screen == "complete":
         text = _next_text("complete", show_mic=False)
         if text:
             process_utterance(text)
     elif screen in ("login", "signup"):
-        # 2026-09-02 요청 — 로그인/회원가입은 폼(아이디·비밀번호) 입력 전용 화면이라
-        # 마이크 자체가 필요 없다는 판단으로, my_recipes/edit_recipe와 분리해 listen()을
-        # 아예 안 부른다(마이크 컴포넌트를 안 그림).
-        #
-        # 주의(재도입 시 참고) — 2026-09-01엔 이 넷(login/signup/my_recipes/edit_recipe)을
-        # 하나로 묶어 listen_for_speech=False로 마이크 연결만 유지했었다. "처음 화면으로"/
-        # "내 정보" 버튼으로 다른 화면과 왔다갔다를 반복하면 WebRTC 재협상(몇 초) 중에
-        # _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을 구분 못 해 매번 새
-        # RTCPeerConnection을 만들어내고, 그게 브라우저 정리 속도보다 빠르게 쌓여
-        # "Cannot create so many PeerConnections" 크래시로 이어졌던 이력이 있다(당시엔
-        # _recover_dead_mic()에 debounce가 없어 이 오판이 실제로 재현됨 — 지금은 고쳐짐).
-        # login/signup은 "로그인 화면으로"/"회원가입" 링크로 서로 왕복 가능해서 이론상
-        # 같은 패턴에 노출될 수 있지만, my_recipes/edit_recipe(카드 여러 개를 수정하며
-        # 반복 왕복)만큼 빈번하지 않다고 보고 여기서는 마이크를 아예 뺀다 — login에서
-        # start로 넘어갈 때(로그인 성공 직후)나 signup에서 나갈 때 마이크가 새로
-        # 연결되는 비용은 감수한다(관리자 페이지 전환과 같은 트레이드오프).
         pass
     elif screen in ("my_recipes", "edit_recipe"):
-        # 2026-09-01 — 원래 register_ingredients와 같은 이유로 listen_for_speech=False로
-        # 마이크 연결만 유지하려 했으나, 실사용 중 "Failed to construct
-        # 'RTCPeerConnection': Cannot create so many PeerConnections"가 재현돼 마이크
-        # 자체를 아예 안 그리는 쪽으로 후퇴했었다(이 주석의 이전 버전, login.py 문서
-        # 참고 — 근본 원인 미해결 워크어라운드였음).
-        #
-        # 근본 원인 규명(voice_io._recover_dead_mic() 문서 참고): 이 화면들은(원래는
-        # login/signup도 포함해 넷이었으나 2026-09-02 로그인/회원가입은 마이크를 아예
-        # 안 그리는 쪽으로 분리됨, 위 분기 참고) "처음 화면으로"/"내 정보" 버튼으로
-        # 다른 화면과 짧은 간격을 두고 반복해서 왕복하는 화면들이다(등록 화면들은
-        # 순서대로 한 번만 지나감). WebRTC 재협상은 몇 초 걸릴 수 있는데, 그 몇 초
-        # 사이에 왕복하면 _recover_dead_mic()이 "아직 재협상 중"과 "진짜 끊김"을
-        # 구분 못 하고 매번 새 세대(=한 번도 안 쓰인 새 컴포넌트 key라 component.py::
-        # _get_or_create_context()가 완전히 새 WebRtcStreamerContext를 만듦 -> 새
-        # RTCPeerConnection, voice_io._recover_dead_mic() 문서 참고)를 만들어냈다 —
-        # 왕복이 반복될수록 브라우저가 이전 연결을 정리하는 속도보다 빠르게 연결이
-        # 쌓여 결국 PeerConnection 개수 상한에 부딪혔다. _recover_dead_mic()에 "죽었다"
-        # 판정을 debounce하는 로직을 추가해 이 오판을 막았으므로, register_ingredients와
-        # 동일한(이미 검증된) 안전한 패턴으로 되돌린다 — register_steps는
-        # listen_for_speech를 안 넘겨서 실제로는 STT까지 계속 돌리고 결과만 버리는
-        # 별개의(더 무거운) 패턴이라 정확히 같지는 않다. 마이크를 안 그려서 매번
-        # 재연결시키는 대신, 연결은 유지하고 음성 처리만 건너뛴다.
         listen(screen, listen_for_speech=False, show_text_fallback=False)
 
 
 def _run_with_error_notice(label: str, fn) -> None:
-    """2026-08-26 요청 — "예방 차원으로 다른 에러들에 대해서도 셋팅"(오늘 밤 RTCPeerConnection
-    브라우저 예외에 이어, 파이썬 쪽에서 예상 못한 예외가 나는 경우까지 포함). main()/admin
-    화면 안 곳곳의 개별 try/except(TTS 합성 실패, DB 조회 실패 등, speak() 등 각자
-    st.warning() 문구를 이미 갖고 있음)는 그대로 두고 건드리지 않는다 — 저것들은 그
+    """"예방 차원으로 다른 에러들에 대해서도 셋팅"(오늘 밤 RTCPeerConnection
+    브라우저 예외에 이어, 파이썬 쪽에서 예상 못한 예외가 나는 경우까지 포함). main/admin
+    화면 안 곳곳의 개별 try/except(TTS 합성 실패, DB 조회 실패 등, speak 등 각자
+    st.warning 문구를 이미 갖고 있음)는 그대로 두고 건드리지 않는다 — 저것들은 그
     자리에서 뭐가 실패했는지 알려주는 게 사용자에게 더 유용하다. 이건 그 어디서도 안
     잡힌 완전히 예상 못한 예외(코드 버그, 새 화면 추가 시 놓친 분기 등)의 최후
-    방어선 — Streamlit 기본 동작(빨간 트레이스백을 화면에 그대로 노출)을 대신해서
-    render_error_notice()로 사용자에게는 "잠시 후 재시도 해주시길 바랍니다."만
-    보여주고, 실제 예외는 서버 콘솔에만 남긴다(EC-05와 같은 정신).
     """
     try:
         fn()
@@ -562,12 +347,6 @@ def _exit_admin() -> None:
     for k in ("_admin_via_voice", "_admin_verified", "_admin_challenge", "_admin_warm_started"):
         st.session_state.pop(k, None)
     if _MAIN_PAGE is not None:
-        # 2026-08-28 요청 — "← 메인으로"를 누르면 접근 URL 그대로,
-        # 즉 https://chefear.store/?key=<ACCESS_GATE_TOKEN> 로 돌아가야 한다.
-        # st.switch_page()는 기본적으로 모든 쿼리파라미터를 지우는데(query_params=None),
-        # 그러면 복귀한 메인 URL에 ?key=가 없어서 그 상태로 새로고침하면 세션 플래그
-        # (_access_ok)까지 날아가 소개페이지 안내로 막힌다(_access_gate_ok() 참고).
-        # 토큰을 다시 붙여 넘긴다 — 토큰 미설정 배포는 게이트가 fail-open이라 안 붙인다.
         access_token = os.environ.get("ACCESS_GATE_TOKEN", "").strip()
         st.switch_page(_MAIN_PAGE, query_params={"key": access_token} if access_token else None)
 
@@ -603,9 +382,6 @@ def _run_enroll_page() -> None:
 
 
 if __name__ == "__main__":
-    # 2026-08-27 — 관리자 페이지(docs/specs/admin_recipe_approval.md)를 독립 Streamlit
-    # 페이지로 분리했다. st.set_page_config()는 st.navigation()보다 먼저, 스크립트당
-    # 한 번만 불러야 한다.
     st.set_page_config(page_title="ChefEar", page_icon="🍲", layout="centered", initial_sidebar_state="collapsed")
 
     _MAIN_PAGE = st.Page(lambda: _run_with_error_notice("main()", main), title="ChefEar", default=True)

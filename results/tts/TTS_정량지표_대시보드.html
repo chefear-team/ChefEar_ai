@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TTS 사운드체크</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    color-scheme: light;
+    --page:        #eef1f0;
+    --surface:     #ffffff;
+    --surface-2:   #e5ebe8;
+    --ink:         #10161a;
+    --ink-2:       #47555a;
+    --ink-muted:   #7f8d8f;
+    --grid:        #d7ded9;
+    --border:      rgba(16,22,26,0.12);
+    --border-strong: rgba(16,22,26,0.22);
+
+    --base:        #3d6fb0;
+    --base-wash:   #e4ecf7;
+    --tuned:       #c8722a;
+    --tuned-wash:  #f8ead9;
+    --tuned2:      #1f8f74;
+    --tuned2-wash: #dcf0ea;
+
+    --good:        #1f8f4f;
+    --good-wash:   #e0f3e6;
+    --warn:        #c98a1f;
+    --warn-wash:   #f8edd8;
+    --critical:    #c2433f;
+    --critical-wash: #f8e1df;
+
+    --font-display: 'IBM Plex Sans KR', 'Malgun Gothic', 'Apple SD Gothic Neo', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', 'Consolas', ui-monospace, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --page:        #0c1012;
+      --surface:     #161a1c;
+      --surface-2:   #1d2224;
+      --ink:         #eef2f0;
+      --ink-2:       #b7c1c0;
+      --ink-muted:   #7c8886;
+      --grid:        #272d2f;
+      --border:      rgba(255,255,255,0.11);
+      --border-strong: rgba(255,255,255,0.20);
+
+      --base:        #6f9fdb;
+      --base-wash:   #1b2c40;
+      --tuned:       #e2955c;
+      --tuned-wash:  #3a2a18;
+      --tuned2:      #3fbd9c;
+      --tuned2-wash: #123a30;
+
+      --good:        #3fbd6f;
+      --good-wash:   #123a20;
+      --warn:        #e0ac4a;
+      --warn-wash:   #3a2c12;
+      --critical:    #e2716c;
+      --critical-wash: #3a1917;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --page:        #0c1012;
+    --surface:     #161a1c;
+    --surface-2:   #1d2224;
+    --ink:         #eef2f0;
+    --ink-2:       #b7c1c0;
+    --ink-muted:   #7c8886;
+    --grid:        #272d2f;
+    --border:      rgba(255,255,255,0.11);
+    --border-strong: rgba(255,255,255,0.20);
+
+    --base:        #6f9fdb;
+    --base-wash:   #1b2c40;
+    --tuned:       #e2955c;
+    --tuned-wash:  #3a2a18;
+    --tuned2:      #3fbd9c;
+    --tuned2-wash: #123a30;
+
+    --good:        #3fbd6f;
+    --good-wash:   #123a20;
+    --warn:        #e0ac4a;
+    --warn-wash:   #3a2c12;
+    --critical:    #e2716c;
+    --critical-wash: #3a1917;
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    margin:0;
+    background:var(--page);
+    color:var(--ink);
+    font-family:var(--font-display);
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{ max-width:1120px; margin:0 auto; padding:44px 24px 80px; }
+
+  /* ---------- header ---------- */
+  header{ display:flex; flex-direction:column; gap:6px; margin-bottom:20px; }
+  .eyebrow{
+    font-family:var(--font-mono); font-size:12px; letter-spacing:0.08em; text-transform:uppercase;
+    color:var(--ink-muted);
+  }
+  h1{
+    font-size:clamp(26px,3.4vw,36px); margin:2px 0 0; font-weight:700; letter-spacing:-0.01em;
+    text-wrap:balance;
+  }
+  .subtitle{ color:var(--ink-2); font-size:15px; max-width:64ch; margin-top:6px; }
+
+  /* waveform divider — bar heights echo the actual audio_duration_s spread in the vits-kss run */
+  .waveform{ display:flex; align-items:flex-end; gap:3px; height:26px; margin:22px 0 30px; opacity:0.7; }
+  .waveform i{ display:block; flex:1; background:var(--grid); border-radius:1px; }
+
+  /* ---------- kpi strip ---------- */
+  .kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin-bottom:38px; }
+  .kpi{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:16px 18px;
+  }
+  .kpi .k-label{ font-size:12px; color:var(--ink-muted); letter-spacing:0.02em; }
+  .kpi .k-value{
+    font-family:var(--font-mono); font-size:24px; font-weight:600; margin-top:4px;
+    font-variant-numeric:tabular-nums;
+  }
+  .kpi .k-sub{ font-size:12.5px; color:var(--ink-2); margin-top:4px; }
+  .kpi.tone-good .k-value{ color:var(--good); }
+  .kpi.tone-warn .k-value{ color:var(--warn); }
+  .kpi.tone-critical .k-value{ color:var(--critical); }
+
+  /* ---------- sections ---------- */
+  section{ margin-bottom:52px; }
+  .section-head{ margin-bottom:18px; }
+  .section-head .eyebrow{ margin-bottom:2px; }
+  h2{ font-size:21px; margin:0; font-weight:700; }
+  .section-note{ color:var(--ink-2); font-size:13.5px; margin-top:6px; max-width:76ch; }
+
+  .group{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:22px 22px 24px; margin-bottom:18px;
+  }
+  .group-title{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .group-title h3{ font-size:16px; margin:0; font-weight:600; }
+  .group-title .meta{ font-family:var(--font-mono); font-size:12px; color:var(--ink-muted); }
+
+  /* ---------- table ---------- */
+  .table-scroll{ overflow-x:auto; }
+  table{ border-collapse:collapse; width:100%; min-width:560px; font-size:13.5px; }
+  thead th{
+    text-align:right; font-weight:500; font-size:11.5px; letter-spacing:0.03em; text-transform:uppercase;
+    color:var(--ink-muted); padding:0 10px 8px; border-bottom:1px solid var(--border-strong);
+  }
+  thead th:first-child, tbody td:first-child{ text-align:left; }
+  tbody td{
+    padding:10px 10px; border-bottom:1px solid var(--border);
+    font-family:var(--font-mono); font-variant-numeric:tabular-nums; text-align:right;
+  }
+  tbody td:first-child{ font-family:var(--font-display); }
+  tbody tr:last-child td{ border-bottom:none; }
+  .model-name{ font-weight:600; }
+  .model-tag{ display:block; font-family:var(--font-mono); font-size:11px; color:var(--ink-muted); font-weight:400; margin-top:1px; }
+  .delta{ font-size:11.5px; margin-left:6px; }
+  .delta.up{ color:var(--critical); }
+  .delta.down{ color:var(--good); }
+  .delta.flat{ color:var(--ink-muted); }
+
+  .pill{
+    display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:999px;
+    font-family:var(--font-display); font-size:12px; font-weight:600; white-space:nowrap;
+  }
+  .pill::before{ content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill.good{ background:var(--good-wash); color:var(--good); }
+  .pill.warn{ background:var(--warn-wash); color:var(--warn); }
+  .pill.critical{ background:var(--critical-wash); color:var(--critical); }
+  .pill.neutral{ background:var(--surface-2); color:var(--ink-2); }
+
+  .group-note{ font-size:12.5px; color:var(--ink-muted); margin-top:12px; }
+  .group-note b{ color:var(--ink-2); font-weight:600; }
+
+  /* ---------- charts ---------- */
+  .chart-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; }
+  .chart-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:16px 16px 10px; position:relative;
+  }
+  .chart-card h4{ font-size:13px; margin:0 0 2px; font-weight:600; }
+  .chart-card .chart-unit{ font-size:11px; color:var(--ink-muted); font-family:var(--font-mono); margin-bottom:6px; }
+  .chart-card svg{ display:block; width:100%; height:auto; overflow:visible; }
+  .chart-tick{ font-family:var(--font-mono); font-size:9.5px; fill:var(--ink-muted); }
+  .chart-line{ fill:none; stroke-width:2.25; stroke-linecap:round; stroke-linejoin:round; }
+  .chart-area{ opacity:0.10; }
+  .chart-dot{ transition:r 0.12s ease; }
+  .chart-dot.end{ }
+  .chart-hitband{ fill:transparent; cursor:crosshair; }
+  .chart-guide{ stroke:var(--border-strong); stroke-width:1; stroke-dasharray:3 3; opacity:0; pointer-events:none; }
+  .chart-endlabel{ font-family:var(--font-mono); font-size:11px; font-weight:600; }
+  .chart-line.chart-line-2{ stroke-dasharray:5 3; }
+
+  .chart-legend{ display:flex; gap:14px; margin-bottom:4px; }
+  .chart-legend .chart-legend-item{ display:flex; align-items:center; gap:5px; font-size:11px; color:var(--ink-2); font-family:var(--font-mono); }
+  .chart-legend .chart-legend-swatch{ width:10px; height:2.25px; border-radius:2px; flex:none; }
+
+  .chart-tip{
+    position:absolute; pointer-events:none; z-index:5; transform:translate(-50%,-110%);
+    background:var(--ink); color:var(--page); font-family:var(--font-mono); font-size:11.5px;
+    padding:5px 9px; border-radius:6px; white-space:nowrap; opacity:0; transition:opacity 0.1s ease;
+    font-variant-numeric:tabular-nums;
+  }
+  .chart-tip.show{ opacity:0.96; }
+
+  .stat-cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .stat-card{
+    background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:14px 16px;
+  }
+  .stat-card .s-label{ font-size:12px; color:var(--ink-muted); }
+  .stat-card .s-value{ font-family:var(--font-mono); font-size:20px; font-weight:600; margin-top:3px; font-variant-numeric:tabular-nums; }
+
+  /* ---------- footer ---------- */
+  footer{
+    border-top:1px solid var(--border); padding-top:22px; margin-top:8px;
+    font-size:12.5px; color:var(--ink-muted);
+  }
+  footer h5{ font-size:12px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-2); margin:0 0 8px; }
+  footer ul{ margin:0 0 16px; padding-left:18px; }
+  footer code{ font-family:var(--font-mono); background:var(--surface-2); padding:1px 5px; border-radius:4px; font-size:11.5px; }
+  footer .warn-box{
+    background:var(--warn-wash); color:var(--ink); border:1px solid var(--border); border-radius:10px;
+    padding:12px 14px; margin-bottom:16px; font-size:12.5px;
+  }
+  footer .warn-box b{ color:var(--warn); }
+
+  @media (prefers-reduced-motion:reduce){
+    .chart-dot, .chart-tip{ transition:none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">recipe-tts · 정량 평가 로그</div>
+    <h1>TTS 사운드체크</h1>
+    <p class="subtitle">파인튜닝 완료 모델과 base 모델을 동일 조건에서 비교하고, 학습 진행에 따른 WER·RTF·Latency 1차 지표를 기록합니다. 평가 구간 2026-08-11 ~ 2026-08-14, Whisper STT 라운드트립 기준 WER.</p>
+    <p style="font-family:var(--font-mono); font-size:12px; margin-top:8px;">
+      <a href="음성샘플_듣기.html" style="color:var(--base);">→ 실사용 모델(Qwen3-TTS QLoRA) 음성 샘플 직접 들어보기</a>
+    </p>
+  </header>
+
+  <div class="waveform" aria-hidden="true">
+    <i style="height:38%"></i><i style="height:62%"></i><i style="height:44%"></i><i style="height:80%"></i>
+    <i style="height:30%"></i><i style="height:55%"></i><i style="height:70%"></i><i style="height:26%"></i>
+    <i style="height:48%"></i><i style="height:90%"></i><i style="height:34%"></i><i style="height:58%"></i>
+    <i style="height:22%"></i><i style="height:66%"></i><i style="height:41%"></i><i style="height:74%"></i>
+    <i style="height:52%"></i><i style="height:19%"></i><i style="height:64%"></i><i style="height:36%"></i>
+    <i style="height:85%"></i><i style="height:28%"></i><i style="height:50%"></i><i style="height:60%"></i>
+    <i style="height:32%"></i><i style="height:76%"></i><i style="height:24%"></i><i style="height:46%"></i>
+    <i style="height:68%"></i><i style="height:40%"></i>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi tone-good">
+      <div class="k-label">🎯 실사용 모델(ChefEar epoch-13)</div>
+      <div class="k-value">CER 0.00</div>
+      <div class="k-sub">MOS 4.67(전체 1위, n=130·13인) · 단, CPU 26.1초로 5초 목표 FAIL</div>
+    </div>
+    <div class="kpi tone-good">
+      <div class="k-label">전 모델 최저 WER</div>
+      <div class="k-value">0.27</div>
+      <div class="k-sub">Base · QLoRA FT 공동 (동일 30문항)</div>
+    </div>
+    <div class="kpi tone-critical">
+      <div class="k-label">Full FT 회귀 폭</div>
+      <div class="k-value">+78%</div>
+      <div class="k-sub">WER 상대 악화 · CER은 +175% (0.08→0.22)로 더 큼</div>
+    </div>
+    <div class="kpi tone-good">
+      <div class="k-label">QLoRA FT vs Base</div>
+      <div class="k-value">오차범위</div>
+      <div class="k-sub">WER ▲0.00 · CER ▲0.04 · Acc ▼0.5%p — 팀원 재현(n=100)에서도 동등</div>
+    </div>
+    <div class="kpi">
+      <div class="k-label">실시간(RTF&lt;1) 처리</div>
+      <div class="k-value">vits-kss</div>
+      <div class="k-sub">Qwen3·Chatterbox는 아직 1.0~1.7×</div>
+    </div>
+    <div class="kpi tone-critical">
+      <div class="k-label">Qwen3 QLoRA 붕괴 지점</div>
+      <div class="k-value">epoch 7~8</div>
+      <div class="k-sub">WER 0.24→1.36 급락 (A100 독립 실행, KSS 문장)</div>
+    </div>
+  </div>
+
+  <!-- ============ SECTION 1 — COMPARISON TABLES ============ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">[모델] 파인튜닝 완료 + base 대비 동일 조건 비교표</div>
+      <h2>Base 대비 비교</h2>
+      <p class="section-note">맨 위는 <b>지금 실제 쓰는 모델</b>(ChefEar epoch-13 vs base, 조리 안내 5문장), 아래는 별도 개인 실험 공간(<code>test/</code>)에서 같은 30문항(레시피 질의) 테스트셋·같은 STT 라운드트립 절차로 측정한 기록입니다. 표본 수가 다른 값은 표시했습니다.</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>🎯 지금 실제 쓰는 모델(ChefEar, proj1-a) — 체크포인트 이력 epoch-8 → epoch-13(현재)</h3>
+        <span class="meta">TTS→STT 라운드트립, 5문장(조리 안내 문장) 평균 CER</span>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card" id="c-chefear-cer-trend"><h4>CER 추이</h4><div class="chart-unit">TTS→STT 라운드트립, 5문장 평균</div></div>
+        <div class="chart-card" id="c-chefear-loss"><h4>학습 Loss</h4><div class="chart-unit">20에폭(0~19) 전체 학습 로그, 에폭별 마지막 step 기준</div></div>
+      </div>
+      <p class="group-note">실제 학습 로그(<code>Qwen3-1.7b LoRA 20Epoch.csv</code>, Colab, LoRA 20에폭 0~19)를 그대로 반영했습니다. Loss는 epoch 8까지 급격히 떨어지고(4.93→2.06) 이후 완만해지다 <b>epoch 13~14 근처(1.77→1.72)에서 사실상 수렴</b>합니다 — 지금 쓰는 epoch-13이 딱 수렴한 지점이라 CER 0.00과도 맞아떨어집니다.</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>품질 vs 배포 속도</h3>
+        <span class="meta">2026-08-19~20 실측</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>지표</th><th>실측값</th><th>목표</th><th>상태</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="model-name">CER (품질)</span></td>
+              <td>0.00 (5/5문장)</td>
+              <td>—</td>
+              <td><span class="pill good">PASS</span></td>
+            </tr>
+            <tr>
+              <td><span class="model-name">MOS (청취 품질)</span></td>
+              <td>4.67 (n=130, 13인 블라인드)</td>
+              <td>—</td>
+              <td><span class="pill good">전체 모델 1위</span></td>
+            </tr>
+            <tr>
+              <td><span class="model-name">CPU 추론 속도</span></td>
+              <td>26.11초 평균</td>
+              <td>5.0초</td>
+              <td><span class="pill critical">FAIL (5.2배)</span></td>
+            </tr>
+            <tr>
+              <td><span class="model-name">GPU 추론 속도</span></td>
+              <td>5.21초 (SDPA + torch.compile)</td>
+              <td>5.0초</td>
+              <td><span class="pill warn">근접 FAIL</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="group-note">품질(CER·MOS)은 해결됐지만 <b>HF Spaces CPU 무료 티어 배포 목표(5초)는 아직 미달</b>입니다. flash-attn은 환경(WSL, RTX 5070 Blackwell sm_120) 제약으로 설치 불가 확인됨 — 다음 대안 검토 중: GPU 인프라(Modal 등) · 0.6B 모델로 축소 · 문장 길이 버킷팅 · MAX_NEW_TOKENS 동적 조정.</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>CPU, GPU 추론 시간 — 문장별</h3>
+        <span class="meta">3회 반복 평균</span>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card" id="c-chefear-cpu"><h4>CPU vs GPU inference</h4><div class="chart-unit">목표 5.0초 — CPU(실선)는 4문장 전부 초과, GPU(점선)는 2문장만 초과</div></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>전체 모델 MOS 비교</h3>
+        <span class="meta">모델당 10문항, 블라인드, 평가자 13인 · 2026-08-24</span>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card" id="c-mos-all"><h4>MOS (1~5)</h4><div class="chart-unit">모델당 n=129~130(13인×10문항) — ChefEar epoch-13이 단독 1위(4.67), Base·QLoRA가 근접 2·3위</div></div>
+      </div>
+      <p class="group-note">지인 네트워크(가족·친구·자취생) 13명이 <code>mos 수집/*.csv</code>로 각자 7개 모델 × 10문항을 블라인드 채점한 결과를 합산했습니다(표본 909건). 2026-08-20 평가자 1인 예비 결과를 이 13인 결과로 교체했습니다 — 순위는 동일하지만 <b>Qwen3-TTS QLoRA FT의 MOS가 3.50→4.17로 크게 올라 Base(4.33)와의 차이가 사실상 오차범위 안으로 좁혀졌습니다</b>. 다만 13인 모두 지인 기반 편의 표본이라 무작위 사용자 평가는 아닙니다.</p>
+    </div>
+
+    <div class="group-note" style="padding:2px 4px 14px;">↑ 여기까지가 <b>지금 실제 쓰는 모델(ChefEar, proj1-a)</b> 이고, 아래부터는 별도 개인 실험 공간(<code>test/</code>)의 독립적인 기록입니다 — 서로 다른 저장소라 직접 연결되지 않습니다.</div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>Qwen3-TTS — Base vs 파인튜닝</h3>
+        <span class="meta">qwen3-tts-1.7b · checkpoint-epoch-2</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>모델</th><th>N</th><th>WER</th><th>CER</th><th>Accuracy</th><th>RTF</th><th>Latency (s)</th><th>MOS<sup>‡</sup></th><th>상태</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="model-name">Base</span><span class="model-tag">qwen3-tts-1.7b</span></td>
+              <td>30</td>
+              <td>0.27</td>
+              <td>0.08</td>
+              <td>73.1%</td>
+              <td>1.52</td>
+              <td>3.93</td>
+              <td>4.33</td>
+              <td><span class="pill neutral">기준선</span></td>
+            </tr>
+            <tr>
+              <td><span class="model-name">Full FT</span><span class="model-tag">finetuned-full</span></td>
+              <td>30</td>
+              <td>0.48 <span class="delta up">▲0.21</span></td>
+              <td>0.22 <span class="delta up">▲0.14</span></td>
+              <td>56.1% <span class="delta down">▼17.0%p</span></td>
+              <td>1.55</td>
+              <td>—</td>
+              <td>2.10 <span class="delta down">▼2.23</span></td>
+              <td><span class="pill critical">회귀</span></td>
+            </tr>
+            <tr>
+              <td><span class="model-name">LoRA FT</span><span class="model-tag">finetuned-lora</span></td>
+              <td>100 <sup></sup></td>
+              <td>0.26 <span class="delta down">▼0.01</span></td>
+              <td>0.10 <span class="delta up">▲0.02</span></td>
+              <td>74.5% <span class="delta down">▼0.5%p</span></td>
+              <td>—<sup>§</sup></td>
+              <td>—</td>
+              <td>—</td>
+              <td><span class="pill good">동등</span></td>
+            </tr>
+            <tr>
+              <td><span class="model-name">QLoRA FT</span><span class="model-tag">finetuned-qlora</span></td>
+              <td>100 <sup>*</sup></td>
+              <td>0.27 <span class="delta flat">▲0.00</span></td>
+              <td>0.12 <span class="delta up">▲0.04</span></td>
+              <td>72.6% <span class="delta down">▼0.5%p</span></td>
+              <td>1.51 <sup class="delta up">▼</sup></td>
+              <td>—</td>
+              <td>4.17 <span class="delta down">▼0.16</span></td>
+              <td><span class="pill warn">격차 축소(오차범위 근접)</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="group-note"><sup>§</sup> LoRA FT 행은 팀원(홍민하)이 <code>qwen3_finetune_eval_lora (1).csv</code>로 base·LoRA를 한 번에 페어 평가한 결과입니다(n=100, 비양자화 LoRA — <b>지금 ChefEar 프로젝트에서 실제 쓰는 방식과 같은 계열</b>). WER·CER·Accuracy 전부 base와 오차범위 안이라 회귀 없음으로 보입니다. RTF·Latency·MOS는 이 변형만 따로 측정된 적이 없어 비워뒀습니다(제 자체 실행값도 없음 — QLoRA 행처럼 대체할 제 값이 없습니다). <sup>*</sup> QLoRA 행은 팀원(홍민하) 독립 재현 실행으로 교체했습니다 — 같은 스크립트로 base·QLoRA를 한 번에 100문항씩 페어 평가해서 제 30문항 매칭 표본보다 표본이 크고 조건도 더 깔끔합니다 (WER 0.2742 / CER 0.1166 / Acc 72.6%, n=100). <sup>†</sup> RTF·Latency는 실행 환경(GPU 등)이 달라 홍민하 쪽 값(RTF 2.91)을 섞지 않고 제 자체 실행값을 그대로 뒀습니다 — RTF만큼은 이 표에서 base·Full FT와만 비교하세요. Full FT의 Latency는 원본 로그에 <code>synth_time_s</code>가 남지 않아 RTF만 확인 가능합니다. <sup>‡</sup> MOS는 지인 네트워크 13인이 모델명을 가린 블라인드 상태로 각 10문항씩 1~5점 채점해 합산한 결과입니다(n=129~130, 2026-08-24, <code>mos 수집/*.csv</code>) — 평가자 1인 예비 결과(2026-08-20)를 이 13인 결과로 교체했습니다. <b>QLoRA는 WER·CER뿐 아니라 MOS도 base와 거의 동등합니다(4.33→4.17, 차이 0.16은 표준오차 대비 유의하지 않음)</b> — 1인 예비 평가에서 보였던 뚜렷한 체감 품질 하락(4.60→3.50)은 표본이 늘며 재현되지 않았습니다.</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>Chatterbox — LoRA vs Full FT</h3>
+        <span class="meta">base 모델 미평가 · 동일 30문항 × 2회 반복</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>모델</th><th>N</th><th>WER</th><th>CER</th><th>Accuracy</th><th>RTF</th><th>상태</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="model-name">LoRA FT</span><span class="model-tag">chatterbox-finetuned-lora</span></td>
+              <td>60</td>
+              <td>1.43</td>
+              <td>1.42</td>
+              <td>0.0%</td>
+              <td>1.44</td>
+              <td><span class="pill critical">인식 실패</span></td>
+            </tr>
+            <tr>
+              <td><span class="model-name">Full FT</span><span class="model-tag">chatterbox-finetuned-full</span></td>
+              <td>60</td>
+              <td>1.59</td>
+              <td>1.53</td>
+              <td>0.0%</td>
+              <td>1.06</td>
+              <td><span class="pill critical">인식 실패</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="group-note">WER&gt;1.0은 STT가 원문과 무관한 문장을 인식했다는 뜻입니다 — 실제 생성 오디오도 발화 붕괴(반복·의미불명 음절) 다수. <b>base 대비 비교표는 base 합성 결과가 없어 작성하지 못했습니다.</b> 두 변형 모두 아직 배포 가능 수준이 아닙니다.</p>
+    </div>
+  </section>
+
+  <!-- ============ SECTION 2 — LINE CHARTS ============ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">[모델] 정량 지표 1차 기록 — CER·WER / MOS·RTF / Latency</div>
+      <h2>지표 추이</h2>
+      <p class="section-note">CER은 이번 기록부터 추가됐습니다 (STT 결과 vs 원문의 문자 단위 오류율). MOS는 아직 리스닝 테스트가 없어 값이 없습니다 (아래 참고 참조).</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>vits-kss — 에폭별 진행 (56 → 157)</h3>
+        <span class="meta">각 지점 n=30</span>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card" id="c-vits-wer"><h4>WER</h4><div class="chart-unit">단어 오류율, 낮을수록 좋음</div></div>
+        <div class="chart-card" id="c-vits-cer"><h4>CER</h4><div class="chart-unit">문자 단위 오류율, 낮을수록 좋음</div></div>
+        <div class="chart-card" id="c-vits-acc"><h4>Accuracy</h4><div class="chart-unit">1 − WER (clip 0), 높을수록 좋음</div></div>
+        <div class="chart-card" id="c-vits-rtf"><h4>RTF</h4><div class="chart-unit">합성시간 / 오디오길이, &lt;1이면 실시간보다 빠름</div></div>
+        <div class="chart-card" id="c-vits-lat"><h4>Latency</h4><div class="chart-unit">평균 합성 소요시간 (s)</div></div>
+      </div>
+      <p class="group-note">epoch 149에서 WER·Latency가 튀는 구간(과적합/붕괴 의심)이 있고, epoch 157은 평균 오디오 길이가 8.1~8.4s → 4.4s로 급감했습니다 — 발화가 짧아져 latency가 함께 줄었을 가능성이 있어 다음 라운드에서 원인 확인이 필요합니다.</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>Qwen3-TTS — Base → Full FT → LoRA FT → QLoRA FT</h3>
+        <span class="meta">동일 30~100문항</span>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card" id="c-qwen-wer"><h4>WER</h4><div class="chart-unit">낮을수록 좋음</div></div>
+        <div class="chart-card" id="c-qwen-cer"><h4>CER</h4><div class="chart-unit">낮을수록 좋음</div></div>
+        <div class="chart-card" id="c-qwen-acc"><h4>Accuracy</h4><div class="chart-unit">높을수록 좋음</div></div>
+        <div class="chart-card" id="c-qwen-rtf"><h4>RTF</h4><div class="chart-unit">&lt;1이면 실시간보다 빠름 · LoRA FT는 RTF 미측정이라 제외</div></div>
+      </div>
+      <p class="group-note">LoRA FT(비양자화, ChefEar가 실제 쓰는 방식과 같은 계열)는 WER·CER·Accuracy 다 base와 거의 동일 — QLoRA와 마찬가지로 회귀 없음. RTF 차트에는 LoRA FT를 넣지 않았습니다(제가 직접 잰 값이 없어서, 팀원 환경 값을 다른 세 점과 섞으면 왜곡됨).</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>Qwen3-TTS QLoRA — A100 독립 실행 (epoch 0 → 8)</h3>
+        <span class="meta"> 3번째 별도 실행 · KSS 일반 문장 20개 · 레시피 질의 아님</span>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card" id="c-a100-wer"><h4>WER</h4><div class="chart-unit">낮을수록 좋음</div></div>
+        <div class="chart-card" id="c-a100-cer"><h4>CER</h4><div class="chart-unit">낮을수록 좋음</div></div>
+        <div class="chart-card" id="c-a100-acc"><h4>Accuracy</h4><div class="chart-unit">높을수록 좋음</div></div>
+        <div class="chart-card" id="c-a100-rtf"><h4>RTF</h4><div class="chart-unit">Colab A100 기준, 다른 그래프와 직접 비교 금지</div></div>
+      </div>
+      <p class="group-note">위 Base/Full/QLoRA 그래프와는 <b>완전히 별개의 체크포인트·테스트셋</b>이라 겹치지 않습니다 — 저 그래프가 "epoch-2 한 시점의 품질"을 보여준다면, 이 그래프는 "같은 QLoRA 학습이 얼마나 더 가면 무너지는지"를 보여줍니다. epoch 6까지는 완만히 나빠지다가 <b>epoch 7부터 WER·CER이 급격히 튀며 붕괴</b>합니다 — 다음 학습에서 epoch 6 근처를 조기 종료 지점으로 검토해볼 만합니다. epoch별 표본 수가 20~60건으로 고르지 않고(같은 20문항을 1~3회 반복), RTF는 Colab A100 환경이라 다른 차트와 절대 비교하지 마세요.</p>
+    </div>
+
+    <div class="group">
+      <div class="group-title">
+        <h3>Chatterbox — LoRA FT → Full FT</h3>
+        <span class="meta">동일 30문항 × 2회</span>
+      </div>
+      <div class="chart-grid">
+        <div class="chart-card" id="c-cb-wer"><h4>WER</h4><div class="chart-unit">1.0을 넘으면 인식 실패 수준</div></div>
+        <div class="chart-card" id="c-cb-cer"><h4>CER</h4><div class="chart-unit">1.0을 넘으면 인식 실패 수준</div></div>
+        <div class="chart-card" id="c-cb-rtf"><h4>RTF</h4><div class="chart-unit">&lt;1이면 실시간보다 빠름</div></div>
+        <div class="stat-card" style="align-self:start;">
+          <div class="s-label">Accuracy (LoRA / Full)</div>
+          <div class="s-value">0.0% / 0.0%</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="warn-box">
+      <b>⚠ MOS 측정 방법 및 남은 한계</b> — <code>MOS_청취평가.html</code> 도구로 지인 네트워크 <b>13인</b>(가족·친구·자취생)이 모델당 10문항씩, 모델명을 가린 블라인드 상태로 2026-08-24 채점한 결과를 합산했습니다(<code>mos 수집/*.csv</code>, n=129~130/모델, 총 909건). 2026-08-20 평가자 1인 예비 결과는 이 13인 결과로 전면 교체했습니다. 다만 13인 모두 팀원 지인 기반 편의 표본이라 <b>무작위 일반 사용자 평가는 아닙니다</b> — 참고 지표로 활용 권장. CER은 기존 로그의 <code>text</code>(원문) ↔ <code>hypothesis</code>(STT 결과)를 문자 단위 Levenshtein 거리로 재계산해 추가했습니다.
+    </div>
+    <h5>데이터 출처</h5>
+    <ul>
+      <li><code>results/eval_qwen3_tts/eval.csv</code> — Qwen3-TTS base (qwen3-tts-1.7b)</li>
+      <li><code>results/train_tts_qwen3/finetuned_eval.csv</code> — Qwen3-TTS full FT · QLoRA FT</li>
+      <li><code>results/train_tts_chatterbox/finetuned_eval.csv</code> — Chatterbox LoRA FT · full FT</li>
+      <li><code>results/eval_tts_comparison/history.csv</code>, <code>wer_rtf_epoch{56,57,58,100,149,157}.csv</code> — vits-kss 에폭별 기록</li>
+      <li>CER은 위 파일들에 <code>text</code>/<code>hypothesis</code> 컬럼 기준 문자 단위 Levenshtein 거리로 직접 계산 (원본 로그엔 없던 값) — <code>*_cer.csv</code>로 같은 폴더에 저장</li>
+      <li>Qwen3-TTS QLoRA FT 지점 — 팀원(홍민하) 독립 재현 실행, <code>qwen3_finetune_eval_qlora (2).csv</code> (체크포인트 <code>qwen3_smoketest_finetuned/checkpoint-epoch-2</code>, 별도 환경, 동일 100문항 base+QLoRA 페어 평가)</li>
+      <li>Qwen3-TTS QLoRA epoch 0~8 붕괴 추이 — 팀원(홍민하) 3번째 독립 실행, <code>qwen3_finetune_eval_a100_qlora.csv</code> (체크포인트 <code>qwen3_tts_a100_qlora/checkpoints/checkpoint-epoch-{0..8}</code>, Colab A100, KSS 문장 20개)</li>
+      <li>ChefEar 실사용 모델(epoch-13) — proj1-a 저장소 <code>results/tts/roundtrip_cer.csv</code>·<code>cpu_inference_test.csv</code>, GPU 수치는 <code>src/tts/README.md</code> 실측 기록 인용</li>
+      <li>학습 Loss 곡선 — <code>Qwen3-1.7b LoRA 20Epoch.csv</code>(Colab 학습 로그 원본, LoRA·20에폭, epoch-13이 여기서 저장됨)</li>
+      <li>MOS — <code>mos 수집/*.csv</code> 13개 파일, <code>MOS_청취평가.html</code>에서 평가자 13인이 각자 내보낸 결과 (전 7세트 × 10문항 = 파일당 70건, 총 909건, 2026-08-24). 2026-08-20 <code>mos_ratings_2026-08-20-16-29-39.csv</code>(평가자 1인, 70건) 예비 결과는 이 13인 합산 결과로 교체됨</li>
+    </ul>
+    <div>생성 시각: 2026-08-21 · MOS 갱신: 2026-08-25(13인 합산) · WER/CER = Whisper STT 결과와 원문 질의 텍스트 간 단어/문자 오류율 · RTF = synth_time_s / audio_duration_s</div>
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  function fmt(v, d){ return v.toFixed(d==null?2:d); }
+
+  function buildChart(container, categories, values, opts){
+    opts = opts || {};
+    var color = opts.color || 'var(--tuned)';
+    var fmtDigits = opts.digits == null ? 2 : opts.digits;
+    var valueSuffix = opts.suffix || '';
+    var scaleValues = opts.scaleValues || values; // values used for percent display, e.g. accuracy*100
+    var s2 = opts.series2 || null; // { values, color, label }
+
+    var W = 640, H = 220, ml = 40, mr = 14, mt = 14, mb = 26;
+    var plotW = W - ml - mr, plotH = H - mt - mb;
+    var n = categories.length;
+
+    var maxV = Math.max.apply(null, s2 ? values.concat(s2.values) : values);
+    var yMax = maxV <= 0 ? 1 : maxV * 1.22;
+    var yMin = 0;
+
+    function xAt(i){ return n > 1 ? ml + plotW * (i / (n - 1)) : ml + plotW / 2; }
+    function yAt(v){ return mt + plotH * (1 - (v - yMin) / (yMax - yMin)); }
+
+    var ticks = 4, gridLines = '', tickLabels = '';
+    for (var t = 0; t <= ticks; t++){
+      var v = yMin + (yMax - yMin) * (t / ticks);
+      var y = yAt(v);
+      gridLines += '<line class="chart-grid-line" x1="' + ml + '" x2="' + (W - mr) + '" y1="' + y + '" y2="' + y + '" stroke="var(--grid)" stroke-width="1"></line>';
+      tickLabels += '<text class="chart-tick" x="' + (ml - 8) + '" y="' + (y + 3) + '" text-anchor="end">' + fmt(v, fmtDigits) + '</text>';
+    }
+
+    var xLabels = '';
+    var pts = [], pts2 = [];
+    for (var i = 0; i < n; i++){
+      var x = xAt(i), y = yAt(values[i]);
+      pts.push([x, y]);
+      if (s2) pts2.push([x, yAt(s2.values[i])]);
+      xLabels += '<text class="chart-tick" x="' + x + '" y="' + (H - mb + 16) + '" text-anchor="middle">' + categories[i] + '</text>';
+    }
+
+    function toPath(p){ return 'M' + p.map(function(pt){ return pt[0].toFixed(1) + ',' + pt[1].toFixed(1); }).join(' L'); }
+    var linePath = toPath(pts);
+    var areaPath = linePath + ' L' + pts[pts.length - 1][0].toFixed(1) + ',' + yAt(yMin).toFixed(1) +
+                   ' L' + pts[0][0].toFixed(1) + ',' + yAt(yMin).toFixed(1) + ' Z';
+    var linePath2 = s2 ? toPath(pts2) : '';
+
+    function endLabelDy(mainY, otherY){
+      // keep the two end-labels from colliding when the lines finish close together,
+      // and from spilling into the x-axis category labels below the plot
+      var dy = (otherY == null || mainY <= otherY) ? -10 : 16;
+      if (dy > 0 && mainY + dy > H - mb - 2) dy = -10;
+      if (dy < 0 && mainY + dy < mt + 10) dy = 16;
+      return dy;
+    }
+
+    var dots = '', bands = '';
+    var bandW = plotW / n;
+    for (var j = 0; j < n; j++){
+      var p = pts[j];
+      var isEnd = j === n - 1;
+      dots += '<circle class="chart-dot' + (isEnd ? ' end' : '') + '" data-i="' + j + '" cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + (isEnd ? 4.5 : 3) + '" fill="var(--surface)" stroke="' + color + '" stroke-width="2"></circle>';
+      if (isEnd){
+        var dy1 = endLabelDy(p[1], s2 ? pts2[j][1] : null);
+        dots += '<text class="chart-endlabel" x="' + (p[0] - 6).toFixed(1) + '" y="' + (p[1] + dy1).toFixed(1) + '" text-anchor="end" style="fill:' + color + '">' + fmt(scaleValues[j], fmtDigits) + valueSuffix + '</text>';
+      }
+      if (s2){
+        var p2 = pts2[j];
+        dots += '<circle class="chart-dot' + (isEnd ? ' end' : '') + '" data-i="' + j + '" data-s="2" cx="' + p2[0].toFixed(1) + '" cy="' + p2[1].toFixed(1) + '" r="' + (isEnd ? 4.5 : 3) + '" fill="var(--surface)" stroke="' + s2.color + '" stroke-width="2"></circle>';
+        if (isEnd){
+          var dy2 = endLabelDy(p2[1], p[1]);
+          dots += '<text class="chart-endlabel" x="' + (p2[0] - 6).toFixed(1) + '" y="' + (p2[1] + dy2).toFixed(1) + '" text-anchor="end" style="fill:' + s2.color + '">' + fmt(s2.values[j], fmtDigits) + valueSuffix + '</text>';
+        }
+      }
+      var bx = ml + bandW * j;
+      bands += '<rect class="chart-hitband" data-i="' + j + '" x="' + bx.toFixed(1) + '" y="' + mt + '" width="' + bandW.toFixed(1) + '" height="' + plotH + '"></rect>';
+    }
+
+    var legend = '';
+    if (s2){
+      legend = '<div class="chart-legend">' +
+        '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + color + '"></span>' + (opts.label || 'series 1') + '</span>' +
+        '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + s2.color + '"></span>' + (s2.label || 'series 2') + '</span>' +
+      '</div>';
+    }
+
+    var guideX = pts[0][0];
+    var svg = '' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img">' +
+        gridLines +
+        '<line class="chart-guide" x1="' + guideX + '" x2="' + guideX + '" y1="' + mt + '" y2="' + (H - mb) + '"></line>' +
+        (s2 ? '' : '<path class="chart-area" d="' + areaPath + '" fill="' + color + '"></path>') +
+        '<path class="chart-line" d="' + linePath + '" stroke="' + color + '"></path>' +
+        (s2 ? '<path class="chart-line chart-line-2" d="' + linePath2 + '" stroke="' + s2.color + '"></path>' : '') +
+        dots +
+        tickLabels +
+        xLabels +
+        bands +
+      '</svg>' +
+      '<div class="chart-tip"></div>';
+
+    container.insertAdjacentHTML('beforeend', legend + svg);
+
+    var svgEl = container.querySelector('svg');
+    var tip = container.querySelector('.chart-tip');
+    var guide = svgEl.querySelector('.chart-guide');
+    var dotEls = svgEl.querySelectorAll('.chart-dot:not([data-s])');
+    var dotEls2 = svgEl.querySelectorAll('.chart-dot[data-s="2"]');
+
+    container.style.position = 'relative';
+
+    function svgToPixel(sx, sy){
+      var r = svgEl.getBoundingClientRect();
+      var cr = container.getBoundingClientRect();
+      return {
+        x: (sx / W) * r.width + (r.left - cr.left),
+        y: (sy / H) * r.height + (r.top - cr.top)
+      };
+    }
+
+    svgEl.querySelectorAll('.chart-hitband').forEach(function(band){
+      band.addEventListener('pointerenter', show);
+      band.addEventListener('pointermove', show);
+      band.addEventListener('pointerleave', hide);
+
+      function show(){
+        var i = +band.getAttribute('data-i');
+        var p = pts[i];
+        var px = svgToPixel(p[0], p[1]);
+        tip.style.left = px.x + 'px';
+        tip.style.top = px.y + 'px';
+        tip.textContent = s2 ?
+          categories[i] + '  ' + (opts.label || 'series 1') + ' ' + fmt(scaleValues[i], fmtDigits) + valueSuffix + ' / ' + (s2.label || 'series 2') + ' ' + fmt(s2.values[i], fmtDigits) + valueSuffix :
+          categories[i] + '  ' + fmt(scaleValues[i], fmtDigits) + valueSuffix;
+        tip.classList.add('show');
+        guide.setAttribute('x1', p[0]); guide.setAttribute('x2', p[0]);
+        guide.style.opacity = 1;
+        dotEls.forEach(function(d, idx){ d.setAttribute('r', idx === i ? 5.5 : (idx === n - 1 ? 4.5 : 3)); });
+        dotEls2.forEach(function(d, idx){ d.setAttribute('r', idx === i ? 5.5 : (idx === n - 1 ? 4.5 : 3)); });
+      }
+      function hide(){
+        tip.classList.remove('show');
+        guide.style.opacity = 0;
+        dotEls.forEach(function(d, idx){ d.setAttribute('r', idx === n - 1 ? 4.5 : 3); });
+        dotEls2.forEach(function(d, idx){ d.setAttribute('r', idx === n - 1 ? 4.5 : 3); });
+      }
+    });
+  }
+
+  // ---- data ----
+  var vitsEpochs = ['56','57','58','100','149','157'];
+  var vitsWer    = [2.37,1.23,1.32,1.12,3.45,0.89];
+  var vitsCer    = [2.74,0.95,2.03,1.64,4.30,0.59];
+  var vitsAcc    = [0.04,0.06,0.03,0.09,0.04,0.21];
+  var vitsRtf    = [0.66,0.60,0.63,0.55,0.19,0.44];
+  var vitsLat    = [5.31,4.92,5.12,4.63,1.59,1.99];
+
+  var qwenCats4 = ['Base','Full FT','LoRA FT','QLoRA FT'];
+  var qwenWer  = [0.27,0.48,0.26,0.27];
+  var qwenCer  = [0.08,0.22,0.10,0.12];
+  var qwenAcc  = [0.731,0.561,0.745,0.726];
+  var qwenCatsRtf = ['Base','Full FT','QLoRA FT'];
+  var qwenRtf  = [1.52,1.55,1.51]; // RTF는 환경 차이로 팀원 재현 데이터를 섞지 않고 그대로 유지, LoRA FT는 제 실측값이 없어 제외
+
+  var cbCats = ['LoRA FT','Full FT'];
+  var cbWer  = [1.43,1.59];
+  var cbCer  = [1.42,1.53];
+  var cbRtf  = [1.44,1.06];
+
+  var a100Epochs = ['0','1','2','3','4','5','6','7','8'];
+  var a100Wer    = [0.13,0.15,0.17,0.19,0.16,0.19,0.24,0.37,1.36];
+  var a100Cer    = [0.03,0.04,0.04,0.05,0.05,0.06,0.08,0.49,1.57];
+  var a100Acc    = [0.87,0.85,0.83,0.81,0.84,0.81,0.76,0.67,0.45];
+  var a100Rtf    = [2.62,3.36,4.80,4.54,3.94,3.88,3.12,3.13,3.03];
+
+  buildChart(document.getElementById('c-vits-wer'), vitsEpochs, vitsWer, { color:'var(--tuned)', digits:2 });
+  buildChart(document.getElementById('c-vits-cer'), vitsEpochs, vitsCer, { color:'var(--critical)', digits:2 });
+  buildChart(document.getElementById('c-vits-acc'), vitsEpochs, vitsAcc.map(function(v){return v*100;}), { color:'var(--good)', digits:1, suffix:'%' });
+  buildChart(document.getElementById('c-vits-rtf'), vitsEpochs, vitsRtf, { color:'var(--base)', digits:2 });
+  buildChart(document.getElementById('c-vits-lat'), vitsEpochs, vitsLat, { color:'var(--tuned2)', digits:2, suffix:'s' });
+
+  buildChart(document.getElementById('c-qwen-wer'), qwenCats4, qwenWer, { color:'var(--tuned)', digits:2 });
+  buildChart(document.getElementById('c-qwen-cer'), qwenCats4, qwenCer, { color:'var(--critical)', digits:2 });
+  buildChart(document.getElementById('c-qwen-acc'), qwenCats4, qwenAcc.map(function(v){return v*100;}), { color:'var(--good)', digits:1, suffix:'%' });
+  buildChart(document.getElementById('c-qwen-rtf'), qwenCatsRtf, qwenRtf, { color:'var(--base)', digits:2 });
+
+  var chefearCerCats = ['epoch-8','epoch-13'];
+  var chefearCerVals = [1.37,0.00];
+  buildChart(document.getElementById('c-chefear-cer-trend'), chefearCerCats, chefearCerVals, { color:'var(--critical)', digits:2 });
+
+  var chefearLossEpochs = ['0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19'];
+  var chefearLoss = [4.9324,4.4547,3.8453,3.2764,2.9922,2.7342,2.3995,2.2144,2.0640,1.9398,1.8717,1.8512,1.8362,1.7692,1.7211,1.7326,1.7726,1.6990,1.7488,1.6965];
+  buildChart(document.getElementById('c-chefear-loss'), chefearLossEpochs, chefearLoss, { color:'var(--tuned)', digits:2 });
+
+  var chefearCpuCats = ['약불로 5분간','양파·마늘 볶기','1.5컵 물+뜸들이기','불닭볶음면'];
+  var chefearCpuSec  = [15.03,31.08,48.65,8.77];
+  var chefearGpuSec  = [4.16,7.61,9.2,2.8]; // 앞 2개는 gpu_inference_test_20260819.csv 3회 평균, 뒤 2개는 실측 단일값 제공받음
+  buildChart(document.getElementById('c-chefear-cpu'), chefearCpuCats, chefearCpuSec, { color:'var(--critical)', digits:1, suffix:'s', label:'CPU', series2:{ values:chefearGpuSec, color:'var(--base)', label:'GPU' } });
+
+  var mosCats = ['ChefEar ep13','Qwen3 Base','Qwen3 QLoRA','Qwen3 Full','vits-kss','CB LoRA','CB Full'];
+  var mosVals = [4.669,4.326,4.169,2.100,1.454,1.038,1.046]; // 13인 블라인드 평가 합산, n=129~130/모델 (mos 수집/*.csv)
+  buildChart(document.getElementById('c-mos-all'), mosCats, mosVals, { color:'var(--good)', digits:2 });
+
+  buildChart(document.getElementById('c-cb-wer'), cbCats, cbWer, { color:'var(--critical)', digits:2 });
+  buildChart(document.getElementById('c-cb-cer'), cbCats, cbCer, { color:'var(--critical)', digits:2 });
+  buildChart(document.getElementById('c-cb-rtf'), cbCats, cbRtf, { color:'var(--base)', digits:2 });
+
+  buildChart(document.getElementById('c-a100-wer'), a100Epochs, a100Wer, { color:'var(--tuned)', digits:2 });
+  buildChart(document.getElementById('c-a100-cer'), a100Epochs, a100Cer, { color:'var(--critical)', digits:2 });
+  buildChart(document.getElementById('c-a100-acc'), a100Epochs, a100Acc.map(function(v){return v*100;}), { color:'var(--good)', digits:1, suffix:'%' });
+  buildChart(document.getElementById('c-a100-rtf'), a100Epochs, a100Rtf, { color:'var(--base)', digits:2 });
+})();
+</script>
+</body>
+</html>

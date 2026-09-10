@@ -63,3 +63,13 @@ tests/test-audio/*
 result_test_backup_ep13_working/*
 ui/assets/*
 run_local.sh
+# ── 포트폴리오 공개 저장소에 불필요한 것들 (2026-09-10 최종 정리) ──
+# 지인 평가 원자료(마스킹된 이름·관계 표기 포함). 집계 결과는 results/tts/mos/MOS_청취평가.html에 있음
+data/mos_participants/*.csv
+docs/presentation/사용자_실제_테스트_피드백.html
+# 발표 대본·예상 답변 스크립트는 저장소에 두지 않는다
+docs/presentation/발표_시나리오_및_QA.md
+# 개발 초반 통합 테스트 체크리스트·이슈 일지(요약은 docs/decisions.md)
+docs/history/
+# 회귀 확인용 로컬 실험 결과(README 표에 수치만 인용)
+results/tts/roundtrip_cer_epoch24.csv

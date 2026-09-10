@@ -1,11 +1,9 @@
-"""자유발화에서 요리명을 뽑는 로컬 LLM 기반 경로 — `entity_extract.py`(정규식)와 별개.
+"""자유발화에서 요리명 후보와 등록 의도를 뽑는 로컬 LLM 기반 추출기.
 
-`entity_extract.py`의 `extract_dish_name()`은 고정 접미사를 `rstrip`으로 잘라내는
-방식이라 "위 문형 밖의 표현은 놓칠 수 있다"는 v1 한계가 파일 자체에 명시돼 있다
-(`entity_extract.py:14`). 이 파일은 그 한계를 로컬 LLM(GPU 데스크탑에 직접 로드한
-EXAONE-3.5-2.4B-Instruct, `llm/infer.py`)으로 보완한다. `entity_extract.py` 자체는
-건드리지 않는다 — `app.py`의 호출 지점만 이 함수로 바꿔서 실제 서비스 흐름에 연결한다
-(`docs/specs/llm_dish_name_extract.md` 참고).
+정규식으로 고정 문형("~어떻게 만들어")만 잘라내던 초기 방식은 문형 밖 표현을 놓쳤다.
+이 모듈은 GPU에 직접 로드한 EXAONE-3.5-2.4B-Instruct(`llm/infer.py`)로 그 한계를 보완한다.
+LLM 결과는 후보일 뿐이고 최종 요리명은 `recipe_search.extract_dish_name()`이 DB 실존 이름과
+매칭해 결정한다(`docs/specs/llm_dish_name_extract.md`).
 """
 from __future__ import annotations
 
@@ -13,13 +11,6 @@ import re
 
 from llm.infer import generate_json
 
-# few-shot 두 개(요리명 있음/없음)로 출력 형식을 고정한다 — 모델이 JSON 밖에 다른 말을
-#덧붙이면 client.py의 json.loads()가 실패해서 안전하게 None으로 처리된다(EC-03).
-#
-# 발화 예시에 띄어쓰기를 다 뺀 것은 의도적이다(2026-08-20) — 실측에서 "소고기미역국
-# 레시피 궁금해"처럼 복합 요리명에 공백이 있으면 LLM이 "소고기"를 버리고 "미역국"만
-# 뽑는 경우가 있었다. 실제 입력도 extract_dish_name_llm()에서 띄어쓰기를 다 제거한
-# 뒤에 넣으므로, few-shot 예시도 같은 형태(공백 없음)로 맞춰야 패턴이 일치한다.
 _PROMPT_TEMPLATE = """너는 한국어 요리 음성 비서의 일부다. 아래 사용자 발화에서 "요리명"과 "새 레시피를 등록하고 싶다는 의도"를 함께 판단해라.
 
 규칙:
@@ -59,35 +50,7 @@ _PROMPT_TEMPLATE = """너는 한국어 요리 음성 비서의 일부다. 아래
 
 
 def extract_intent_llm(utterance: str) -> dict:
-    """로컬 LLM 호출 한 번으로 "요리명"과 "등록하고 싶다는 의도"를 같이 뽑는다.
-
-    2026-08-22 추가 — classify_intent()(임베딩 유사도)가 "등록" 같은 짧은 단일 발화를
-    "진행"/"이전"과 헷갈려서 margin 미충족으로 미분류 처리하는 사례가 실측 확인됐다
-    (`data/intent_examples/기준예문.csv` 보강으로 그 구체 사례는 해결했지만, 임베딩
-    분류기가 커버 못하는 표현은 여전히 나올 수 있음). extract_dish_name_llm()이
-    이미 매 발화마다 LLM을 호출하고 있으므로, 새 LLM 호출을 늘리는 대신 같은
-    프롬프트/응답에 wants_register 필드 하나만 얹어서 재사용한다.
-
-    반환값: {"dish_name": str | None, "wants_register": bool}. LLM 실패/timeout/형식
-    오류면 둘 다 안전한 기본값({"dish_name": None, "wants_register": False})으로
-    돌아간다 — 그럴듯하게 지어내지 않는다(1.5 원칙과 같은 정직성, AC-02/AC-03).
-
-    LLM에 넘기기 전 띄어쓰기를 전부 제거한다(2026-08-20) — "소고기미역국" 같은 복합
-    요리명이 STT 결과에서 "소고기 미역국"처럼 공백이 섞여 나오면, 그 공백을 단어
-    경계로 오인해서 LLM이 뒷부분만("미역국") 뽑는 문제가 실측으로 확인됐다. 화면
-    표시/로그용 원문(utterance)은 그대로 두고, LLM에 넣는 사본에만 적용한다
-    (`tts/pronunciation.py`의 apply_pronunciation_fixes()와 같은 "원문은 안 건드리고
-    모델에 넣는 사본만 가공" 패턴).
-
-    2026-08-26 추가 — 끝에 붙는 문장부호(?!.,~)도 같이 제거한다. intent_classifier.py::
-    classify_intent()가 임베딩 분류 직전에 이미 하는 정규화(`.rstrip("?!.,~ ")`, "그래?"
-    같은 발화가 문장부호 하나 때문에 다른 임베딩이 되던 문제 수정)와 똑같은 문자
-    집합을 그대로 맞췄다 — STT가 물음표/마침표를 붙여 돌려주는 경우가 흔한데, 이게
-    few-shot 예시(위 프롬프트)의 입력 형태와 안 맞으면 LLM 판단이 미묘하게 흔들릴
-    여지가 있다. 문장부호는 앞이 아니라 끝에만 붙으므로(자연스러운 한국어 발화 특성)
-    rstrip으로 충분 — 공백 제거보다 먼저 해야 원래 문장 끝에 있던 문장부호를
-    정확히 잘라낼 수 있다(공백을 먼저 없애면 문장 끝이 어디였는지 알 수 없음).
-    """
+    """로컬 LLM 호출 한 번으로 "요리명"과 "등록하고 싶다는 의도"를 같이 뽑는다."""
     utterance = utterance.strip()
     if not utterance:
         return {"dish_name": None, "wants_register": False}

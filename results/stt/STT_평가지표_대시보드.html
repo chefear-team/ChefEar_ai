@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChefEar STT 성능 평가</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #f5f0e8;
+      color: #403a34;
+      font-family: Arial, "Malgun Gothic", sans-serif;
+      line-height: 1.6;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 42px 24px 70px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      color: #4c625c;
+      font-size: 34px;
+    }
+
+    h2 {
+      margin-top: 40px;
+      padding: 13px 18px;
+      border-radius: 12px;
+      background: #e9dfd1;
+      color: #51463b;
+      font-size: 21px;
+    }
+
+    h3 {
+      margin-top: 0;
+      color: #4c625c;
+    }
+
+    .subtitle,
+    .source {
+      color: #81776e;
+    }
+
+    .summary,
+    .info-box,
+    .reason,
+    .graph-card {
+      padding: 22px;
+      border: 1px solid #ddd0bd;
+      border-radius: 14px;
+      background: #fffdf8;
+    }
+
+    .summary strong {
+      color: #4c625c;
+    }
+
+    .info-box,
+    .reason {
+      margin-top: 18px;
+      border-left: 5px solid #bd6b43;
+      background: #eee5d8;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .card {
+      padding: 18px;
+      border: 1px solid #ddd0bd;
+      border-radius: 12px;
+      background: #fffdf8;
+    }
+
+    .card-title {
+      color: #81776e;
+      font-size: 14px;
+    }
+
+    .card-value {
+      display: block;
+      margin-top: 4px;
+      color: #bd6b43;
+      font-size: 27px;
+      font-weight: bold;
+    }
+
+    .graph-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .graph-card {
+      min-width: 0;
+      height: 430px;
+      overflow: hidden;
+    }
+
+    .raw-graph-card {
+      height: 430px;
+    }
+
+    .chart {
+      width: 100%;
+      height: 310px;
+      overflow: hidden;
+    }
+
+    .chart svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fffdf8;
+    }
+
+    th,
+    td {
+      padding: 11px 8px;
+      border: 1px solid #ded3c5;
+      text-align: center;
+    }
+
+    th {
+      background: #ebe1d4;
+      color: #51463b;
+    }
+
+    tr.best {
+      background: #f0dfcd;
+      font-weight: bold;
+    }
+
+    .core-card {
+      height: 320px;
+      overflow: hidden;
+    }
+
+    #coreChart {
+      width: 100%;
+      height: 245px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+
+    .flow-item {
+      padding: 18px;
+      border: 1px solid #ddd0bd;
+      border-radius: 12px;
+      background: #fffdf8;
+      text-align: center;
+    }
+
+    .flow-item strong {
+      display: block;
+      margin-bottom: 7px;
+      color: #bd6b43;
+    }
+
+    @media (max-width: 800px) {
+      .cards,
+      .graph-grid,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .graph-card,
+      .raw-graph-card {
+        height: auto;
+      }
+
+      h1 {
+        font-size: 27px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+<main>
+
+  <h1>ChefEar STT 성능 평가</h1>
+
+  <p class="subtitle">
+    Whisper Large-v3-Turbo QLoRA 모델의 실험 과정과 최종 성능 비교
+  </p>
+
+  <div class="summary">
+    <strong>최종 선정 모델: BEST_FINAL_mix750_replay_numeric</strong><br>
+    일반화 성능과 숫자·단위·재료명·조리동작 인식률을 종합해 MIX750을 최종 모델로 선정했습니다.
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <span class="card-title">신규500 WER</span>
+      <span class="card-value">10.72%</span>
+    </div>
+
+    <div class="card">
+      <span class="card-title">신규500 CER</span>
+      <span class="card-value">2.26%</span>
+    </div>
+
+    <div class="card">
+      <span class="card-title">재료명 성공률</span>
+      <span class="card-value">98.31%</span>
+    </div>
+
+    <div class="card">
+      <span class="card-title">핵심정보 종합</span>
+      <span class="card-value">96.23%</span>
+    </div>
+  </div>
+
+  <h2>1. 평가 목적 및 비교 실험 설계</h2>
+
+  <div class="info-box">
+    <strong>동일한 음성 및 정답 문장으로 모델을 비교합니다.</strong>
+    <ul>
+      <li>평가 데이터: Fixed100 / 신규500</li>
+      <li>정량 지표: WER / CER</li>
+      <li>도메인 지표: 숫자·단위·재료명·조리동작</li>
+      <li>WER와 CER는 낮을수록 우수합니다.</li>
+    </ul>
+  </div>
+
+  <table>
+    <tr>
+      <th>항목</th>
+      <th>평가 내용</th>
+      <th>평가 기준</th>
+    </tr>
+
+    <tr>
+      <td>평가 데이터</td>
+      <td>Fixed100 / 신규500</td>
+      <td>동일 음성·정답 사용</td>
+    </tr>
+
+    <tr>
+      <td>정량 지표</td>
+      <td>WER / CER</td>
+      <td>jiwer 계산</td>
+    </tr>
+
+    <tr>
+      <td>도메인 지표</td>
+      <td>숫자·단위·재료명·조리동작</td>
+      <td>핵심정보 보존 여부</td>
+    </tr>
+  </table>
+
+  <h2>2. 학습 환경 및 하이퍼파라미터</h2>
+
+  <table>
+    <tr>
+      <th>항목</th>
+      <th>설정값</th>
+      <th>설명</th>
+    </tr>
+
+    <tr>
+      <td>Base Model</td>
+      <td>openai/whisper-large-v3-turbo</td>
+      <td>Whisper 음성인식 모델</td>
+    </tr>
+
+    <tr>
+      <td>학습 방식</td>
+      <td>QLoRA 4-bit NF4</td>
+      <td>양자화 기반 LoRA</td>
+    </tr>
+
+    <tr>
+      <td>LoRA r / alpha</td>
+      <td>16 / 64</td>
+      <td>rank / 업데이트 스케일</td>
+    </tr>
+
+    <tr>
+      <td>Dropout</td>
+      <td>0.05</td>
+      <td>과적합 방지</td>
+    </tr>
+
+    <tr>
+      <td>Target Modules</td>
+      <td>q_proj, k_proj, v_proj, out_proj</td>
+      <td>Attention 모듈</td>
+    </tr>
+
+    <tr>
+      <td>Learning Rate</td>
+      <td>1e-4</td>
+      <td>기본 학습률</td>
+    </tr>
+
+    <tr>
+      <td>Batch / Accumulation</td>
+      <td>1 / 4</td>
+      <td>GPU 메모리 기준</td>
+    </tr>
+
+    <tr>
+      <td>MIX750 추가학습</td>
+      <td>LR 1e-5</td>
+      <td>Replay 500 + 숫자보강 250</td>
+    </tr>
+  </table>
+
+  <h2>3. 모델 성능 변화폭 비교</h2>
+
+  <p>
+    선그래프 대신 신규500에서 Fixed100을 뺀 변화량을 모델별 막대그래프로 비교합니다.
+    단위는 퍼센트포인트(%p)입니다.
+  </p>
+
+  <div class="graph-card">
+    <h3>신규500 - Fixed100 변화폭</h3>
+    <div id="changeChart" class="chart"></div>
+  </div>
+
+  <h2>4. 모델별 WER·CER 원자료 비교</h2>
+
+  <div class="graph-grid">
+
+    <div class="graph-card raw-graph-card">
+      <h3>WER 비교</h3>
+      <div id="werChart" class="chart"></div>
+    </div>
+
+    <div class="graph-card raw-graph-card">
+      <h3>CER 비교</h3>
+      <div id="cerChart" class="chart"></div>
+    </div>
+
+  </div>
+
+  <h2>5. 핵심 모델 성능 비교</h2>
+
+  <table>
+    <tr>
+      <th>모델</th>
+      <th>Fixed100 WER</th>
+      <th>Fixed100 CER</th>
+      <th>신규500 WER</th>
+      <th>신규500 CER</th>
+      <th>숫자·단위</th>
+    </tr>
+
+    <tr>
+      <td>기준 2ep</td>
+      <td>33.20%</td>
+      <td>5.81%</td>
+      <td>-</td>
+      <td>-</td>
+      <td>-</td>
+    </tr>
+
+    <tr>
+      <td>train300 Epoch4</td>
+      <td>10.68%</td>
+      <td>2.21%</td>
+      <td>13.97%</td>
+      <td>3.05%</td>
+      <td>70.75%</td>
+    </tr>
+
+    <tr>
+      <td>train1000 BEST</td>
+      <td>7.26%</td>
+      <td>1.49%</td>
+      <td>10.98%</td>
+      <td>2.33%</td>
+      <td>86.79%</td>
+    </tr>
+
+    <tr>
+      <td>reinforce250</td>
+      <td>8.20%</td>
+      <td>1.54%</td>
+      <td>11.07%</td>
+      <td>2.32%</td>
+      <td>90.57%</td>
+    </tr>
+
+    <tr class="best">
+      <td>MIX750 ★</td>
+      <td>7.68%</td>
+      <td>1.44%</td>
+      <td>10.72%</td>
+      <td>2.26%</td>
+      <td>90.57%</td>
+    </tr>
+  </table>
+
+  <h2>6. ChefEar 핵심정보 인식률</h2>
+
+  <div class="graph-card core-card">
+    <h3>핵심정보 성공률</h3>
+    <div id="coreChart"></div>
+  </div>
+
+  <table>
+    <tr>
+      <th>평가 항목</th>
+      <th>결과</th>
+      <th>의미</th>
+    </tr>
+
+    <tr>
+      <td>숫자·단위</td>
+      <td>90.57%</td>
+      <td>수량과 계량 단위</td>
+    </tr>
+
+    <tr>
+      <td>재료명</td>
+      <td>98.31%</td>
+      <td>레시피 재료명</td>
+    </tr>
+
+    <tr>
+      <td>조리동작</td>
+      <td>99.54%</td>
+      <td>조리 행동 표현</td>
+    </tr>
+
+    <tr>
+      <td>핵심정보 종합</td>
+      <td>96.23%</td>
+      <td>ChefEar 핵심정보</td>
+    </tr>
+  </table>
+
+  <h2>7. 실험 개선 과정</h2>
+
+  <div class="flow">
+    <div class="flow-item">
+      <strong>초기 모델</strong>
+      기준 2epoch<br>
+      WER 33.20%
+    </div>
+
+    <div class="flow-item">
+      <strong>train1000</strong>
+      취약유형 데이터 보강<br>
+      숫자·단위 성능 향상
+    </div>
+
+    <div class="flow-item">
+      <strong>reinforce250</strong>
+      숫자·단위 성공률<br>
+      90.57% 달성
+    </div>
+
+    <div class="flow-item">
+      <strong>MIX750</strong>
+      일반화 성능과<br>
+      특화성능을 함께 유지
+    </div>
+  </div>
+
+  <h2>8. 최종 모델 선정 이유</h2>
+
+  <div class="reason">
+    <strong>MIX750을 최종 모델로 선정한 이유</strong><br><br>
+
+    train1000 BEST는 Fixed100 WER가 7.26%로 가장 낮았지만
+    숫자·단위 성공률은 86.79%였습니다.
+    reinforce250은 숫자·단위 성공률을 90.57%까지 높였으나
+    전체 일반화 성능이 일부 악화되었습니다.
+    <br><br>
+
+    MIX750은 Replay 500개와 숫자보강 250개를
+    Learning Rate 1e-5로 추가 학습했습니다.
+    그 결과 숫자·단위 성공률 90.57%를 유지하면서
+    신규500 WER 10.72%, CER 2.26%를 기록했습니다.
+    따라서 실제 서비스에 가장 균형 잡힌 모델로 선정했습니다.
+  </div>
+
+  <p class="source">
+    자료 출처: result.ipynb 상세 실험 기록, t.ipynb 최신 성능 요약
+  </p>
+
+</main>
+
+<script>
+  const models = [
+    {
+      name: "train300",
+      color: "#4f9d91",
+      fixedWER: 10.68,
+      newWER: 13.97,
+      fixedCER: 2.21,
+      newCER: 3.05
+    },
+    {
+      name: "train1000",
+      color: "#4f78a8",
+      fixedWER: 7.26,
+      newWER: 10.98,
+      fixedCER: 1.49,
+      newCER: 2.33
+    },
+    {
+      name: "reinforce250",
+      color: "#d98b45",
+      fixedWER: 8.20,
+      newWER: 11.07,
+      fixedCER: 1.54,
+      newCER: 2.32
+    },
+    {
+      name: "MIX750 ★",
+      color: "#a9543f",
+      fixedWER: 7.68,
+      newWER: 10.72,
+      fixedCER: 1.44,
+      newCER: 2.26,
+      best: true
+    }
+  ];
+
+  function drawChangeChart() {
+    const width = 900;
+    const height = 310;
+    const left = 65;
+    const right = 25;
+    const top = 28;
+    const bottom = 55;
+    const maxValue = 4.5;
+
+    const chartWidth = width - left - right;
+    const chartHeight = height - top - bottom;
+    const groupWidth = chartWidth / models.length;
+    const barWidth = 34;
+
+    const y = (value) => {
+      return top + (maxValue - value) *
+        (chartHeight / maxValue);
+    };
+
+    let svg = `
+      <svg
+        viewBox="0 0 ${width} ${height}"
+        xmlns="http://www.w3.org/2000/svg">
+    `;
+
+    for (let value = 0; value <= 4; value += 1) {
+      svg += `
+        <line
+          x1="${left}"
+          y1="${y(value)}"
+          x2="${width - right}"
+          y2="${y(value)}"
+          stroke="#e7ddd0"
+        />
+
+        <text
+          x="8"
+          y="${y(value) + 4}"
+          font-size="12"
+          fill="#81776e">
+          +${value}%p
+        </text>
+      `;
+    }
+
+    models.forEach((model, index) => {
+      const center =
+        left + groupWidth * index + groupWidth / 2;
+
+      const werChange =
+        model.newWER - model.fixedWER;
+
+      const cerChange =
+        model.newCER - model.fixedCER;
+
+      const werX =
+        center - barWidth - 4;
+
+      const cerX =
+        center + 4;
+
+      const werY = y(werChange);
+      const cerY = y(cerChange);
+
+      const werHeight =
+        top + chartHeight - werY;
+
+      const cerHeight =
+        top + chartHeight - cerY;
+
+      const opacity = model.best ? 1 : 0.8;
+
+      svg += `
+        <rect
+          x="${werX}"
+          y="${werY}"
+          width="${barWidth}"
+          height="${werHeight}"
+          rx="5"
+          fill="#bd6b43"
+          opacity="${opacity}"
+        />
+
+        <rect
+          x="${cerX}"
+          y="${cerY}"
+          width="${barWidth}"
+          height="${cerHeight}"
+          rx="5"
+          fill="#4f9d91"
+          opacity="${opacity}"
+        />
+
+        <text
+          x="${werX + barWidth / 2}"
+          y="${werY - 8}"
+          text-anchor="middle"
+          font-size="11"
+          fill="#bd6b43">
+          +${werChange.toFixed(2)}%p
+        </text>
+
+        <text
+          x="${cerX + barWidth / 2}"
+          y="${cerY - 8}"
+          text-anchor="middle"
+          font-size="11"
+          fill="#4f9d91">
+          +${cerChange.toFixed(2)}%p
+        </text>
+
+        <text
+          x="${center}"
+          y="${height - 18}"
+          text-anchor="middle"
+          font-size="12"
+          font-weight="${model.best ? "bold" : "normal"}"
+          fill="#81776e">
+          ${model.name}
+        </text>
+      `;
+    });
+
+    svg += `
+      <rect
+        x="${width - 190}"
+        y="12"
+        width="12"
+        height="12"
+        fill="#bd6b43"
+      />
+
+      <text
+        x="${width - 172}"
+        y="23"
+        font-size="11"
+        fill="#81776e">
+        WER 변화
+      </text>
+
+      <rect
+        x="${width - 92}"
+        y="12"
+        width="12"
+        height="12"
+        fill="#4f9d91"
+      />
+
+      <text
+        x="${width - 74}"
+        y="23"
+        font-size="11"
+        fill="#81776e">
+        CER 변화
+      </text>
+
+      </svg>
+    `;
+
+    document.getElementById("changeChart").innerHTML = svg;
+  }
+
+  function drawRawBarChart(
+    elementId,
+    metric,
+    maxValue
+  ) {
+    const width = 760;
+    const height = 310;
+    const left = 58;
+    const right = 20;
+    const top = 20;
+    const bottom = 55;
+
+    const chartWidth = width - left - right;
+    const chartHeight = height - top - bottom;
+    const groupWidth = chartWidth / models.length;
+    const barWidth = 28;
+
+    const y = (value) => {
+      return top + (maxValue - value) *
+        (chartHeight / maxValue);
+    };
+
+    let svg = `
+      <svg
+        viewBox="0 0 ${width} ${height}"
+        xmlns="http://www.w3.org/2000/svg">
+    `;
+
+    const gridStep =
+      metric === "WER" ? 5 : 1;
+
+    for (
+      let value = 0;
+      value <= maxValue;
+      value += gridStep
+    ) {
+      svg += `
+        <line
+          x1="${left}"
+          y1="${y(value)}"
+          x2="${width - right}"
+          y2="${y(value)}"
+          stroke="#e7ddd0"
+        />
+
+        <text
+          x="8"
+          y="${y(value) + 4}"
+          font-size="11"
+          fill="#81776e">
+          ${value}%
+        </text>
+      `;
+    }
+
+    models.forEach((model, index) => {
+      const center =
+        left + groupWidth * index + groupWidth / 2;
+
+      const fixedValue =
+        metric === "WER"
+          ? model.fixedWER
+          : model.fixedCER;
+
+      const newValue =
+        metric === "WER"
+          ? model.newWER
+          : model.newCER;
+
+      const fixedX =
+        center - barWidth - 3;
+
+      const newX =
+        center + 3;
+
+      const fixedY = y(fixedValue);
+      const newY = y(newValue);
+
+      svg += `
+        <rect
+          x="${fixedX}"
+          y="${fixedY}"
+          width="${barWidth}"
+          height="${top + chartHeight - fixedY}"
+          rx="4"
+          fill="${model.color}"
+          opacity="0.48"
+        />
+
+        <rect
+          x="${newX}"
+          y="${newY}"
+          width="${barWidth}"
+          height="${top + chartHeight - newY}"
+          rx="4"
+          fill="${model.color}"
+        />
+
+        <text
+          x="${fixedX + barWidth / 2}"
+          y="${fixedY - 7}"
+          text-anchor="middle"
+          font-size="10"
+          fill="${model.color}">
+          ${fixedValue}%
+        </text>
+
+        <text
+          x="${newX + barWidth / 2}"
+          y="${newY - 7}"
+          text-anchor="middle"
+          font-size="10"
+          fill="${model.color}">
+          ${newValue}%
+        </text>
+
+        <text
+          x="${center}"
+          y="${height - 18}"
+          text-anchor="middle"
+          font-size="10"
+          fill="#81776e">
+          ${model.name.replace(" ★", "")}
+        </text>
+      `;
+    });
+
+    svg += `
+      <text
+        x="${width - 150}"
+        y="17"
+        font-size="11"
+        fill="#81776e">
+        연한색: Fixed100
+      </text>
+
+      <text
+        x="${width - 150}"
+        y="34"
+        font-size="11"
+        fill="#81776e">
+        진한색: 신규500
+      </text>
+
+      </svg>
+    `;
+
+    document.getElementById(elementId).innerHTML = svg;
+  }
+
+  function drawCoreChart() {
+    const items = [
+      ["숫자·단위", 90.57, "#d98b45"],
+      ["재료명", 98.31, "#4f9d91"],
+      ["조리동작", 99.54, "#4f78a8"],
+      ["핵심정보 종합", 96.23, "#a9543f"]
+    ];
+
+    const width = 760;
+    const height = 230;
+    const left = 145;
+    const right = 45;
+    const top = 12;
+    const barHeight = 26;
+    const gap = 18;
+    const chartWidth = width - left - right;
+
+    let svg = `
+      <svg
+        viewBox="0 0 ${width} ${height}"
+        xmlns="http://www.w3.org/2000/svg">
+    `;
+
+    items.forEach((item, index) => {
+      const label = item[0];
+      const value = item[1];
+      const color = item[2];
+
+      const y =
+        top + index * (barHeight + gap);
+
+      const barWidth =
+        chartWidth * value / 100;
+
+      svg += `
+        <text
+          x="${left - 12}"
+          y="${y + 18}"
+          text-anchor="end"
+          font-size="13"
+          fill="#51463b">
+          ${label}
+        </text>
+
+        <rect
+          x="${left}"
+          y="${y}"
+          width="${chartWidth}"
+          height="${barHeight}"
+          rx="7"
+          fill="#eadfd1"
+        />
+
+        <rect
+          x="${left}"
+          y="${y}"
+          width="${barWidth}"
+          height="${barHeight}"
+          rx="7"
+          fill="${color}"
+        />
+
+        <text
+          x="${left + barWidth - 8}"
+          y="${y + 18}"
+          text-anchor="end"
+          font-size="12"
+          fill="white">
+          ${value}%
+        </text>
+      `;
+    });
+
+    svg += "</svg>";
+
+    document.getElementById("coreChart").innerHTML = svg;
+  }
+
+  drawChangeChart();
+  drawRawBarChart("werChart", "WER", 15);
+  drawRawBarChart("cerChart", "CER", 4);
+  drawCoreChart();
+</script>
+
+</body>
+</html>

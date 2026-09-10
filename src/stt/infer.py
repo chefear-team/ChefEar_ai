@@ -1,37 +1,4 @@
-"""
-ChefEar STT Runtime / Evaluation
-
-Base Model:
-    openai/whisper-large-v3-turbo
-
-QLoRA Adapter:
-    leeony/chefear-stt-large-v3-turbo
-
-핵심 처리 흐름
---------------
-audio
-→ Whisper STT
-→ 단위 표기 정규화
-→ 현재 레시피 재료 문맥이 있을 때만 고위험 패턴 조건부 보정
-→ 최종 텍스트
-
-중요
-----
-숫자를 무조건 변경하지 않습니다.
-
-예:
-    "소고기다짐 600그램"
-        ↓
-
-현재 레시피 재료에
-    "소고기다짐육 100그램" 존재
-그리고
-    "소고기다짐육 600그램" 없음
-
-위 조건을 모두 만족할 때만
-    "소고기다짐육 100그램"
-으로 보정합니다.
-"""
+"""ChefEar STT Runtime / Evaluation"""
 
 from pathlib import Path
 from typing import Optional, Sequence, Union
@@ -57,11 +24,6 @@ from orchestration.db import load_env
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# python-dotenv는 requirements-stt.txt(학습 전용)에만 있고 배포용 requirements.txt에는
-# 없다 — src/tts/infer.py와 동일하게 orchestration.db.load_env()를 재사용해서 새 의존성
-# 없이 .env를 읽는다(2026-08-19, tests/integration_issues_2026-08-18.md 이슈 #3 수정). 이
-# import가 성립하려면 호출부가 미리 sys.path에 "src"를 넣어둬야 한다(tts/infer.py와 동일한
-# 전제 — tests/conftest.py, tests/tts_stt_roundtrip_test.py가 이미 그렇게 하고 있음).
 load_env()
 
 # ============================================================
@@ -266,25 +228,8 @@ def load_stt_model():
 # ============================================================
 
 def normalize_stt_text(text: str) -> str:
-    """
-    STT가 의미는 맞게 인식했지만
+    """STT가 의미는 맞게 인식했지만
     단위를 영어로 출력한 경우 한글 표기로 통일합니다.
-
-    이 함수에서는 숫자 값을 절대 변경하지 않습니다.
-
-    예
-    --
-    100 g
-        → 100그램
-
-    1 kg
-        → 1킬로그램
-
-    200 ml
-        → 200밀리리터
-
-    1 L
-        → 1리터
     """
 
     # kg → 킬로그램
@@ -329,20 +274,8 @@ def normalize_ingredient_context(
         Union[str, Sequence[str]]
     ],
 ) -> str:
-    """
-    현재 레시피의 재료 정보를
+    """현재 레시피의 재료 정보를
     비교하기 쉬운 하나의 문자열로 변환합니다.
-
-    지원 입력
-    --------
-    문자열:
-        "소고기다짐육 100g, 당근 20g"
-
-    리스트:
-        [
-            "소고기다짐육 100g",
-            "당근 20g",
-        ]
     """
 
     if ingredient_context is None:
@@ -437,26 +370,9 @@ def correct_high_risk_with_context(
         Union[str, Sequence[str]]
     ],
 ) -> str:
-    """
-    고위험군 테스트에서 반복 확인된
+    """고위험군 테스트에서 반복 확인된
     '다짐육 + 백그램 → 다짐 + 육백그램'
     음향 경계 문제를 조건부로 보정합니다.
-
-    매우 중요한 안전 조건
-    ----------------------
-    현재 레시피 재료 정보가 없으면
-    아무것도 수정하지 않습니다.
-
-    또한:
-
-        현재 레시피 = 100그램
-        현재 레시피 != 600그램
-
-    이 두 조건을 모두 만족할 때만
-    600 → 100 보정을 허용합니다.
-
-    따라서 일반적인 600그램 발화를
-    무조건 100그램으로 바꾸지 않습니다.
     """
 
     context = normalize_ingredient_context(
@@ -552,34 +468,7 @@ def _transcribe_audio(
         Union[str, Sequence[str]]
     ] = None,
 ) -> str:
-    """
-    음성 파일 1개를 ChefEar STT로 인식합니다.
-
-    Parameters
-    ----------
-    audio_path
-        음성 파일 경로
-
-    ingredient_context
-        현재 레시피의 재료 정보.
-
-        이 값이 있을 때만
-        고위험 숫자 조건부 보정이 작동합니다.
-
-    흐름
-    ----
-    audio
-        ↓
-    Whisper
-        ↓
-    raw_prediction
-        ↓
-    단위 표기 정규화
-        ↓
-    현재 재료 문맥 기반 조건부 보정
-        ↓
-    최종 prediction
-    """
+    """음성 파일 1개를 ChefEar STT로 인식합니다."""
 
     model, processor = load_stt_model()
 
@@ -676,13 +565,13 @@ def _transcribe_audio(
 
 
 # ============================================================
-# 배포용 단일 발화 추론 (faster-whisper, CPU) — docs/specs/stt_deploy.md
+# 배포용 단일 발화 추론 (faster-whisper, CTranslate2 int8) — docs/specs/stt_deploy.md
 # ============================================================
 #
-# 위 load_stt_model()/_transcribe_audio()는 4bit(NF4) 양자화라 CUDA 전용이라(GPU 없는
-# HF Spaces CPU Basic에서 로드 자체가 안 됨), 배포는 별도로 faster-whisper(int8, CPU)를 쓴다.
-# faster-whisper는 HF transformers 체크포인트를 직접 못 읽어서, 먼저 src/stt/export_ct2.py로
-# (LoRA 병합 → CTranslate2 int8 변환) 오프라인 변환해둔 결과물을 읽는다.
+# 위 load_stt_model()/_transcribe_audio()는 4bit(NF4) 학습 어댑터 경로라 배치 평가 전용이고,
+# 배포는 faster-whisper(int8, GPU)를 쓴다. faster-whisper는 HF transformers 체크포인트를
+# 직접 못 읽어서, src/stt/export_ct2.py로(LoRA 병합 → CTranslate2 int8 변환) 오프라인
+# 변환해둔 결과물을 읽는다.
 
 # 변환 결과물 우선순위: 0) .env의 STT_LOCAL_CACHE_DIR(로컬 디스크 사본, 아래 설명)
 # 1) 로컬 models/stt_finetuned/ct2_int8/(export_ct2.py 산출물) 2) .env의 HF_STT_CT2_REPO
@@ -690,22 +579,10 @@ def _transcribe_audio(
 CT2_LOCAL_DIR = PROJECT_ROOT / "models" / "stt_finetuned" / "ct2_int8"
 HF_STT_CT2_REPO = os.environ.get("HF_STT_CT2_REPO")
 
-# 2026-08-20 실측: 이 프로젝트 폴더(PROJECT_ROOT, 곧 CT2_LOCAL_DIR)가 네트워크 공유
-# 드라이브(CIFS, ~9MB/s)에 있는 환경에서는 model.bin(778MB) 하나 읽는 데만 87초 넘게
-# 걸린다(GPU/CPU 사용률 0%, 순수 네트워크 I/O 대기 — CUDA 초기화가 아니었음). .env에
-# STT_LOCAL_CACHE_DIR로 진짜 로컬 디스크 사본 경로를 지정하면 그걸 최우선으로 쓴다.
 STT_LOCAL_CACHE_DIR = os.environ.get("STT_LOCAL_CACHE_DIR")
 
 _ct2_model = None
 
-# 2026-08-22 — src/tts/infer.py의 _LOAD_LOCK과 같은 이유("Cannot copy out of meta tensor;
-# no data!" 실사용 보고, 유력한 원인은 _warm_up_models()가 화면(세션)이 뜰 때마다
-# 호출되는데 로딩 자체엔 동시 진입 방지가 없어서 두 스레드가 거의 동시에 로딩을
-# 시작하면 같은 GPU에 같은 모델을 두 번 올리려다 꼬이는 경합). load_ct2_model()과
-# load_realtime_stt_model() 둘 다 이 하나의 락으로 로딩 시작 자체를 직렬화한다 —
-# 둘이 동시에 로딩을 시작할 일은 거의 없지만(둘 다 _warm_up_models()가 순차 호출),
-# 실제 서비스 경로(stt_transcribe())가 load_realtime_stt_model()을 호출하는 시점과
-# 겹칠 수 있어 공유한다.
 _LOAD_LOCK = threading.Lock()
 
 
@@ -716,9 +593,6 @@ def _resolve_ct2_model_path() -> str:
     에러를 던진다(EC-04, docs/specs/stt_deploy.md) — 잘못된 모델로 응답하는 게 더 위험하다.
     """
     if STT_LOCAL_CACHE_DIR:
-        # expanduser() 필수 — 이 값은 계정마다 다른 로컬 경로라 .env에 "~/..."로 적어두고
-        # 계정별($HOME) 홈 디렉터리 기준으로 풀리게 한다(2026-08-21, 이 저장소 폴더를 여러
-        # 계정이 공유해서 절대경로를 하드코딩하면 다른 계정 설정이 깨짐).
         local_cache = Path(STT_LOCAL_CACHE_DIR).expanduser()
         if local_cache.exists():
             return str(local_cache)
@@ -751,20 +625,10 @@ def load_ct2_model():
 
         model_path = _resolve_ct2_model_path()
 
-        # 2026-08-19 팀 결정(docs/decisions.md #2): 배포를 GPU 데스크탑 상시 노출(Tailscale)로
-        # 확정하면서 "HF Spaces CPU Basic" 배포 전제 자체가 없어졌다 — CPU 폴백 없이 GPU를
-        # 필수로 요구한다. CPU 속도 실측이 다시 필요하면 tests/tts_cpu_inference_test.py처럼
-        # 별도 벤치마크에서 device="cpu"를 명시해서 재현할 것(이 함수 자체는 항상 cuda).
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
             )
-        # 2026-08-25 추가 — model_path가 로컬 폴더가 아니라 HF_STT_CT2_REPO(HF repo id)로
-        # 폴백된 경우, 그 repo(kimseunguk/chefear-stt-ct2-int8)는 private라 인증 없이는
-        # 401로 못 받는다(실측 확인). WhisperModel이 내부적으로 huggingface_hub의 토큰
-        # 자동 탐지에 기대는 대신, tts/infer.py와 같은 패턴으로 .env의 HF_TOKEN을 명시적으로
-        # 넘긴다 — 로컬 경로일 땐 faster-whisper가 이 값을 그냥 무시하므로 조건 분기 없이
-        # 항상 넘겨도 안전하다.
         _ct2_model = WhisperModel(
             model_path, device="cuda", compute_type="int8", use_auth_token=os.environ.get("HF_TOKEN")
         )
@@ -774,10 +638,6 @@ def load_ct2_model():
         return _ct2_model
 
 
-# 2026-08-28 — whisper가 무음/잡음에서 흔히 지어내는 상투구(유튜브·방송 말미 인사 등).
-# 이 앱(음성 레시피 비서) 문맥에서는 사용자가 절대 말할 리 없는 문장들이라, 부분
-# 일치로 걸러도 오탐 위험이 사실상 0이다. faster-whisper 커뮤니티에 알려진 목록 중
-# 한국어권에서 자주 관측되는 것 위주 + 영어 몇 개.
 _HALLUCINATION_MARKERS: tuple[str, ...] = (
     "시청해주셔서 감사합니다",
     "시청해 주셔서 감사합니다",
@@ -823,46 +683,12 @@ def stt_transcribe(
     vad_filter: bool = True,
     session_id: str | None = None,
 ) -> str:
-    """오디오 하나 -> 인식된 텍스트. faster-whisper(int8) 기반, HF Spaces 배포용.
+    """오디오 하나 -> 인식된 텍스트. faster-whisper(CTranslate2 int8, GPU) 기반 배포용 경로.
 
-    app.py가 직접 호출할 곳 — orchestration.pipeline.handle_utterance()에 반환값을
-    그대로 넘기면 된다.
-
-    2026-08-21: 이 이름의 함수가 두 개(이 함수 + 아래 stt_transcribe_with_context())
-    존재해서 파이썬이 나중 정의만 남기고 이 함수를 덮어써버린 게 실측으로 확인됨 —
-    app.py는 여전히 이 시그니처(numpy 배열+sample_rate)로 호출하는데 실제로는 무거운
-    4bit 모델 경로(stt_transcribe_with_context, CUDA 전용이라 HF Spaces CPU Basic에서
-    로드 자체가 안 됨)가 대신 불려서 TypeError로 죽었다. 이름 충돌 해소하면서, 하주성님이
-    stt_transcribe_with_context()에 만들어둔 문맥 기반 후처리(normalize_stt_text/
-    correct_high_risk_with_context, 둘 다 순수 텍스트 함수라 모델과 무관)를 이 배포용
-    경로에도 그대로 적용되게 옮겨왔다 — 기능은 잃지 않으면서 무거운 모델은 안 쓴다.
-
-    Parameters
-    ----------
-    audio
-        파일 경로(mp3/wav 등) 또는 numpy 파형 배열. 배열로 줄 경우 sample_rate가 필수이며,
-        16kHz가 아니면 librosa로 16kHz 모노로 리샘플링한 뒤 넘긴다(EC-03).
-    ingredient_context
-        현재 레시피 재료 정보(문자열 또는 리스트). 있으면 고위험 숫자 보정까지 적용, 없으면
-        단위 표기 정규화만 적용(둘 다 순수 텍스트 후처리라 모델 로딩과 무관).
-    vad_filter
-        faster-whisper 내부 VAD로 한 번 더 무음을 거를지 여부(기본 True). 아래 model.transcribe()
-        호출부 주석 참고 — 상시 마이크 실시간 경로(voice_io.py)처럼 호출부가 이미 자체 VAD
-        (ui/mic_vad.py::MicVadSegmenter)로 발화 구간을 잘라서 넘기는 경우엔 False로 부른다.
-
-    session_id
-        2026-09-02 추가 — 접속자 여럿이 섞인 서버 콘솔 로그(gpu_worker_pool 워커 프로세스는
-        전원의 요청을 처리하는 공유 프로세스라 이 함수 자체는 "누구 것인지" 모름)에서
-        아래 [STT_CONF_DEBUG]/[STT_EMPTY_DEBUG] 줄이 어느 브라우저 세션의 발화인지 grep으로
-        구분할 수 있게 호출부(voice_io.py)가 넘기는 짧은 식별자. 순수 로그 태그일 뿐 인식
-        로직과는 무관 — None이면 태그 없이 그대로 동작한다(orchestration.gpu_worker_pool의
-        다른 호출부처럼 기본값 생략도 안전).
-
-    Returns
-    -------
-    str
-        인식된 텍스트. 무음/너무 짧은 오디오 등으로 인식된 구간이 없으면 빈 문자열을
-        반환한다(예외 아님, EC-01) — 호출부(app.py)가 "다시 말씀해주세요"로 안내할 수 있게.
+    파일 경로 또는 numpy 파형(sample_rate 필수, 16kHz가 아니면 리샘플링)을 받는다.
+    ingredient_context가 있으면 조리 문맥 기반 고위험 숫자 보정까지 적용하고, 없으면 단위
+    정규화만 적용한다. 호출부가 이미 VAD로 구간을 잘라 넘기면 vad_filter=False로 부른다.
+    인식된 구간이 없으면 빈 문자열을 반환한다(예외 아님).
     """
 
     model = load_ct2_model()
@@ -873,49 +699,9 @@ def stt_transcribe(
         if sample_rate != 16000:
             audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=16000)
 
-    # vad_filter=True(기본값): 무음 구간을 걸러내서, 순수 무음 입력에서 whisper 특유의
-    # 환각(silence hallucination) 없이 자연스럽게 빈 결과가 나오게 한다(EC-01) — 파일
-    # 업로드(stt_tts_test.py)처럼 앞뒤에 진짜 무음이 낄 수 있는 입력을 위한 것.
-    #
-    # 2026-08-26 리포트 — 상시 마이크 실시간 경로에서 "분명히 말했는데 stt_text=''만
-    # 반복된다"는 사용 중 확인. 원인: voice_io.py가 넘기는 오디오는 이미 ui/mic_vad.py의
-    # MicVadSegmenter(silero-vad, threshold=0.5)가 "발화 시작~600ms 무음"으로 한 번 잘라서
-    # 넘긴 구간이다 — 그 위에 faster-whisper의 내부 VAD가 *또* 한 번 판정을 거는 이중
-    # VAD 구조였다. 실측 로그(max_amp 비교)로 확인해보니 실패한 발화들이 성공한 발화들
-    # 보다 입력 레벨이 뚜렷이 낮았다(이 마이크/방 환경이 원래 입력이 작다는 기존 발견,
-    # 위 media_stream_constraints 주석 참고) — 조용하지만 실제 말소리인 짧은 발화가 우리
-    # 세그먼터는 통과했는데 faster-whisper의 더 엄격한 내부 VAD에서 다시 걸러진 것으로
-    # 보인다. 호출부(voice_io.py)가 이미 VAD로 구간을 확정해서 넘기는 경우엔 이 두 번째
-    # 필터가 중복이자 손해라 vad_filter=False로 끈다 — 파일 업로드 등 다른 호출부는 여전히
-    # 기본값(True)을 그대로 쓴다.
-    #
-    # beam_size=1(2026-08-24 수정) — "된장찌개"가 "된장찌"로, "소고기를 손질해주세요"가
-    # "소고기 2."로 잘려나가는 문제 실측 확인(WEBRTC_DEBUG 로그 + 저장된 오디오로 재현).
-    # faster-whisper 기본값(beam_size=5)으로 여러 개의 후보 문장을 동시에 탐색하다가,
-    # 이 파인튜닝 모델에서는 종종 짧게 끝나는(조기 종료) 후보 쪽 누적 확률이 더 높게
-    # 나와서 그쪽으로 수렴해버리는 것으로 보인다(faster-whisper의 세그먼트 타임스탬프가
-    # 0.00~0.02초처럼 말도 안 되게 찍히는 것도 이 조기 종료의 증거). beam_size=1(그리디
-    # 디코딩 — 매 순간 가장 그럴듯한 다음 토큰 하나만 따라감, 후보 경쟁 자체가 없음)로
-    # 바꾸면 이 문제가 재현됐던 실제 녹음 파일들에서 전부 정상 문장으로 나온다(실측
-    # 확인 — 여러 테스트 오디오로 회귀 없음도 같이 확인함, 사소한 단어 차이 한둘 정도만
-    # 있고 그마저도 원래도 발음이 뭉개진 테스트 파일들이었음).
-    # 2026-08-26 시도했다 되돌림 — repetition_penalty=1.2로 "된장찌장찌개"류 반복
-    # 아티팩트를 줄여보려 했으나, 실사용 로그 실측 결과 "된장찌개"가 "된장찌"로
-    # 조기종료(위 beam_size=5->1 전환 사유였던 바로 그 잘림 버그)되는 빈도가 훨씬
-    # 크게 늘었다(적용 전 1건 중 0건 절단 -> 적용 후 9건 중 6건 절단, 67%). 최근
-    # 생성 토큰에 페널티를 주는 방식이 "계속 생성" 대비 "종료" 토큰을 상대적으로
-    # 유리하게 만든 것으로 추정 — 드문 반복 버그보다 훨씬 잦은 절단 버그를 만드는
-    # 역효과라 되돌린다. repetition_penalty로 반복 아티팩트를 잡으려면 beam_size=1
-    # 자체의 조기종료 경향과 충돌하지 않는 다른 방식(예: no_repeat_ngram_size를
-    # 아주 좁게, 또는 후처리 단계에서만)을 실제 녹음으로 충분히 검증한 뒤 재시도할 것.
     segments, _info = model.transcribe(audio, language="ko", vad_filter=vad_filter, beam_size=1)
     segments = list(segments)
 
-    # 2026-08-26 임시 진단 — "여러 명이 마이크 주변에 있을 때 엉뚱한 텍스트(환각)가
-    # 실제 명령처럼 처리된다" 리포트 원인 파악용. no_speech_prob/avg_logprob 실측값을
-    # 먼저 보고 이 프로젝트 실제 마이크/모델 기준 임계값을 정하기 전까지는, 아직
-    # 아무것도 걸러내지 않고 값만 찍는다. 원인/임계값 확정되면 지울 것(또는 실제
-    # 필터 조건으로 교체).
     if segments:
         for seg in segments:
             print(
@@ -926,16 +712,6 @@ def stt_transcribe(
 
     text = " ".join(segment.text.strip() for segment in segments).strip()
 
-    # 2026-08-28 — 환각(hallucination) 방어. "여러 명이 마이크 주변에 있을 때 엉뚱한
-    # 텍스트가 실제 명령처럼 처리된다"는 리포트에 대해 예전엔 값만 찍고 아무것도 안
-    # 걸러냈다(위 [STT_CONF_DEBUG]). 상시 마이크 + 주방 잡음이라 실사용에서 계속 문제.
-    # 정식 임계값 튜닝용 로그 데이터는 아직 없어서 **보수적으로만** 막는다:
-    #  (a) faster-whisper 자신의 no_speech_prob가 0.85를 넘으면(모델의 기본 임계값 0.6보다
-    #      훨씬 높음 — 진짜 조용한 발화까지 버릴 위험을 줄이려 여유를 크게 뒀다) 버린다.
-    #  (b) 유튜브/방송 말미 상투구처럼 whisper가 무음에서 흔히 만들어내는 고정 문구는
-    #      이 앱 문맥상 절대 안 나올 말이라 오탐 위험 0으로 버린다.
-    # 둘 중 하나라도 걸리면 EC-01(인식 실패)과 동일하게 빈 문자열 -> 호출부가 "다시
-    # 말씀해주세요"로 안내한다.
     if text and segments:
         max_no_speech = max((s.no_speech_prob for s in segments), default=0.0)
         if max_no_speech > 0.85:
@@ -948,11 +724,6 @@ def stt_transcribe(
         print(f"[STT] sid={session_id} 환각 방어: 상투구 매칭 — 버림 text={text!r}", flush=True)
         text = ""
 
-    # 2026-08-26 임시 진단 — "오징어볶음 레시피"처럼 vad_filter=False에서도, 큰소리로
-    # 또박또박 말해도(max_amp 0.86까지) stt_text=''가 반복된다는 실측 리포트. vad_filter
-    # 이중 필터링(위 문서, 이미 수정)과는 다른 원인으로 보여서, whisper 자신의 세그먼트
-    # 판정 정보(no_speech_prob 등, vad_filter와 무관하게 모델 디코딩 자체가 "이 구간은
-    # 말이 아니다"로 보고 스킵할 수 있음)를 눈으로 확인하기 위함. 원인 확인되면 지울 것.
     if not text:
         print(
             f"[STT_EMPTY_DEBUG] sid={session_id} segments={len(segments)} "
@@ -962,26 +733,9 @@ def stt_transcribe(
             flush=True,
         )
 
-    # 2026-09-01 — 이 자리에 있던 매 호출마다의 torch.cuda.empty_cache() 제거.
-    # orchestration/intent_classifier.py::classify_intent()의 같은 날짜 주석에 이유를
-    # 자세히 적어뒀다(요약: "12GB GPU 공유, 여유 500MB 미만"이던 전제가 A40 48GB +
-    # gpu_worker_pool 멀티프로세스 구조로 더 이상 유효하지 않음 — 실측: 워커당 여유
-    # 약 3~4GB). empty_cache()는 CUDA 동기화를 강제하는 안티패턴이라 매 발화마다 이
-    # 비용을 지불할 이유가 없다. 되돌리는 법: 바로 위 문단이 설명하는 그 증상
-    # ("Queue overflow" 반복 + GPU idle인데 응답 안 잡힘)이 재현되면 이 커밋을
-    # 되돌리거나 아래 두 줄을 복원할 것 — if torch.cuda.is_available():
-    # torch.cuda.empty_cache()
     if not text:
         return text
 
-    # 2026-08-24 추가 — "김치볶음밥"이 화면/채팅창에 "김치볶�밥"처럼 깨져 나오는 문제
-    # 실측 확인. beam_size(1이든 5든 동일 재현 — 그 파라미터 문제 아님)와 무관하게, 같은
-    # 문장을 여러 번 녹음해도 그중 일부만 이렇게 깨진다 — CTranslate2가 서브워드 토큰을
-    # 텍스트로 역토큰화(detokenize)하는 과정에서, 드물게 완전한 UTF-8 문자를 이루지 못하는
-    # 토큰 경계가 선택되는 것으로 보인다(모델/토크나이저 수준 현상이라 이 함수에서 근본
-    # 수정은 어려움). 이런 결과를 그대로 화면에 보여주거나 요리명 매칭에 넘기면 사용자
-    # 혼란·오매칭으로 이어지므로, U+FFFD(깨진 문자 표시)가 하나라도 있으면 EC-01(인식
-    # 실패)과 똑같이 빈 문자열로 취급한다 — 호출부가 "다시 말씀해주세요"로 안내한다.
     if "�" in text:
         return ""
 
@@ -1001,26 +755,7 @@ def stt_transcribe_with_context(
         Union[str, Sequence[str]]
     ] = None,
 ) -> str:
-    """
-    배치 평가·오프라인 확인용 STT 함수입니다(4bit QLoRA + bitsandbytes, CUDA 전용).
-
-    실시간 서비스 경로(app.py)는 이 함수가 아니라 위의 stt_transcribe()를 쓴다 — 이 함수는
-    GPU 없는 HF Spaces CPU Basic에서 로드 자체가 안 되기 때문(위 load_stt_model() 참고).
-
-    예
-    --
-    prediction = stt_transcribe_with_context(
-        audio_path="user.wav",
-        ingredient_context=[
-            "소고기다짐육 100g",
-            "당근 20g",
-            "깻잎 3장",
-        ],
-    )
-
-    ingredient_context가 None이면
-    숫자 의미 보정은 수행하지 않습니다.
-    """
+    """배치 평가·오프라인 확인용 STT 함수입니다(4bit QLoRA + bitsandbytes, CUDA 전용)."""
 
     audio_path = Path(
         audio_path
@@ -1050,21 +785,7 @@ def run_batch_test(
     audio_dir,
     result_path="ChefEar_STT_test100_result.csv",
 ):
-    """
-    기존 ChefEar STT 평가용 함수입니다.
-
-    중요
-    ----
-    모델 평가에서는 reference를
-    재료 문맥으로 사용하지 않습니다.
-
-    그렇게 하면 정답을 미리 보고
-    STT를 보정하는 셈이 되어
-    평가 결과가 왜곡되기 때문입니다.
-
-    따라서 run_batch_test에서는
-    문맥 기반 숫자 보정을 사용하지 않습니다.
-    """
+    """기존 ChefEar STT 평가용 함수입니다."""
 
     csv_path = Path(
         csv_path
@@ -1362,30 +1083,6 @@ def run_batch_test(
     return result_df
 
 
-# ============================================================
-# 실시간 추론 원본 모델 비교용 (faster-whisper, 파인튜닝 전) — 2026-08-20 추가,
-# 2026-08-23 이름 충돌 수정
-# ============================================================
-#
-# 위 load_stt_model()/run_batch_test()는 파인튜닝된 4bit QLoRA Adapter를 쓰는데
-# bitsandbytes 4bit 양자화가 GPU(CUDA) 전용이라, GPU 없는 환경(예: 이 저장소를
-# 로컬 CPU에서 테스트할 때)에서는 아예 로드가 안 된다. 그리고 배포용으로 정해둔
-# faster-whisper(requirements.txt)로 쓰려면 파인튜닝된 Adapter를 CTranslate2
-# 포맷으로 변환해야 하는데, 이 변환은 위 README의 "faster-whisper/CTranslate2
-# 기반 경량화 검토" 항목대로 아직 안 된 상태였다(2026-08-20 당시) — 그래서 이
-# 아래 함수는 일단 파인튜닝 안 된 원본 openai/whisper-large-v3-turbo를
-# faster-whisper로 돌려서 "마이크 → VAD → 텍스트 → 요리명 인식" 파이프라인
-# 자체가 동작하는지만 먼저 확인하려던 용도였다(상시 마이크 테스트 화면 요청).
-#
-# 2026-08-23 리포트 — 그 후 CTranslate2 변환이 끝나서 위쪽에 "배포용" stt_transcribe()
-# (line 769대, load_ct2_model() 사용, 진짜 파인튜닝된 어댑터)가 새로 생겼는데, 이 함수도
-# 이름이 똑같이 stt_transcribe()였다. 같은 파일에 같은 이름의 함수가 두 번 정의되면
-# 파이썬은 나중 정의(이 함수)로 조용히 덮어써버린다 — 그 결과 실서비스 경로
-# (src/ui/voice_io.py의 listen())가 실제로는 이 함수(파인튜닝 안 된 원본 모델)를 호출하고
-# 있었고, 위쪽 배포용 함수는 워밍업 때 GPU에 로드만 되고 실제 추론에는 전혀 안 쓰이는
-# 죽은 코드였다(AppTest로 실측 확인 — `stt.infer.stt_transcribe`가 실제로 바인딩된 소스를
-# 찍어보니 이 함수였음). 이름을 바꿔서 충돌을 없애고, 위쪽 배포용 함수가 진짜로
-# 쓰이게 한다. 이 함수 자체는 파인튜닝 전/후 비교용으로 남겨둔다.
 REALTIME_MODEL_SIZE = os.environ.get("HF_STT_REALTIME_MODEL") or "large-v3-turbo"
 
 _realtime_model = None
@@ -1406,8 +1103,6 @@ def load_realtime_stt_model():
 
         from faster_whisper import WhisperModel
 
-        # 2026-08-19 팀 결정(docs/decisions.md #2): 배포를 GPU 데스크탑 상시 노출로 확정 —
-        # CPU 폴백 없이 GPU를 필수로 요구한다.
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "GPU(CUDA)가 필요합니다 — 배포 방향이 GPU 전용으로 확정됨(docs/decisions.md #2)."
@@ -1418,16 +1113,7 @@ def load_realtime_stt_model():
 
 
 def stt_transcribe_realtime_base(waveform, sample_rate: int = 16000) -> str:
-    """오디오 배열 하나(예: VAD로 잘라낸 발화 한 구간) -> 인식된 텍스트 한 줄.
-
-    파인튜닝 전 원본 모델(load_realtime_stt_model())로 인식한다 — 위 stt_transcribe()
-    (파인튜닝된 어댑터, load_ct2_model())와 비교하고 싶을 때만 직접 불러 쓰는 함수다.
-    실서비스 경로(app.py/voice_io.py)는 이 함수가 아니라 위 stt_transcribe()를 쓴다
-    (2026-08-23 이름 충돌 수정 — 위 섹션 주석 참고).
-
-    waveform은 float32 numpy 배열(모노)이어야 한다 — sample_rate가 16000이 아니면
-    whisper가 기대하는 16kHz로 리샘플링한다(librosa는 이미 이 파일 상단에서 씀).
-    """
+    """오디오 배열 하나(예: VAD로 잘라낸 발화 한 구간) -> 인식된 텍스트 한 줄."""
     import numpy as np
 
     waveform = np.asarray(waveform, dtype=np.float32)
