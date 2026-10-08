@@ -9,5 +9,5 @@ def test_short_name_unchanged():
 
 
 def test_long_name_truncated_to_9_chars_plus_ellipsis():
-    assert truncate_display_name("hlkm1667hehe@gmail.com") == "hlkm1667h..."
+    assert truncate_display_name("longname1234@example.com") == "longname1..."
     assert truncate_display_name("abcdefghij") == "abcdefghi..."

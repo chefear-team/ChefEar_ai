@@ -39,6 +39,22 @@ ChefEar: "일단계, 두부와 감자를 깍둑썰기 해주세요."   ← 조�
 - **정직한 데이터** — 조리순서는 저장된 500개 큐레이션 레시피에서 조회만 합니다. 없으면 "없다"고 답하고, 런타임에 문장을 생성하지 않습니다.
 - **외부 LLM API 없음** — 서비스 실행 중 OpenAI·Gemini 등 외부 API를 호출하지 않습니다. 요리명 추정은 GPU에 직접 올린 로컬 LLM(EXAONE 2.4B)이 담당합니다.
 
+### 화면 흐름
+
+| 로그인 | 시작 | 음성 처리 중 | 레시피 확인 |
+|---|---|---|---|
+| ![로그인](docs/images/flow/cards/01_login.jpg) | ![시작](docs/images/flow/cards/04_start_guest.jpg) | ![음성 처리 중](docs/images/flow/cards/05_processing.jpg) | ![레시피 확인](docs/images/flow/cards/06_recipe_confirm.jpg) |
+
+| 조리 1/7 단계 | 조리 7/7 단계 | 요리 완성 | 관리자 음성 인증 |
+|---|---|---|---|
+| ![조리 1단계](docs/images/flow/cards/07_cooking_step1.jpg) | ![조리 7단계](docs/images/flow/cards/09_cooking_step7_last.jpg) | ![요리 완성](docs/images/flow/cards/10_cooking_complete.jpg) | ![관리자 음성 인증](docs/images/flow/cards/11_admin_voice_auth.jpg) |
+
+| 등록 · 재료 | 등록 · 조리 순서 | 등록 완료 | 마이레시피 |
+|---|---|---|---|
+| ![등록 재료](docs/images/flow/cards/12_register_ingredients.jpg) | ![등록 순서](docs/images/flow/cards/13_register_steps.jpg) | ![등록 완료](docs/images/flow/cards/14_register_complete.jpg) | ![마이레시피](docs/images/flow/cards/15_my_recipes.jpg) |
+
+2026-10-08 로컬(RTX 5070 12GB, GPU 워커 1개)에서 캡처했습니다. 음성 입력은 녹음 파일을 실제 STT에 넣어 진행했고, 검색·조리·관리자 화면은 실제 DB, 등록·마이레시피는 테스트 계정과 mock DB입니다. 배경까지 담긴 원본 16장은 `docs/images/flow/`에 있습니다.
+
 ## 2. 팀과 역할
 
 | 이름 | 역할 | 실제 기여(커밋 이력 기준) |
@@ -251,6 +267,7 @@ landing/                    소개 페이지(Streamlit, Vercel 배포본과 동�
 - TTS 응답은 문장 길이에 따라 5초를 넘길 수 있고, 종단(STT+LLM+TTS) 응답 시간은 정식으로 측정하지 않았습니다.
 - 모델 저장소가 private라 실행에는 팀 토큰이 필요합니다.
 - MOS는 지인 13명 편의표본입니다.
+- 마이레시피 수정 화면에서 저장하면 조리 용어 태그(`[TERM:...]`)가 별도 단계로 떨어져 나가는 버그가 남아 있습니다. 수정 방향은 `docs/specs/edit_recipe_term_tag.md`에 정리했고 아직 고치지 않았습니다.
 
 ## 12. 라이선스·윤리
 
