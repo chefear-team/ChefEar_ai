@@ -19,7 +19,7 @@ pinned: false
 | 과정 | AI Human 7기 · 1차 팀 프로젝트(딥러닝 기반 TTS·STT 서비스) · A조 |
 | 기간 | 2026-08-14 ~ 08-30 (발표 08-31) · 09-01 ~ 09-08 마무리 작업 |
 | 서비스 | [chefear-landingpage.vercel.app](https://chefear-landingpage.vercel.app) → [chefear.store](https://chefear.store) |
-| 저장소 상태 | 최종 정리본(2026-09-10). 기능 개발 종료, 문서·코드 정리 완료 |
+| 저장소 상태 | 최종 정리본(2026-09-10). 기능 개발 종료, 문서·코드 정리 완료. 10-09 화면 흐름 캡처·수정 화면 버그 스펙 추가 |
 
 ---
 
@@ -226,12 +226,21 @@ cp .env.example .env        # 아래 값을 채운다
 | `HF_STT_CT2_REPO` | 필수 | 배포용 STT 모델 저장소(`kimseunguk/chefear-stt-ct2-int8`) |
 | `HF_TOKEN` | 필수 | STT·TTS 모델 저장소가 private |
 | `HF_TTS_MODEL_REPO` | 선택 | 기본값 `kimseunguk/qwen3-tts-kss-finetuned` |
-| `GPU_WORKER_COUNT` | 선택 | 워커 프로세스 수, 기본 3 (워커당 VRAM 약 10GB) |
+| `GPU_WORKER_COUNT` | 선택 | 워커 프로세스 수, 기본 3 (워커당 VRAM 약 10GB). VRAM 12GB GPU는 1 |
 | `CF_TURN_KEY_ID` 등 | 선택 | 원격 접속 마이크용 TURN |
 | `ACCESS_GATE_TOKEN` | 선택 | 랜딩페이지를 거친 접속만 허용 |
 | `ADMIN_ACCESS_TOKEN` / `ADMIN_ENROLL_TOKEN` / `ADMIN_VOICE_THRESHOLD` | 선택 | 관리자 페이지 2단계 인증 |
 
 Python 3.13이 필요합니다(상시 마이크가 의존하는 aioice가 3.14를 지원하지 않음). CUDA GPU가 없으면 STT 로딩 단계에서 종료됩니다.
+
+RTX 50 시리즈(Blackwell)는 cu124 빌드로 GPU를 쓸 수 없어, 위 torch 줄 대신 CUDA 12.8 빌드를 설치합니다. 2026-10-08 Windows · RTX 5070 12GB에서 아래 조합으로 확인했습니다.
+
+```bash
+pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+GPU_WORKER_COUNT=1 .venv/Scripts/python -m streamlit run src/app.py   # Windows(Git Bash). run_local.sh는 Linux용
+```
+
+VRAM 12GB에서는 워커 1개만 뜹니다. 모델 4개를 올리면 GPU 전체 사용량이 약 11~11.8GB라 한 번에 한 명만 쓸 수 있고, 캐시가 없는 첫 응답은 LLM 요리명 추정과 TTS 합성에 수십 초가 걸립니다.
 
 ### 9.3 테스트와 평가
 
