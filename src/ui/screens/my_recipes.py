@@ -8,6 +8,7 @@ import streamlit as st
 from theme import ICON_BASKET_SM, ICON_INBOX, render_back_link, render_badge, render_spacer, truncate_display_name
 from orchestration.db import get_client
 from orchestration.registration import delete_recipe, update_recipe
+from orchestration.term_dict import resolve_for_display
 from ui.dispatch import reset_to_start
 from ui.session import goto, logout as session_logout
 
@@ -37,6 +38,23 @@ def _strip_step_prefix(step_text: str) -> str:
     레거시 행은 패턴이 안 맞아 그대로 반환된다.
     """
     return _STEP_PREFIX_RE.sub("", step_text, count=1)
+
+
+def _prefill_instructions(steps: list[dict]) -> str:
+    """수정 폼의 조리 순서 칸에 채울 텍스트 — docs/specs/edit_recipe_term_tag.md.
+    [TERM:...] 태그는 저장할 때 update_recipe()가 문장에서 다시 만들므로 폼에는
+    보여주지 않는다. 태그만 남은 단계(버그로 쪼개진 기존 행)는 빈 문장이 되어 빠진다.
+    """
+    lines = (_strip_step_prefix(resolve_for_display(s["step_text"])).strip() for s in steps)
+    return "\n".join(line for line in lines if line)
+
+
+def _parse_instructions(text: str) -> list[str]:
+    """수정 폼 텍스트를 단계 목록으로 — 한 줄이 한 단계이고, 사용자가 직접 넣은
+    [TERM:...] 태그는 걷어낸다. 태그를 걷어내고 빈 줄이 되면 단계로 만들지 않는다.
+    """
+    lines = (resolve_for_display(line).strip() for line in text.split("\n"))
+    return [line for line in lines if line]
 
 
 def _approval_label(row: dict) -> str:
@@ -183,8 +201,8 @@ def screen_edit_recipe() -> None:
     )
     instructions_text = st.text_area(
         "조리 순서 (한 줄에 한 단계씩)",
-        # "N. " 순번 접두어를 떼고 프리필 — _strip_step_prefix() 문서 참고.
-        value="\n".join(_strip_step_prefix(s["step_text"]) for s in steps),
+        # "N. " 순번 접두어와 [TERM:...] 태그를 떼고 프리필 — _prefill_instructions() 문서 참고.
+        value=_prefill_instructions(steps),
         key="edit_recipe_instructions",
         height=200,
     )
@@ -193,7 +211,7 @@ def screen_edit_recipe() -> None:
     with c1:
         if st.button("저장", key="edit_recipe_save", type="primary", use_container_width=True):
             ingredients = [x.strip() for x in ingredients_text.split(",") if x.strip()]
-            instructions = [x.strip() for x in instructions_text.split("\n") if x.strip()]
+            instructions = _parse_instructions(instructions_text)
             update_recipe(recipe_id, dish_name.strip(), ingredients, instructions, client=client, owner_id=user.id)
             st.session_state.editing_recipe_id = None
             goto("my_recipes")

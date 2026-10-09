@@ -1,8 +1,36 @@
-"""ui/screens/my_recipes.py 테스트 — docs/specs/my_recipes.md AC-01/05/06."""
+"""ui/screens/my_recipes.py 테스트 — docs/specs/my_recipes.md AC-01/05/06,
+docs/specs/edit_recipe_term_tag.md AC-01/02/05/06."""
 from fake_supabase import FakeSupabaseClient
 
-from orchestration.registration import save_recipe
-from ui.screens.my_recipes import _approval_label, _authorized_recipe, _my_recipes, _strip_step_prefix
+from orchestration.registration import save_recipe, update_recipe
+from ui.screens.my_recipes import (
+    _approval_label,
+    _authorized_recipe,
+    _my_recipes,
+    _parse_instructions,
+    _prefill_instructions,
+    _strip_step_prefix,
+)
+
+_POTATO_STEPS = [
+    "감자와 양파를 한입 크기로 썰어주세요.",
+    "냄비에 감자를 넣고 간장, 설탕, 물 한 컵을 부어주세요.",
+    "중불에서 15분간 조려주세요.",
+    "물엿과 참기름을 넣고 윤기가 나게 섞어주세요.",
+]
+
+
+def _steps(client, recipe_id):
+    return sorted(
+        (r for r in client.table("recipe_steps").rows.values() if r["recipe_id"] == recipe_id),
+        key=lambda r: r["step_number"],
+    )
+
+
+def _save_from_edit_form_unchanged(client, recipe_id, owner_id):
+    """수정 화면을 열고 아무것도 안 바꾼 채 저장하는 것과 같은 경로."""
+    form_text = _prefill_instructions(_steps(client, recipe_id))
+    update_recipe(recipe_id, "감자조림", ["감자 2개"], _parse_instructions(form_text), client=client, owner_id=owner_id)
 
 
 def test_ac01_only_own_user_custom_recipes_returned():
@@ -71,3 +99,50 @@ def test_ac05_authorized_recipe_returns_row_for_correct_owner():
 
     assert recipe is not None
     assert recipe["dish_name"] == "김치찌개"
+
+
+def test_term_tag_ac01_unchanged_edit_keeps_steps_identical():
+    """edit_recipe_term_tag.md AC-01 — 수정 화면에서 그대로 저장해도 단계 수와 문장이 같다."""
+    client = FakeSupabaseClient()
+    saved = save_recipe("감자조림", ["감자 2개"], _POTATO_STEPS, client=client, owner_id="A")
+    recipe_id = saved["recipe_id"]
+    before = [s["step_text"] for s in _steps(client, recipe_id)]
+
+    _save_from_edit_form_unchanged(client, recipe_id, "A")
+
+    after = [s["step_text"] for s in _steps(client, recipe_id)]
+    assert after == before
+    assert after[2] == "3. 중불에서 15분간 조려주세요.\n[TERM:조리다]"
+
+
+def test_term_tag_ac02_prefill_hides_tags():
+    """edit_recipe_term_tag.md AC-02 — 수정 칸에는 태그가 보이지 않고 한 단계가 한 줄이다."""
+    client = FakeSupabaseClient()
+    saved = save_recipe("감자조림", ["감자 2개"], _POTATO_STEPS, client=client, owner_id="A")
+
+    form_text = _prefill_instructions(_steps(client, saved["recipe_id"]))
+
+    assert "[TERM:" not in form_text
+    assert form_text.split("\n") == _POTATO_STEPS
+
+
+def test_term_tag_ac05_already_split_rows_recover_on_next_save():
+    """edit_recipe_term_tag.md AC-05 — 버그로 태그만 남은 단계는 다음 저장 때 사라지고 태그가 제자리로 돌아온다."""
+    client = FakeSupabaseClient()
+    saved = save_recipe("감자조림", ["감자 2개"], ["가"], client=client, owner_id="A")
+    recipe_id = saved["recipe_id"]
+    client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
+    broken = ["1. 가", "2. 나", "3. 조려주세요.", "4. [TERM:조리다]", "5. 다"]
+    client.table("recipe_steps").insert(
+        [{"recipe_id": recipe_id, "step_number": i, "step_text": t, "source": "user_custom"} for i, t in enumerate(broken, 1)]
+    ).execute()
+
+    _save_from_edit_form_unchanged(client, recipe_id, "A")
+
+    after = [s["step_text"] for s in _steps(client, recipe_id)]
+    assert after == ["1. 가", "2. 나", "3. 조려주세요.\n[TERM:조리다]", "4. 다"]
+
+
+def test_term_tag_ac06_tag_only_lines_are_not_steps():
+    """edit_recipe_term_tag.md AC-06 — 사용자가 태그만 있는 줄을 넣어도 단계가 되지 않는다."""
+    assert _parse_instructions("가\n[TERM:조리다]\n나") == ["가", "나"]

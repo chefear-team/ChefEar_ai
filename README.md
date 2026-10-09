@@ -19,7 +19,7 @@ pinned: false
 | 과정 | AI Human 7기 · 1차 팀 프로젝트(딥러닝 기반 TTS·STT 서비스) · A조 |
 | 기간 | 2026-08-14 ~ 08-30 (발표 08-31) · 09-01 ~ 09-08 마무리 작업 |
 | 서비스 | [chefear-landingpage.vercel.app](https://chefear-landingpage.vercel.app) → [chefear.store](https://chefear.store) |
-| 저장소 상태 | 최종 정리본(2026-09-10). 기능 개발 종료, 문서·코드 정리 완료. 10-09 화면 흐름 캡처·수정 화면 버그 스펙 추가 |
+| 저장소 상태 | 최종 정리본(2026-09-10). 기능 개발 종료, 문서·코드 정리 완료. 10-09 화면 흐름 캡처 추가, 마이레시피 수정 화면 버그 수정 |
 
 ---
 
@@ -198,7 +198,7 @@ STT·TTS 학습은 Colab과 개인 작업 공간의 노트북·스크립트로 �
 | UI | Streamlit 1.61.1, Python 3.13 | 화면 전환 잔상은 `st.empty()` 슬롯으로 대응 |
 | DB | Supabase 2.31.0 (`recipes`/`recipe_steps`/`users`) | SQL 함수 없이 Python 필터 |
 | 배포 | Docker(CUDA 12.4) · RunPod A40 · GHCR · Cloudflare Tunnel · Vercel 랜딩 | `docs/runpod_deploy.md` |
-| 테스트 | pytest 119개(GPU 불필요, mock DB) | `pytest tests/` |
+| 테스트 | pytest 125개(GPU 불필요, mock DB) | `pytest tests/` |
 
 ## 9. 실행 방법
 
@@ -245,7 +245,7 @@ VRAM 12GB에서는 워커 1개만 뜹니다. 모델 4개를 올리면 GPU 전체
 ### 9.3 테스트와 평가
 
 ```bash
-pytest tests/                              # 단위테스트 119개, GPU·DB 불필요
+pytest tests/                              # 단위테스트 125개, GPU·DB 불필요
 python src/stt/evaluate_fixed100.py        # 배포 STT를 Fixed100으로 재평가 (GPU, .env 필요)
 python tests/tts_stt_roundtrip_test.py     # TTS→STT 재인식 CER (GPU)
 ```
@@ -276,7 +276,6 @@ landing/                    소개 페이지(Streamlit, Vercel 배포본과 동�
 - TTS 응답은 문장 길이에 따라 5초를 넘길 수 있고, 종단(STT+LLM+TTS) 응답 시간은 정식으로 측정하지 않았습니다.
 - 모델 저장소가 private라 실행에는 팀 토큰이 필요합니다.
 - MOS는 지인 13명 편의표본입니다.
-- 마이레시피 수정 화면에서 저장하면 조리 용어 태그(`[TERM:...]`)가 별도 단계로 떨어져 나가는 버그가 남아 있습니다. 수정 방향은 `docs/specs/edit_recipe_term_tag.md`에 정리했고 아직 고치지 않았습니다.
 
 ## 12. 라이선스·윤리
 

@@ -16,6 +16,6 @@
 | `user_accounts_google_login.md` | 09-01 | **구현됨** — 로컬 가입 + 구글 OAuth |
 | `my_recipes.md` | 09-01 (사후 작성) | **구현됨** — 마이레시피 목록/수정/삭제 |
 | `private_recipe_visibility.md` | 09-02 (사후 작성) | **구현됨** — 등록은 로그인 필수, 등록 레시피는 본인에게만 노출 |
-| `edit_recipe_term_tag.md` | 10-09 | **미구현** — 마이레시피 수정 시 `[TERM:...]` 태그가 별도 단계로 분리되는 버그 수정 |
+| `edit_recipe_term_tag.md` | 10-09 | **구현됨** — 마이레시피 수정 시 `[TERM:...]` 태그가 별도 단계로 분리되는 버그 수정 |
 
 `my_recipes.md`와 `private_recipe_visibility.md`는 구현 당시 스펙 없이 커밋됐고, 코드·문서가 참조하는 파일이 비어 있어 2026-09-10에 커밋 이력을 바탕으로 사후 작성했다.

@@ -2,7 +2,7 @@
 
 두 종류가 섞여 있다. pytest가 자동 수집하는 단위테스트와, 사람이 직접 실행하는 GPU 벤치마크·진단 스크립트.
 
-## 단위테스트 (`pytest tests/`, 119개, GPU·DB 불필요)
+## 단위테스트 (`pytest tests/`, 125개, GPU·DB 불필요)
 
 | 파일 | 대상 |
 |---|---|
@@ -13,13 +13,13 @@
 | `test_recipe_search.py` | 요리명 3단계 보정, 공백 무시·반복 축약, 소유자 필터 |
 | `test_registration.py` | 등록 상태 기계, `owner_id` 없는 저장 거부, 용어 자동 태깅 |
 | `test_auth.py` | 로컬 가입/로그인, 구글 로그인 행 재사용, 세션 토큰 |
-| `test_my_recipes.py` | 목록/수정/삭제, 타인 레시피 접근 거부 |
+| `test_my_recipes.py` | 목록/수정/삭제, 타인 레시피 접근 거부, 수정 시 용어 태그 유지 |
 | `test_entity_extract_llm.py` / `test_llm_infer.py` | 로컬 LLM 출력 파싱(모델은 mock) |
 | `test_speaker_verify.py` | 화자검증 embed/verify/enroll(임베딩 mock), 관리자 진입 발화 감지 |
 | `test_tts_pronunciation.py` | TTS 직전 텍스트 보정(겹받침 치환, 단계 번호 한글화, 종결 보정) |
 | `test_mock_client.py` / `test_theme.py` | mock 폴백, 표시용 문자열 유틸 |
 
-2026-09-10 기준 119개 전부 통과.
+2026-10-09 기준 125개 전부 통과.
 
 ## 수동 실행 스크립트
 

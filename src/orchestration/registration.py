@@ -165,7 +165,7 @@ def update_recipe(
 
     client.table("recipe_steps").delete().eq("recipe_id", recipe_id).execute()
     step_payload = [
-        {"recipe_id": recipe_id, "step_number": i, "step_text": f"{i}. {text}", "source": "user_custom"}
+        {"recipe_id": recipe_id, "step_number": i, "step_text": f"{i}. {auto_tag_terms(text)}", "source": "user_custom"}
         for i, text in enumerate(instructions, start=1)
     ]
     if step_payload:

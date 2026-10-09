@@ -171,3 +171,27 @@ def test_save_recipe_auto_tags_variant_phrases_for_tts():
     assert resolve_for_tts(steps[2]["step_text"]) == (
         "2. 양파는 어슷하게 썰어주세요 어슷썰기란 칼을 비스듬히 기울여 사선으로 써는 방법이에요."
     )
+
+
+def test_update_recipe_tags_terms_added_by_edit():
+    """edit_recipe_term_tag.md AC-03 — 수정으로 넣은 용어 표현에도 등록과 같은 태그가 붙는다."""
+    client = FakeSupabaseClient()
+    saved = save_recipe("감자조림", ["감자"], ["감자를 썰어주세요.", "물을 부어주세요."], client=client, owner_id="A")
+    recipe_id = saved["recipe_id"]
+
+    update_recipe(recipe_id, "감자조림", ["감자"], ["감자를 썰어주세요.", "양파를 어슷썰기 해주세요."], client=client, owner_id="A")
+
+    texts = [r["step_text"] for r in sorted(client.table("recipe_steps").rows.values(), key=lambda r: r["step_number"])]
+    assert "[TERM:어슷썰기]" in texts[1]
+
+
+def test_update_recipe_drops_tag_when_term_removed():
+    """edit_recipe_term_tag.md AC-04 — 용어 표현을 지우면 태그도 사라진다."""
+    client = FakeSupabaseClient()
+    saved = save_recipe("감자조림", ["감자"], ["중불에서 15분간 조려주세요."], client=client, owner_id="A")
+    recipe_id = saved["recipe_id"]
+
+    update_recipe(recipe_id, "감자조림", ["감자"], ["중불에서 15분간 끓여주세요."], client=client, owner_id="A")
+
+    texts = [r["step_text"] for r in client.table("recipe_steps").rows.values()]
+    assert texts == ["1. 중불에서 15분간 끓여주세요."]

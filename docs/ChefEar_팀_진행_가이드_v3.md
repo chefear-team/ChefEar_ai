@@ -53,7 +53,7 @@ proj1-a/
 ├── db/                           schema.sql · 500건 교체 마이그레이션 SQL
 ├── data/                         기준예문 · Fixed100 검증셋 · MOS 원자료 (대용량 음성·모델은 git 제외)
 ├── results/                      STT·TTS 평가 CSV·대시보드
-├── tests/                        pytest 119개 + GPU 벤치마크 스크립트
+├── tests/                        pytest 125개 + GPU 벤치마크 스크립트
 └── landing/                      소개 페이지
 ```
 
