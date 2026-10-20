@@ -6,6 +6,7 @@ import {
   signInWithGoogle,
   signInWithPassword,
   signUpWithPassword,
+  takeGoogleError,
 } from "../lib/auth";
 import { errorMessage } from "../lib/errors";
 
@@ -278,7 +279,7 @@ function EmailSheet({ onClose }: { onClose: () => void }) {
  */
 export function LoginOptions() {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(takeGoogleError);
   const [sheet, setSheet] = useState(false);
 
   if (!googleAvailable && !emailLoginAvailable) {
