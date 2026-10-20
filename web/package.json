@@ -1,0 +1,28 @@
+{
+  "name": "chefear-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "copy-assets": "node scripts/copy-vad-assets.mjs",
+    "predev": "node scripts/copy-vad-assets.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/copy-vad-assets.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ricky0123/vad-web": "0.0.31",
+    "@supabase/supabase-js": "2.118.0",
+    "onnxruntime-web": "1.30.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "4.7.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.7"
+  }
+}
