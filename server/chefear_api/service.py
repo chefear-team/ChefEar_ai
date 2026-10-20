@@ -35,6 +35,7 @@ _GO_WORDS = ("응", "네", "좋", "다음", "그래", "시작", "진행", "할�
 _MAX_DISH_NAME = 25
 _MAX_BLOCKED_PER_SESSION = 10  # 한 세션에서 공격 문구가 이만큼 넘으면 더는 받지 않는다
 _CHAT_KEEP = 20
+_CHAT_TAIL = re.compile(r"[\s?!.。]+$")
 _STEP_PREFIX = re.compile(r"^\d+\.\s*")
 
 TEXT_ONLY_SCREENS_BACKGROUND = ("register_ingredients", "register_steps", "my_recipes", "edit_recipe")
@@ -115,7 +116,9 @@ class ChefEarService:
         s["screen"] = "start"
 
     def _say(self, s: dict, text: str) -> None:
+        """읽어 줄 문장을 정하고, 대화 카드에도 "ChefEar:" 줄로 남긴다(끝의 문장부호는 뗀다)."""
         s["speech"] = {"text": text}
+        self._chat(s, "ai", _CHAT_TAIL.sub("", text))
 
     def _chat(self, s: dict, role: str, text: str) -> None:
         s["chat"].append({"role": role, "text": text})

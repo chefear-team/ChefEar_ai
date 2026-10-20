@@ -209,7 +209,7 @@ STT·TTS 학습은 Colab과 개인 작업 공간의 노트북·스크립트로 �
 | API | FastAPI, Python 3.12 | Modal CPU, 입력 검증 `guard.py` |
 | DB·파일·로그인 | Supabase (Postgres, Storage, Auth) | `db/schema.sql` + `db/migrate_renewal.sql`, RLS 켬 |
 | 추론 서버 | Modal | 안 쓰면 0대, 모델은 이미지에 포함 |
-| 테스트·CI | pytest 166개(GPU·DB·모델 불필요) + GitHub Actions | `.github/workflows/ci.yml` |
+| 테스트·CI | pytest 167개(GPU·DB·모델 불필요) + GitHub Actions | `.github/workflows/ci.yml` |
 
 ## 9. 실행 방법
 

@@ -17,6 +17,21 @@ def _act(w, sid, owner=None, **action):
     return w.service.action(sid, action, owner)
 
 
+def test_chat_card_keeps_both_sides(world):
+    """대화 카드에는 "나"와 "ChefEar" 줄이 둘 다 남는다(ChefEar 줄은 끝의 문장부호를 뗀 읽은 문장)."""
+    w = world
+    sid = _start(w)
+    st = _say(w, sid, "된장찌개 어떻게 만들어")
+    assert st["chat"] == [
+        {"role": "user", "text": "된장찌개"},
+        {"role": "ai", "text": sp.confirm_text("된장찌개").rstrip("?!. ")},
+    ]
+    st = _say(w, sid, "응")
+    roles = [m["role"] for m in st["chat"]]
+    assert roles == ["user", "ai", "user", "ai"]
+    assert all(not m["text"].endswith(("?", "!", ".")) for m in st["chat"] if m["role"] == "ai")
+
+
 def test_lookup_confirm_and_cook_flow(world):
     w = world
     sid = _start(w)
