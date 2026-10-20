@@ -1,0 +1,12 @@
+# API 서버(server/chefear_api)를 PC에서 돌리거나 테스트할 때: pip install -r requirements-server.txt
+# 운영(Modal)은 inference/modal_app.py가 같은 버전으로 이미지를 만든다.
+fastapi==0.141.1
+uvicorn==0.51.0
+httpx==0.28.1
+python-multipart==0.0.32
+supabase==2.31.0
+sentence-transformers==5.6.1
+numpy
+soundfile
+# 테스트
+pytest
