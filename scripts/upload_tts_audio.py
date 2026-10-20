@@ -2,6 +2,7 @@
 
     python scripts/upload_tts_audio.py --dry-run      # 올리지 않고 대조 결과만 본다
     python scripts/upload_tts_audio.py                 # 올린다(이미 올라간 것은 건너뜀, 이어하기 가능)
+    python scripts/upload_tts_audio.py --dir 고친폴더 --allow-missing --overwrite   # 고친 파일만 교체
 
 환경변수: SUPABASE_URL, SUPABASE_KEY(service_role) — .env 또는 셸에서. 값은 출력하지 않는다.
 """
@@ -58,6 +59,7 @@ def main() -> int:
     ap.add_argument("--manifest", default=str(ROOT / "data" / "tts_manifest.csv"))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--allow-missing", action="store_true", help="목록에 없는 파일이 빠져 있어도 있는 것만 올린다")
+    ap.add_argument("--overwrite", action="store_true", help="이미 올라간 이름도 다시 올린다(고친 파일 교체용)")
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
@@ -82,8 +84,8 @@ def main() -> int:
     from orchestration.db import get_client
 
     client = get_client(allow_mock=False)
-    todo = plan(names, files, existing_paths(client))
-    print(f"올릴 파일 {len(todo)}개 (이미 올라간 것은 건너뜀)")
+    todo = plan(names, files, set() if args.overwrite else existing_paths(client))
+    print(f"올릴 파일 {len(todo)}개" + (" (덮어쓰기)" if args.overwrite else " (이미 올라간 것은 건너뜀)"))
     done = 0
     failed: list[str] = []
 

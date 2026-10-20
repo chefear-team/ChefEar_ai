@@ -24,6 +24,7 @@ npm run preview              # 빌드 결과 확인
 |---|---|
 | `VITE_API_BASE` | API 주소. 비우면 같은 origin |
 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | 로그인. 비면 구글/이메일 로그인 숨김 |
+| `VITE_GOOGLE_CLIENT_ID` | 구글 클라이언트 ID. 있으면 구글에서 이 사이트(`<origin>/`)로 바로 돌아와 id_token 으로 로그인한다(계정 선택 화면에 이 사이트 주소가 뜸). 그 주소를 구글 클라이언트의 리디렉션 URI 에 등록해야 한다. 비면 Supabase 콜백을 거친다 |
 | `VITE_DEMO_VIDEO_URL` | 랜딩의 데모 영상(mp4/webm, YouTube, Vimeo). 비면 숨김 |
 | `VITE_MOCK` | `1` 이면 가짜 API |
 
@@ -44,4 +45,5 @@ npm run preview              # 빌드 결과 확인
 1. Vercel 에서 이 저장소를 Import, **Root Directory = `web`**.
 2. Framework Preset 은 Vite(자동 감지). Build Command `npm run build`, Output `dist`.
 3. Environment Variables 에 위 `VITE_*` 를 등록하고 배포.
-4. API 서버(Modal)의 CORS 허용 origin 에 Vercel 도메인을 추가하고, Supabase Auth 의 Redirect URL 에도 같은 도메인을 추가한다.
+4. API 서버(Modal)의 CORS 허용 origin 에 Vercel 도메인을 추가하고, Supabase Auth 의 Redirect URL 에도 같은 도메인을 추가한다. `VITE_GOOGLE_CLIENT_ID` 를 쓰면 구글 클라이언트의 리디렉션 URI 에 `https://<도메인>/` 도 추가한다.
+5. `public/privacy.html`, `public/terms.html` 은 구글 로그인 앱 게시에 필요한 개인정보처리방침·약관이다. 실제 동작(수집 항목, 처리 업체)이 바뀌면 같이 고친다.
