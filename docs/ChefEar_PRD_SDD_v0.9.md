@@ -1,5 +1,7 @@
 ## 셰프이어(ChefEar) — PRD(SDD) v0.9 최종본
 
+> 2026-10-20 리뉴얼로 실행 구조가 Streamlit + RunPod에서 웹 + API + Modal로 바뀌었다. 이 문서는 **리뉴얼 전(2026-09-10) 기준**이며, 최신 구조는 `README.md`와 `docs/specs/renewal_serverless.md`를 본다.
+
 STT/TTS 도메인 파인튜닝 기반 음성 레시피 진행·등록 에이전트
 
 | 항목 | 내용 |
