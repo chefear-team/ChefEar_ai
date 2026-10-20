@@ -1,0 +1,35 @@
+[
+  {
+    "device": "cpu",
+    "threads": 2,
+    "n": 10,
+    "model_load_s": 9.22,
+    "first_call_s": 13.64,
+    "mean_s": 11.27,
+    "median_s": 11.17,
+    "p95_s": 11.59,
+    "wer": 0.1111
+  },
+  {
+    "device": "cpu",
+    "threads": 4,
+    "n": 10,
+    "model_load_s": 7.9,
+    "first_call_s": 9.23,
+    "mean_s": 8.12,
+    "median_s": 8.08,
+    "p95_s": 9.05,
+    "wer": 0.1111
+  },
+  {
+    "device": "cuda",
+    "threads": 0,
+    "n": 10,
+    "model_load_s": 7.1,
+    "first_call_s": 2.84,
+    "mean_s": 0.2,
+    "median_s": 0.21,
+    "p95_s": 0.22,
+    "wer": 0.1556
+  }
+]

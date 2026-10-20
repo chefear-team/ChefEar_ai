@@ -1,0 +1,10 @@
+node_modules
+dist
+public/vad
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+
+.vercel
+.env*

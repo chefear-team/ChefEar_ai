@@ -48,6 +48,13 @@ _work_backups/
 # 로컬 감사/분석 도구 상태 파일(SQLite) — 프로젝트 산출물 아님
 .audit/
 
+# 직접 만든 공용 음성 mp3(2,724개). 저장소에 올리지 않고 scripts/upload_tts_audio.py 로 Supabase Storage 에 올린다.
+data/tts_audio/
+
+# Vercel·Modal 로컬 연결 정보
+.vercel/
+.modal.toml
+
 # OS / IDE
 .DS_Store
 .idea/

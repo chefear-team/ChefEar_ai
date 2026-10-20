@@ -1,0 +1,28 @@
+name: supabase-keepalive
+
+# Supabase 무료 프로젝트는 1주 동안 쓰지 않으면 일시정지된다. 사람이 안 들어오는 기간에도 깨어 있게 3일마다 한 번 DB를 읽는다.
+# 저장소 비밀값(Settings > Secrets and variables > Actions)에 SUPABASE_URL, SUPABASE_KEY(service_role)가 필요하다.
+on:
+  schedule:
+    - cron: "17 3 */3 * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read one row
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+            echo "SUPABASE_URL / SUPABASE_KEY 비밀값이 없어 건너뜁니다."; exit 0
+          fi
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+            "$SUPABASE_URL/rest/v1/recipes?select=id&limit=1")
+          echo "HTTP $code"
+          test "$code" = "200"
