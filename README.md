@@ -31,15 +31,19 @@ ChefEar: "일단계, 두부와 감자를 깍둑썰기 해주세요."   ← 조�
 
 ### 화면 (2026-10-20)
 
-| 로그인 | 이메일 로그인·가입 | 레시피 확인 |
-|---|---|---|
-| ![로그인](docs/images/renewal/01_login.jpg) | ![이메일 시트](docs/images/renewal/02_email_sheet.jpg) | ![레시피 확인](docs/images/renewal/03_recipe_confirm.jpg) |
+| 로그인 | 이메일 로그인·가입 | 시작 | 레시피 확인 |
+|---|---|---|---|
+| ![로그인](docs/images/renewal/01_login.jpg) | ![이메일 시트](docs/images/renewal/02_email_sheet.jpg) | ![시작](docs/images/renewal/03_start.jpg) | ![레시피 확인](docs/images/renewal/04_recipe_confirm.jpg) |
 
-| 조리 단계 | 레시피 저장 후 음성 준비 안내 |
-|---|---|
-| ![조리](docs/images/renewal/04_cooking.jpg) | ![음성 준비](docs/images/renewal/05_voice_progress.jpg) |
+| 조리 1단계 | 조리 마지막 단계 | 요리 완성 | 등록 · 재료 |
+|---|---|---|---|
+| ![조리 1단계](docs/images/renewal/05_cooking_step1.jpg) | ![조리 마지막 단계](docs/images/renewal/06_cooking_last_step.jpg) | ![요리 완성](docs/images/renewal/07_cooking_complete.jpg) | ![등록 재료](docs/images/renewal/08_register_ingredients.jpg) |
 
-로그인 화면은 배포본을, 나머지는 서버 없이 눌러 보는 **데모 모드**(`VITE_MOCK=1`, 가짜 API)에서 캡처했습니다. 리뉴얼 전(Streamlit) 화면 캡처는 `docs/images/flow/`에 남아 있습니다.
+| 등록 · 조리 순서 | 등록 완료 · 음성 준비 안내 | 마이레시피 | 레시피 수정 |
+|---|---|---|---|
+| ![등록 순서](docs/images/renewal/09_register_steps.jpg) | ![등록 완료](docs/images/renewal/10_register_complete.jpg) | ![마이레시피](docs/images/renewal/11_my_recipes.jpg) | ![레시피 수정](docs/images/renewal/12_edit_recipe.jpg) |
+
+모두 서버 없이 눌러 보는 **데모 모드**(`VITE_MOCK=1`, 가짜 API·가짜 마이크)에서 2026-10-20에 찍었습니다. 그래서 화면 위에 "데모 모드" 표시가 있고, 대화 카드 내용은 가짜 서버가 만든 것이라 실제 서버와 조금 다를 수 있습니다. 말 처리 중 오버레이는 실제 말소리가 있어야 떠서 캡처하지 않았습니다. 리뉴얼 전(Streamlit) 화면은 `docs/images/flow/`에 남아 있습니다.
 
 ## 2. 팀과 역할
 
