@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MicBar, TextFallback } from "./components/Dock";
 import { Icon, SlowBanner } from "./components/common";
+import { ProcessingOverlay } from "./components/ProcessingOverlay";
 import { MOCK } from "./config";
 import { api } from "./lib/api";
 import { signOut, useAuth } from "./lib/auth";
@@ -63,6 +64,8 @@ export default function App() {
   const playerSnap = usePlayer();
   const [started, setStarted] = useState(false);
   const [local, setLocal] = useState<LocalView | null>(null);
+  /** 말을 보내고 응답을 기다리는 중(오버레이·알림음 대상). 글자·버튼 요청은 포함하지 않는다. */
+  const [voiceBusy, setVoiceBusy] = useState(false);
 
   const session = useSession({ onSpeech: (sp) => void player.speak(sp) });
   const { state } = session;
@@ -77,11 +80,14 @@ export default function App() {
     gate,
     onUtterance: (wav) => {
       setLocal(null);
-      void session.sendAudio(wav);
+      setVoiceBusy(true);
+      void session.sendAudio(wav).finally(() => setVoiceBusy(false));
     },
   });
 
   const loggedIn = authed;
+  /** 우상단 표시용 이름: 이메일이 길면 9자까지만(원본의 아이디 말줄임과 같다). */
+  const userName = auth.email ? (auth.email.length > 9 ? `${auth.email.slice(0, 9)}…` : auth.email) : "내 계정";
 
   // ---- 시작하기 ----
   const onPrepare = () => {
@@ -165,6 +171,8 @@ export default function App() {
     body = (
       <MyRecipesScreen
         loggedIn={loggedIn}
+        userName={userName}
+        onLogout={() => void signOut()}
         onEdit={(id) => setLocal({ kind: "edit", id })}
         onBack={goHome}
         onLogin={() => setLocal({ kind: "login" })}
@@ -232,6 +240,8 @@ export default function App() {
         body = (
           <MyRecipesScreen
             loggedIn={loggedIn}
+        userName={userName}
+        onLogout={() => void signOut()}
             onEdit={(id) => setLocal({ kind: "edit", id })}
             onBack={goHome}
             onLogin={() => setLocal({ kind: "login" })}
@@ -261,11 +271,14 @@ export default function App() {
           <img className="brand-logo" src="/brand/logo.png" alt="ChefEar" width={512} height={280} />
         </button>
         <nav className="topnav" aria-label="메뉴">
-          <button type="button" className="btn small" onClick={() => setLocal({ kind: "my_recipes" })}>
-            마이레시피
-          </button>
-          <button type="button" className="btn small" onClick={() => void signOut()}>
-            로그아웃
+          <button
+            type="button"
+            className="account-btn"
+            onClick={() => setLocal({ kind: "my_recipes" })}
+            aria-label={`${userName}, 마이레시피 열기`}
+          >
+            <Icon name="user" size={16} />
+            <span>{userName}</span>
           </button>
         </nav>
       </header>
@@ -290,12 +303,14 @@ export default function App() {
             서버 응답을 기다리는 동안엔 이전 화면을 흐리게 하고 눌리지 않게 해서 낡은 화면과 새 화면이 섞여 보이지 않게 한다. */}
         <div
           key={viewKey}
-          className={`view${CENTERED_SCREENS.has(serverScreen as Screen) && local === null ? " centered" : ""}${session.busy ? " busy" : ""}`}
+          className={`view${CENTERED_SCREENS.has(serverScreen as Screen) && local === null ? " centered" : ""}${session.busy && !voiceBusy ? " busy" : ""}`}
           aria-busy={session.busy}
         >
           {body}
         </div>
       </main>
+
+      <ProcessingOverlay active={voiceBusy} />
 
       {showDock && (
         <footer className="dock">

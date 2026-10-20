@@ -31,12 +31,16 @@ const dateFmt = (iso: string) => {
 
 export function MyRecipesScreen({
   loggedIn,
+  userName,
+  onLogout,
   onEdit,
   onBack,
   onLogin,
   onRegister,
 }: {
   loggedIn: boolean;
+  userName: string;
+  onLogout: () => void;
   onEdit: (id: string) => void;
   onBack: () => void;
   onLogin: () => void;
@@ -106,7 +110,7 @@ export function MyRecipesScreen({
   return (
     <>
       <div className="row between">
-        <h2 className="q">내가 등록한 레시피{rows ? ` · ${rows.length}개` : ""}</h2>
+        <h2 className="q">{userName}님이 등록한 레시피{rows ? ` · ${rows.length}개` : ""}</h2>
         <button type="button" className="btn small" onClick={() => void load()}>
           새로고침
         </button>
@@ -162,6 +166,9 @@ export function MyRecipesScreen({
       <div className="stack">
         <button type="button" className="btn lg" onClick={onBack}>
           처음 화면으로
+        </button>
+        <button type="button" className="btn lg" onClick={onLogout}>
+          로그아웃
         </button>
       </div>
     </>
